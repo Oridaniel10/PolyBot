@@ -1,4 +1,5 @@
 import sys
+from datetime import timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -193,7 +194,7 @@ def api_blacklist_toggle(body: BlacklistToggle) -> Dict[str, Any]:
 
 @dashboard_router.get("/markets/weather-today")
 def api_weather_markets_today(
-    limit: int = Query(30, ge=1, le=200),
+    limit: int = Query(200, ge=1, le=500),
     max_pages: Optional[int] = Query(
         None,
         ge=1,
@@ -203,17 +204,21 @@ def api_weather_markets_today(
 ) -> Dict[str, Any]:
     now = now_in_report_timezone()
     label = build_target_day_label(now)
+    prev_label = build_target_day_label(now - timedelta(days=1))
+    extra = [prev_label] if prev_label != label else []
     eff = get_effective_settings()
     mp = max_pages if max_pages is not None else eff.dashboard_weather_max_pages
     try:
         client = PolymarketClient(build_config())
         markets = client.get_highest_temperature_markets(
             target_day_label=label,
+            extra_target_day_labels=extra,
             max_pages=mp,
         )
     except Exception as exc:
         return {
             "target_day_label": label,
+            "secondary_target_day_label": prev_label if extra else None,
             "error": repr(exc),
             "markets": [],
             "total_matched": 0,
@@ -234,12 +239,29 @@ def api_weather_markets_today(
         )
     return {
         "target_day_label": label,
+        "secondary_target_day_label": prev_label if extra else None,
         "markets": slim,
         "total_matched": total,
         "showing": len(slim),
         "max_pages_used": mp,
         "error": None,
     }
+
+
+@dashboard_router.get("/trades/today")
+def api_trades_today() -> List[Dict[str, Any]]:
+    from state.pnl_ledger import read_trade_csv_today
+    return read_trade_csv_today()
+
+
+@dashboard_router.get("/trades/today/csv")
+def api_trades_today_csv():
+    from fastapi.responses import FileResponse
+    from state.pnl_ledger import trade_csv_path_today
+    path = trade_csv_path_today()
+    if not path.is_file():
+        raise HTTPException(404, "no trades today")
+    return FileResponse(path, media_type="text/csv", filename=path.name)
 
 
 @dashboard_router.get("/health")

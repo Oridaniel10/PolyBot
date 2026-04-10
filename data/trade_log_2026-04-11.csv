@@ -1,0 +1,2 @@
+timestamp,local_hhmm,action,market_id,market_title,city,price,shares,usd,reason,entry_price,pnl_usd,cash_after,positions_mtm,total_value
+2026-04-11T00:25:10.474138+03:00,00:25,SELL,1886645,Will the highest temperature in Los Angeles be between 66-67°F on April 10?,los angeles,0.965,7.9165,7.64,take-profit,0.5838,3.02,11.83,19.04,30.87

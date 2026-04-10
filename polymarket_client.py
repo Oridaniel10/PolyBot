@@ -612,22 +612,45 @@ class PolymarketClient:
                 seen_market_ids.add(market_id)
         return filtered_markets
 
+    @staticmethod
+    def _merge_target_day_labels(
+        target_day_label: Optional[str],
+        extra_target_day_labels: Optional[List[str]],
+    ) -> List[str]:
+        labels: List[str] = []
+        if target_day_label and str(target_day_label).strip():
+            labels.append(str(target_day_label).strip())
+        for raw in extra_target_day_labels or []:
+            s = str(raw or "").strip()
+            if s and s not in labels:
+                labels.append(s)
+        return labels
+
     def _is_highest_temp_market(
-        self, market: Dict[str, Any], target_day_label: Optional[str]
+        self,
+        market: Dict[str, Any],
+        target_day_label: Optional[str],
+        extra_target_day_labels: Optional[List[str]] = None,
     ) -> bool:
         title = (market.get("question") or market.get("title") or "").strip().lower()
         if "highest temperature" not in title:
             return False
         if not any(re.match(p, title) for p in HIGHEST_TEMPERATURE_QUERY_PATTERNS):
             return False
-        if target_day_label and not title_matches_highest_temp_target_day(
-            title, target_day_label
+        labels = self._merge_target_day_labels(
+            target_day_label, extra_target_day_labels
+        )
+        if labels and not any(
+            title_matches_highest_temp_target_day(title, lb) for lb in labels
         ):
             return False
         return True
 
     def _discover_temp_id_range(
-        self, anchor_ids: List[int], target_day_label: Optional[str]
+        self,
+        anchor_ids: List[int],
+        target_day_label: Optional[str],
+        extra_target_day_labels: Optional[List[str]] = None,
     ) -> tuple:
         """Find the range of Gamma market IDs that contain temperature markets."""
         if anchor_ids:
@@ -644,7 +667,9 @@ class PolymarketClient:
                     extra_params={"offset": start_offset},
                 )
                 for m in markets:
-                    if self._is_highest_temp_market(m, target_day_label):
+                    if self._is_highest_temp_market(
+                        m, target_day_label, extra_target_day_labels
+                    ):
                         mid = int(m.get("id") or 0)
                         if mid > 0:
                             return (mid - 300, mid + 600)
@@ -656,6 +681,7 @@ class PolymarketClient:
         self,
         *,
         target_day_label: Optional[str] = None,
+        extra_target_day_labels: Optional[List[str]] = None,
         max_pages: int = 80,
         anchor_ids: Optional[List[int]] = None,
     ) -> List[Dict[str, Any]]:
@@ -665,7 +691,9 @@ class PolymarketClient:
 
         if id_range is None or id_range == (0, 0):
             anchors = anchor_ids or []
-            id_range = self._discover_temp_id_range(anchors, target_day_label)
+            id_range = self._discover_temp_id_range(
+                anchors, target_day_label, extra_target_day_labels
+            )
             with self._temp_id_range_lock:
                 self._temp_id_range = id_range
 
@@ -702,7 +730,9 @@ class PolymarketClient:
                     return None
                 if not m.get("active"):
                     return None
-                if self._is_highest_temp_market(m, target_day_label):
+                if self._is_highest_temp_market(
+                    m, target_day_label, extra_target_day_labels
+                ):
                     return m
                 return None
             except Exception:
@@ -1073,6 +1103,43 @@ class PolymarketClient:
         if mid > 0:
             return mid
         return 0.0
+
+    def get_clob_min_order_size_yes(self, market: Dict[str, Any]) -> Optional[float]:
+        try:
+            token_id = yes_token_id_from_market(market)
+            book = self.make_clob_client().get_order_book(token_id)
+            if book and getattr(book, "min_order_size", None) is not None:
+                return float(book.min_order_size)
+        except Exception:
+            pass
+        return None
+
+    def topup_yes_if_needed_for_min_sell(
+        self,
+        market: Dict[str, Any],
+        exchange_yes: float,
+        position_key: str,
+    ) -> float:
+        """
+        CLOB often requires min ~5 shares to sell. If we hold slightly less,
+        market-buy a small YES slice (capped in USD) so the following sell can submit.
+        """
+        from config import constants as C
+
+        min_sz = self.get_clob_min_order_size_yes(market)
+        if min_sz is None or exchange_yes + 1e-9 >= min_sz:
+            return exchange_yes
+        extra = min_sz - exchange_yes + C.CLOB_SELL_TOPUP_BUFFER_SHARES
+        px = self.get_clob_yes_price(market)
+        if px <= 0 or px >= 1.0:
+            return exchange_yes
+        usd = extra * px * C.CLOB_SELL_TOPUP_SLIPPAGE_MULT
+        usd = min(max(usd, C.CLOB_SELL_TOPUP_MIN_USD), C.CLOB_SELL_TOPUP_MAX_USD)
+        try:
+            self.place_market_buy_yes(market, usd)
+        except Exception:
+            return exchange_yes
+        return self.get_yes_shares_on_exchange_for_market_id(position_key)
 
     def place_market_buy_yes(
         self, market: Dict[str, Any], usd_amount: float

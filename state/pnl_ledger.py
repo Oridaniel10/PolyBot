@@ -1,9 +1,10 @@
+import csv
 import json
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from config.constants import PNL_LEDGER_FILE, TIMEZONE
+from config.constants import DATA_DIR, PNL_LEDGER_FILE, TIMEZONE
 
 try:
     from zoneinfo import ZoneInfo
@@ -61,7 +62,11 @@ def read_ledger_rows_since(cutoff: datetime) -> List[Dict[str, Any]]:
                 ts = _parse_ts(str(row.get("ts_iso") or row.get("ts") or ""))
                 if ts is None:
                     continue
-                if ts >= cutoff.replace(tzinfo=ts.tzinfo) if ts.tzinfo else ts >= cutoff:
+                if (
+                    ts >= cutoff.replace(tzinfo=ts.tzinfo)
+                    if ts.tzinfo
+                    else ts >= cutoff
+                ):
                     out.append(row)
     except OSError:
         return []
@@ -117,3 +122,76 @@ def pnl_summary_day_week() -> Dict[str, Any]:
             "as_of": now.isoformat(),
             "error": repr(exc),
         }
+
+
+# --- daily trade log CSV ---
+
+TRADE_CSV_FIELDS = [
+    "timestamp",
+    "local_hhmm",
+    "action",
+    "market_id",
+    "market_title",
+    "city",
+    "price",
+    "shares",
+    "usd",
+    "reason",
+    "entry_price",
+    "pnl_usd",
+    "cash_after",
+    "positions_mtm",
+    "total_value",
+]
+
+
+def _trade_csv_path(day: Optional[str] = None) -> Path:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    if day is None:
+        day = _now_tz().strftime("%Y-%m-%d")
+    return DATA_DIR / f"trade_log_{day}.csv"
+
+
+def append_trade_csv_row(row: Dict[str, Any]) -> None:
+    path = _trade_csv_path()
+    write_header = not path.is_file()
+    if path.is_file() and path.stat().st_size > 0:
+        try:
+            with path.open("r", encoding="utf-8") as f:
+                first = f.readline()
+            if (
+                first.strip()
+                and "local_hhmm" not in first
+                and "timestamp" in first
+            ):
+                legacy = path.with_name(f"{path.stem}_legacy{path.suffix}")
+                if not legacy.is_file():
+                    path.rename(legacy)
+                write_header = True
+        except OSError:
+            pass
+    try:
+        with path.open("a", encoding="utf-8", newline="") as f:
+            writer = csv.DictWriter(
+                f, fieldnames=TRADE_CSV_FIELDS, extrasaction="ignore"
+            )
+            if write_header:
+                writer.writeheader()
+            writer.writerow(row)
+    except OSError:
+        pass
+
+
+def read_trade_csv_today() -> List[Dict[str, str]]:
+    path = _trade_csv_path()
+    if not path.is_file():
+        return []
+    try:
+        with path.open("r", encoding="utf-8", newline="") as f:
+            return list(csv.DictReader(f))
+    except OSError:
+        return []
+
+
+def trade_csv_path_today() -> Path:
+    return _trade_csv_path()

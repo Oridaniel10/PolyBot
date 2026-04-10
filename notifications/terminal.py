@@ -1,6 +1,7 @@
 import os
 import sys
-from typing import Any, Dict, List
+from collections import defaultdict
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from polymarket_client import PolymarketClient
 
@@ -13,7 +14,9 @@ from config.constants import (
     TERM_RESET,
     TERM_YELLOW,
 )
-from strategy.time_utils import now_in_report_timezone
+from strategy.blacklist_display import collect_blacklist_status_rows
+from strategy.city_tz import city_local_time_str
+from strategy.time_utils import format_report_local_hhmm, now_in_report_timezone
 
 
 def term_colors_enabled() -> bool:
@@ -47,7 +50,8 @@ def print_loop_positions_snapshot(
     cash = float(balance.get("cash") or 0)
     positions = client.get_open_positions()
     tracked = len(state.get("active_trades", {}))
-    header = term_wrap(TERM_CYAN, f"[loop] {label}  {now}")
+    loc = format_report_local_hhmm()
+    header = term_wrap(TERM_CYAN, f"[loop] {label}  local {loc}  {now}")
     pos_val = float(balance.get("positions_market_value") or 0)
     total = float(balance.get("total_value") or (cash + pos_val))
     print(f"\n{header}")
@@ -131,6 +135,16 @@ def log_sleep_terminal(seconds: int) -> None:
     print(term_wrap(TERM_DIM, msg), flush=True)
 
 
+def _extract_temp_category(title: str) -> str:
+    low = title.lower()
+    key = " be "
+    i = low.find(key)
+    if i < 0:
+        return "_other"
+    rest = title[i + len(key) :].strip()
+    return rest[:72] if rest else "_other"
+
+
 def _extract_city_name(question: str) -> str:
     q = question.lower()
     for prefix in ("will the highest temperature in ", "highest temperature in "):
@@ -143,12 +157,36 @@ def _extract_city_name(question: str) -> str:
     return ""
 
 
+def _print_blacklist_section(state: Dict[str, Any], settings: Any, sep: str) -> None:
+    bl_ids: Set[str] = getattr(settings, "blacklist_market_ids", set())
+    rows = collect_blacklist_status_rows(state, bl_ids)
+    if not rows:
+        return
+    print(f"{TERM_BOLD}├{sep}┤{TERM_RESET}")
+    print(f"│  {TERM_BOLD}BLACKLIST ({len(rows)}){TERM_RESET}")
+    for r in rows:
+        mid = str(r.get("market_id") or "")
+        title = str(r.get("title") or mid)
+        if len(title) > 48:
+            title = title[:45] + "..."
+        src = str(r.get("source") or "")
+        rem = str(r.get("remaining_label") or "")
+        if src == "churn":
+            tag = term_wrap(TERM_YELLOW, "CHURN")
+        elif src == "day":
+            tag = term_wrap(TERM_RED, "DAY")
+        else:
+            tag = term_wrap(TERM_DIM, "RUNTIME")
+        print(f"│  {mid}  {tag}  {rem}  {title}")
+
+
 def print_scan_summary(
     markets: List[Dict[str, Any]],
     state: Dict[str, Any],
     settings: Any,
     target_day_label: str,
     cash: float,
+    secondary_day_label: Optional[str] = None,
 ) -> None:
     """
     compact scan table: header + only interesting rows (held, eligible,
@@ -170,9 +208,13 @@ def print_scan_summary(
     near_margin = 0.06
 
     sep = "─" * 100
+    loc = format_report_local_hhmm()
+    day_hdr = target_day_label
+    if secondary_day_label and secondary_day_label != target_day_label:
+        day_hdr = f"{target_day_label}  +  {secondary_day_label}"
     print(f"\n{TERM_BOLD}┌{sep}┐{TERM_RESET}")
     print(
-        f"{TERM_BOLD}│  SCAN  ·  {target_day_label}  ·  {len(markets)} markets{TERM_RESET}"
+        f"{TERM_BOLD}│  local {loc}  ·  SCAN  ·  {day_hdr}  ·  {len(markets)} markets{TERM_RESET}"
     )
     print(
         f"{TERM_BOLD}│  cash=${cash:.2f}  reserve=${reserve:.2f}  "
@@ -194,7 +236,7 @@ def print_scan_summary(
         return
 
     interesting: List[str] = []
-    city_best: Dict[str, Dict[str, Any]] = {}
+    category_buckets: Dict[str, List[Tuple[float, str, str]]] = defaultdict(list)
 
     for market in markets:
         mid = str(market.get("id") or "")
@@ -218,7 +260,11 @@ def print_scan_summary(
                 pnl_s = term_wrap(TERM_RED, f"${pnl_est:.2f}")
             else:
                 pnl_s = term_wrap(TERM_DIM, f"${pnl_est:.2f}")
-            tag = f"{term_wrap(TERM_CYAN, 'HOLD')}  entry={entry:.2f}  pnl~{pnl_s}"
+            lt = city_local_time_str(title)
+            lt_s = f"  [{lt}]" if lt else ""
+            tag = (
+                f"{term_wrap(TERM_CYAN, 'HOLD')}  entry={entry:.2f}  pnl~{pnl_s}{lt_s}"
+            )
             show = True
         elif not clob_ok:
             tag = f"{term_wrap(TERM_YELLOW, 'CLOB off')}  ({status_raw})"
@@ -239,22 +285,16 @@ def print_scan_summary(
         elif buy_min <= yes_p <= buy_max:
             tag = term_wrap(TERM_GREEN, "ELIGIBLE  → BUY")
             show = True
-        elif (buy_min - near_margin) <= yes_p < buy_min:
-            tag = term_wrap(TERM_DIM, f"near band  yes={yes_p:.2f} (min={buy_min:.2f})")
-            show = True
-        elif buy_max < yes_p <= (buy_max + near_margin):
-            tag = term_wrap(TERM_DIM, f"near band  yes={yes_p:.2f} (max={buy_max:.2f})")
-            show = True
+        # near-band rows removed for compact output
 
         short_title = title if len(title) <= 70 else title[:67] + "..."
         if show:
             interesting.append(f"│  {yes_p:>5.0%}  {tag}  {short_title}")
 
         city = _extract_city_name(title)
-        if city:
-            prev = city_best.get(city)
-            if prev is None or yes_p > prev["yes"]:
-                city_best[city] = {"yes": yes_p, "title": title, "held": held}
+        if city and not held and not (buy_min <= yes_p <= buy_max):
+            cat = _extract_temp_category(title)
+            category_buckets[cat].append((yes_p, city, title))
 
     for line in interesting:
         print(line)
@@ -262,26 +302,23 @@ def print_scan_summary(
     if interesting:
         print(f"{TERM_BOLD}├{sep}┤{TERM_RESET}")
 
-    skipped_cities = []
-    for city in sorted(city_best):
-        cb = city_best[city]
-        if cb["held"]:
-            continue
-        if buy_min <= cb["yes"] <= buy_max:
-            continue
-        if (buy_min - near_margin) <= cb["yes"] <= (buy_max + near_margin):
-            continue
-        skipped_cities.append(f"{city} {cb['yes']:.0%}")
+    if category_buckets:
+        print(f"{TERM_BOLD}├{sep}┤{TERM_RESET}")
+        print(
+            f"{TERM_BOLD}│  top-2 / category (outside buy band, not held){TERM_RESET}"
+        )
+        for cat in sorted(category_buckets.keys()):
+            items = sorted(category_buckets[cat], key=lambda x: -x[0])[:2]
+            parts: List[str] = []
+            for yes_p, c, tit in items:
+                lt = city_local_time_str(tit)
+                lt_s = f"[{lt}]" if lt else ""
+                parts.append(f"{c} {yes_p:.0%}{lt_s}")
+            cat_disp = cat if len(cat) <= 40 else cat[:37] + "…"
+            line = f"│  {cat_disp}:  " + "  ".join(parts)
+            print(term_wrap(TERM_DIM, line))
 
-    if skipped_cities:
-        chunk = "│  "
-        for i, entry in enumerate(skipped_cities):
-            addition = entry + ("  " if i < len(skipped_cities) - 1 else "")
-            if len(chunk) + len(addition) > 100:
-                print(term_wrap(TERM_DIM, chunk))
-                chunk = "│  "
-            chunk += addition
-        if chunk.strip("│ "):
-            print(term_wrap(TERM_DIM, chunk))
+    # --- blacklist section ---
+    _print_blacklist_section(state, settings, sep)
 
     print(f"{TERM_BOLD}└{sep}┘{TERM_RESET}\n", flush=True)

@@ -2,6 +2,8 @@ import hashlib
 import time
 from typing import Any, Dict, List, Optional
 
+from config.constants import BUY_EARLIEST_HOUR, MAX_CONCURRENT_POSITIONS
+
 import requests
 from py_clob_client.exceptions import PolyApiException
 
@@ -9,7 +11,9 @@ from config.constants import (
     DEFAULT_ORDER_SIZE,
     DUST_SHARES_EPS,
     SELL_BELOW_MIN_COOLDOWN_SEC,
+    SELL_BYPASS_MIN_COOLDOWN_REASONS,
     STATUS_CLOSED,
+    TAKE_PROFIT_COMPARE_SLACK,
     TERM_DIM,
     TERM_RED,
     TERM_YELLOW,
@@ -33,7 +37,8 @@ from polymarket_client import (
     SELL_EXECUTION_SKIPPED,
     gamma_event_ids_for_market,
 )
-from state.pnl_ledger import append_ledger_row
+from state.pnl_ledger import append_ledger_row, append_trade_csv_row
+from strategy.city_tz import _extract_city_from_title
 from strategy.churn import (
     churn_on_stop_loss_exit,
     churn_on_take_profit,
@@ -57,8 +62,21 @@ from strategy.probability import (
     take_profit_decision_probability,
 )
 from strategy.sizing import compute_buy_usd_amount, planned_buy_cap_lines
-from strategy.time_utils import now_in_report_timezone
+from strategy.time_utils import format_report_local_hhmm, now_in_report_timezone
 from telegram_bot import TelegramBot, tg_escape
+
+
+def _telegram_local_clock_html() -> str:
+    return f"🕐 <code>{tg_escape(format_report_local_hhmm())}</code>\n"
+
+
+def _trade_csv_base(title: str) -> Dict[str, Any]:
+    ts = now_in_report_timezone()
+    return {
+        "timestamp": ts.isoformat(),
+        "local_hhmm": format_report_local_hhmm(ts),
+        "market_title": str(title)[:220],
+    }
 
 
 def order_ref_from_response(order: Any) -> str:
@@ -185,6 +203,7 @@ def place_buy(
         try:
             if telegram.is_configured():
                 telegram.send_html_chunks(
+                    f"{_telegram_local_clock_html()}"
                     f"🔴 <b>BUY FAILED</b>\n{tg_escape(title)}\n<pre>{tg_escape(err)}</pre>"
                 )
         except requests.RequestException:
@@ -195,6 +214,7 @@ def place_buy(
         try:
             if telegram.is_configured():
                 telegram.send_html_chunks(
+                    f"{_telegram_local_clock_html()}"
                     f"🔴 <b>BUY FAILED</b>\n{tg_escape(title)}\n<pre>{tg_escape(repr(err))}</pre>"
                 )
         except requests.RequestException:
@@ -253,6 +273,26 @@ def place_buy(
             "shares_est": shares,
         }
     )
+    balance_after = client.get_portfolio_balance(force_allowance_refresh=False)
+    cash_after = float(balance_after.get("cash") or 0)
+    mtm_after = float(balance_after.get("positions_market_value") or 0)
+    append_trade_csv_row(
+        {
+            **_trade_csv_base(str(title)),
+            "action": "BUY",
+            "market_id": market_id,
+            "city": _extract_city_from_title(str(title)),
+            "price": round(probability, 4),
+            "shares": round(shares, 4),
+            "usd": round(usd, 2),
+            "reason": "",
+            "entry_price": round(probability, 4),
+            "pnl_usd": 0.0,
+            "cash_after": round(cash_after, 2),
+            "positions_mtm": round(mtm_after, 2),
+            "total_value": round(cash_after + mtm_after, 2),
+        }
+    )
     try:
         send_portfolio_telegram(telegram, client, headline, headline_html=headline_html)
     except Exception as err:
@@ -281,7 +321,17 @@ def close_position(
 
     cool_until = float(trade.get("_skip_sell_below_min_until") or 0)
     if cool_until and time.time() < cool_until:
-        return
+        if reason not in SELL_BYPASS_MIN_COOLDOWN_REASONS:
+            return
+        if not trade.get("_bypass_min_cooldown_logged"):
+            trade["_bypass_min_cooldown_logged"] = True
+            print(
+                term_wrap(
+                    TERM_DIM,
+                    f"[sell] bypass below-min cooldown ({reason})\n  "
+                    f"{market.get('question') or market.get('title') or key}",
+                )
+            )
 
     if not trade_row_matches_gamma_market(trade, market):
         return
@@ -305,6 +355,7 @@ def close_position(
         try:
             if telegram.is_configured():
                 telegram.send_html_chunks(
+                    f"{_telegram_local_clock_html()}"
                     f"🟡 <b>SELL N/A</b> (no YES on exchange)\n"
                     f"{tg_escape(title)}\n"
                     f"<code>state_shares={shares_state:.6f}</code>"
@@ -313,8 +364,23 @@ def close_position(
             pass
         return
 
-    sell_shares = min(shares_state, exchange_yes)
-    if sell_shares + 1e-12 < shares_state:
+    exchange_yes_pre = exchange_yes
+    exchange_yes = client.topup_yes_if_needed_for_min_sell(market, exchange_yes, key)
+    if exchange_yes > exchange_yes_pre + 1e-6:
+        trade.pop("_skip_sell_below_min_until", None)
+        trade.pop("_below_min_order_size", None)
+        trade.pop("_bypass_min_cooldown_logged", None)
+        print(
+            term_wrap(
+                TERM_DIM,
+                f"[sell] topped up YES for min size: {exchange_yes_pre:.4f} -> {exchange_yes:.4f}\n"
+                f"  {title}",
+            )
+        )
+        sell_shares = exchange_yes
+    else:
+        sell_shares = min(shares_state, exchange_yes)
+    if sell_shares + 1e-12 < shares_state and exchange_yes <= exchange_yes_pre + 1e-6:
         print(
             term_wrap(
                 TERM_DIM,
@@ -345,6 +411,7 @@ def close_position(
         try:
             if telegram.is_configured():
                 telegram.send_html_chunks(
+                    f"{_telegram_local_clock_html()}"
                     f"🔴 <b>SELL FAILED</b> <code>{tg_escape(reason)}</code>\n"
                     f"{tg_escape(title)}\n"
                     f"shares <code>{sell_shares:.6f}</code>  ·  exch ~<code>{exchange_yes:.6f}</code>"
@@ -372,6 +439,7 @@ def close_position(
         try:
             if telegram.is_configured():
                 telegram.send_html_chunks(
+                    f"{_telegram_local_clock_html()}"
                     f"🔴 <b>SELL FAILED</b> <code>{tg_escape(reason)}</code>\n"
                     f"{tg_escape(title)}\n"
                     f"shares <code>{sell_shares:.6f}</code>  ·  exch ~<code>{exchange_yes:.6f}</code>"
@@ -417,6 +485,7 @@ def close_position(
                     "⏸️" if result.get("skip_reason") == "below_min_order_size" else "⚠️"
                 )
                 telegram.send_html_chunks(
+                    f"{_telegram_local_clock_html()}"
                     f"{emoji} <b>SELL SKIPPED</b> <code>{tg_escape(str(result.get('skip_reason')))}</code>\n"
                     f"{tg_escape(title)}\n<pre>{tg_escape(msg)}</pre>"
                 )
@@ -436,6 +505,7 @@ def close_position(
             try:
                 if telegram.is_configured():
                     telegram.send_html_chunks(
+                        f"{_telegram_local_clock_html()}"
                         f"⚠️ <b>LIMIT SELL</b> — no order id in response\n{tg_escape(title)}"
                     )
             except requests.RequestException:
@@ -461,6 +531,27 @@ def close_position(
             f"📝 <code>{tg_escape(oid)}</code>"
         )
         log_limit_sell_posted_terminal(str(title), reason, sell_shares, limit_px, oid)
+        balance_after = client.get_portfolio_balance(force_allowance_refresh=False)
+        cash_after = float(balance_after.get("cash") or 0)
+        mtm_after = float(balance_after.get("positions_market_value") or 0)
+        est_lim = (limit_px - entry) * sell_shares
+        append_trade_csv_row(
+            {
+                **_trade_csv_base(str(title)),
+                "action": "LIMIT_SELL",
+                "market_id": market_id,
+                "city": _extract_city_from_title(str(title)),
+                "price": round(limit_px, 4),
+                "shares": round(sell_shares, 4),
+                "usd": round(sell_shares * limit_px, 2),
+                "reason": reason,
+                "entry_price": round(entry, 4),
+                "pnl_usd": round(est_lim, 2),
+                "cash_after": round(cash_after, 2),
+                "positions_mtm": round(mtm_after, 2),
+                "total_value": round(cash_after + mtm_after, 2),
+            }
+        )
         try:
             send_portfolio_telegram(
                 telegram, client, headline, headline_html=headline_html
@@ -500,6 +591,26 @@ def close_position(
             "entry": entry,
             "mark": probability,
             "est_pnl_usd": round(est_pnl, 4),
+        }
+    )
+    balance_after = client.get_portfolio_balance(force_allowance_refresh=False)
+    cash_after = float(balance_after.get("cash") or 0)
+    mtm_after = float(balance_after.get("positions_market_value") or 0)
+    append_trade_csv_row(
+        {
+            **_trade_csv_base(str(title)),
+            "action": "SELL",
+            "market_id": market_id,
+            "city": _extract_city_from_title(str(title)),
+            "price": round(probability, 4),
+            "shares": round(sell_shares, 4),
+            "usd": round(sell_shares * probability, 2),
+            "reason": reason,
+            "entry_price": round(entry, 4),
+            "pnl_usd": round(est_pnl, 2),
+            "cash_after": round(cash_after, 2),
+            "positions_mtm": round(mtm_after, 2),
+            "total_value": round(cash_after + mtm_after, 2),
         }
     )
     if reason == "stop-loss":
@@ -542,6 +653,7 @@ def claim_position(
         try:
             if telegram.is_configured():
                 telegram.send_html_chunks(
+                    f"{_telegram_local_clock_html()}"
                     f"🔴 <b>CLAIM FAILED</b>\n{tg_escape(title)}\n<pre>{tg_escape(repr(err))}</pre>"
                 )
         except requests.RequestException:
@@ -551,6 +663,26 @@ def claim_position(
     headline = f"TRADE: CLAIM\n{title}"
     headline_html = f"🟡 <b>CLAIM</b> <i>(bot)</i>\n{tg_escape(title)}"
     log_trade_claim_terminal(str(title))
+    balance_after = client.get_portfolio_balance(force_allowance_refresh=False)
+    cash_after = float(balance_after.get("cash") or 0)
+    mtm_after = float(balance_after.get("positions_market_value") or 0)
+    append_trade_csv_row(
+        {
+            **_trade_csv_base(str(title)),
+            "action": "CLAIM",
+            "market_id": market_id,
+            "city": _extract_city_from_title(str(title)),
+            "price": 0.0,
+            "shares": 0.0,
+            "usd": 0.0,
+            "reason": "claim",
+            "entry_price": 0.0,
+            "pnl_usd": 0.0,
+            "cash_after": round(cash_after, 2),
+            "positions_mtm": round(mtm_after, 2),
+            "total_value": round(cash_after + mtm_after, 2),
+        }
+    )
     try:
         send_portfolio_telegram(telegram, client, headline, headline_html=headline_html)
     except Exception as err:
@@ -623,7 +755,8 @@ def process_single_market(
         return
 
     prob_take_profit = take_profit_decision_probability(market, trade_row)
-    if has_position and (prob_take_profit + 1e-12 >= settings.take_profit):
+    tp_bar = settings.take_profit - TAKE_PROFIT_COMPARE_SLACK
+    if has_position and (prob_take_profit + 1e-9 >= tp_bar):
         close_position(
             client,
             market,
@@ -655,6 +788,7 @@ def process_single_market(
             try:
                 if telegram.is_configured():
                     telegram.send_html_chunks(
+                        f"{_telegram_local_clock_html()}"
                         f"⏸️ <b>EXIT PAUSED</b> (CLOB off)\n"
                         f"{tg_escape(t)}\n<pre>{tg_escape(warn)}</pre>"
                     )
@@ -671,6 +805,16 @@ def process_single_market(
     mom_ok = momentum_entry_allowed(market_id, gamma_probability, settings)
 
     if allow_new_buys and (not has_position) and market_can_post_clob_orders(market):
+        # --- time gate: no buys before BUY_EARLIEST_HOUR in city's timezone ---
+        from strategy.city_tz import city_local_hour
+        _title = str(market.get("question") or market.get("title") or "")
+        _city_hour = city_local_hour(_title)
+        if _city_hour is not None and _city_hour < BUY_EARLIEST_HOUR:
+            return
+        # --- position count gate ---
+        open_count = len(active_trades)
+        if open_count >= MAX_CONCURRENT_POSITIONS:
+            return
         in_band = buy_min <= gamma_probability <= buy_max
         if not in_band and mom_ok and gamma_probability <= settings.momentum_max_entry:
             in_band = buy_min <= gamma_probability <= settings.momentum_max_entry

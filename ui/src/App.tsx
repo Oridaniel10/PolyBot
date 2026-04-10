@@ -29,8 +29,27 @@ type PortfolioResp = {
   error: string | null;
 };
 
+type TradeRow = {
+  timestamp: string;
+  local_hhmm?: string;
+  action: string;
+  market_id: string;
+  market_title?: string;
+  city: string;
+  price: string;
+  shares: string;
+  usd: string;
+  reason: string;
+  entry_price: string;
+  pnl_usd: string;
+  cash_after: string;
+  positions_mtm: string;
+  total_value: string;
+};
+
 type WeatherResp = {
   target_day_label: string;
+  secondary_target_day_label?: string | null;
   markets: { id: string; question: string; lastTradePrice?: unknown; probability?: unknown }[];
   error?: string | null;
   total_matched?: number;
@@ -128,6 +147,8 @@ export default function App() {
   const [coreLoading, setCoreLoading] = useState(true);
   const [weatherLoading, setWeatherLoading] = useState(true);
 
+  const [trades, setTrades] = useState<TradeRow[]>([]);
+
   const [blMid, setBlMid] = useState("");
   const [form, setForm] = useState<FormState>(defaultForm);
 
@@ -135,10 +156,11 @@ export default function App() {
     setErr(null);
     setCoreLoading(true);
     try {
-      const [pnlRes, posRes, cfgRes] = await Promise.all([
+      const [pnlRes, posRes, cfgRes, tradesRes] = await Promise.all([
         api("/api/pnl/summary"),
         api("/api/portfolio/positions"),
         api("/api/runtime-config"),
+        api("/api/trades/today"),
       ]);
       if (!pnlRes.ok) throw new Error(`PnL: ${await pnlRes.text()}`);
       if (!posRes.ok) throw new Error(`Positions: ${await posRes.text()}`);
@@ -146,9 +168,11 @@ export default function App() {
       const pnlJ = (await pnlRes.json()) as PnlSummary;
       const posJ = (await posRes.json()) as PortfolioResp;
       const cfgJ = (await cfgRes.json()) as RuntimeResp;
+      const tradesJ = tradesRes.ok ? ((await tradesRes.json()) as TradeRow[]) : [];
       setPnl(pnlJ);
       setPositions(posJ);
       setCfg(cfgJ);
+      setTrades(tradesJ);
       const rt = cfgJ.runtime as Record<string, unknown>;
       setForm((f) => runtimeToForm(rt, f));
     } catch (e) {
@@ -161,7 +185,7 @@ export default function App() {
   const loadWeather = useCallback(async () => {
     setWeatherLoading(true);
     try {
-      const r = await api("/api/markets/weather-today?limit=25");
+      const r = await api("/api/markets/weather-today?limit=200");
       const j = (await r.json()) as WeatherResp & { detail?: unknown };
       if (!r.ok) {
         const msg =
@@ -334,6 +358,180 @@ export default function App() {
         </button>
       </section>
 
+      <h2>Position bars</h2>
+      <section>
+        {positions?.rows.map((row, i) => {
+          const entry = row.avg_price;
+          const mark = row.cur_price;
+          const profit = mark >= entry;
+          const lo = Math.min(entry, mark);
+          const hi = Math.max(entry, mark);
+          const barLeft = Math.round(lo * 100);
+          const barWidth = Math.max(1, Math.round((hi - lo) * 100));
+          const cityMatch = (row.title || "").match(/in (.+?) (?:be|on)/i);
+          const city = cityMatch ? cityMatch[1] : "";
+          const rowTrades = trades
+            .filter((t) => t.market_id === row.market_id)
+            .slice()
+            .sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+          return (
+            <div key={`bar-${row.market_id ?? i}`} style={{ marginBottom: "0.75rem" }}>
+              <div style={{ fontSize: "0.85rem", marginBottom: 2 }}>
+                <strong>{city || row.title.slice(0, 40)}</strong>
+                <span className="muted" style={{ marginLeft: 8 }}>
+                  entry {(entry * 100).toFixed(0)}% → mark {(mark * 100).toFixed(0)}%
+                  {" · "}
+                  <span className={row.cash_pnl >= 0 ? "pnl-pos" : "pnl-neg"}>
+                    {row.cash_pnl >= 0 ? "+" : ""}${row.cash_pnl.toFixed(2)}
+                  </span>
+                </span>
+              </div>
+              <div
+                style={{
+                  position: "relative",
+                  height: 22,
+                  background: "#1a1a2e",
+                  borderRadius: 4,
+                  overflow: "hidden",
+                }}
+              >
+                <div
+                  style={{
+                    position: "absolute",
+                    left: `${barLeft}%`,
+                    width: `${barWidth}%`,
+                    height: "100%",
+                    background: profit ? "#22c55e44" : "#ef444444",
+                    borderRadius: 2,
+                  }}
+                />
+                <div
+                  style={{
+                    position: "absolute",
+                    left: `${Math.round(entry * 100)}%`,
+                    width: 2,
+                    height: "100%",
+                    background: "#3b82f6",
+                  }}
+                  title={`Entry ${(entry * 100).toFixed(1)}%`}
+                />
+                <div
+                  style={{
+                    position: "absolute",
+                    left: `${Math.round(mark * 100)}%`,
+                    width: 2,
+                    height: "100%",
+                    background: profit ? "#22c55e" : "#ef4444",
+                  }}
+                  title={`Mark ${(mark * 100).toFixed(1)}%`}
+                />
+                {rowTrades.map((t, ti) => {
+                  const px = Math.round(Number(t.price) * 100);
+                  const n = ti + 1;
+                  return (
+                    <div
+                      key={`${t.timestamp}-${t.action}-${n}`}
+                      style={{
+                        position: "absolute",
+                        left: `${px}%`,
+                        top: 0,
+                        fontSize: 10,
+                        fontWeight: "bold",
+                        color: t.action === "BUY" ? "#3b82f6" : "#f59e0b",
+                        transform: "translateX(-50%)",
+                        lineHeight: "22px",
+                      }}
+                      title={`#${n} ${t.action} @ ${t.price} ${t.reason || ""}`}
+                    >
+                      {n}
+                    </div>
+                  );
+                })}
+              </div>
+              <div style={{ fontSize: "0.7rem", display: "flex", justifyContent: "space-between" }}>
+                <span>0%</span>
+                <span>50%</span>
+                <span>100%</span>
+              </div>
+            </div>
+          );
+        })}
+      </section>
+
+      <h2>Today&apos;s trades</h2>
+      <section>
+        {trades.length === 0 ? (
+          <p className="muted">No trades today yet.</p>
+        ) : (
+          <>
+            <div style={{ height: 80, display: "flex", alignItems: "flex-end", gap: 1, marginBottom: "0.75rem" }}>
+              {trades.map((t, i) => {
+                const val = Number(t.total_value) || 0;
+                const allVals = trades.map((r) => Number(r.total_value) || 0);
+                const mn = Math.min(...allVals) * 0.95;
+                const mx = Math.max(...allVals) * 1.02;
+                const pct = mx > mn ? ((val - mn) / (mx - mn)) * 100 : 50;
+                return (
+                  <div
+                    key={i}
+                    style={{
+                      flex: 1,
+                      height: `${Math.max(4, pct)}%`,
+                      background: t.action === "BUY" ? "#3b82f6" : Number(t.pnl_usd) >= 0 ? "#22c55e" : "#ef4444",
+                      borderRadius: 2,
+                      minWidth: 4,
+                    }}
+                    title={`${t.action} ${t.city} $${t.total_value}`}
+                  />
+                );
+              })}
+            </div>
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Time</th>
+                    <th>Local</th>
+                    <th>Action</th>
+                    <th>City</th>
+                    <th>Price</th>
+                    <th>Shares</th>
+                    <th>USD</th>
+                    <th>Reason</th>
+                    <th>PnL</th>
+                    <th>Total</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {trades.map((t, i) => {
+                    const time = t.timestamp.split("T")[1]?.slice(0, 5) || t.timestamp;
+                    const pnl = Number(t.pnl_usd) || 0;
+                    return (
+                      <tr key={i}>
+                        <td className="td-mono">{time}</td>
+                        <td className="td-mono">{t.local_hhmm ?? "—"}</td>
+                        <td style={{ color: t.action === "BUY" ? "#3b82f6" : "#f59e0b", fontWeight: "bold" }}>
+                          {t.action}
+                        </td>
+                        <td>{t.city}</td>
+                        <td>{Number(t.price).toFixed(2)}</td>
+                        <td>{Number(t.shares).toFixed(2)}</td>
+                        <td>${Number(t.usd).toFixed(2)}</td>
+                        <td>{t.reason || "—"}</td>
+                        <td className={pnl >= 0 ? "pnl-pos" : "pnl-neg"}>
+                          {pnl !== 0 ? `${pnl >= 0 ? "+" : ""}$${pnl.toFixed(2)}` : "—"}
+                        </td>
+                        <td>${Number(t.total_value).toFixed(2)}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
+      </section>
+
       <h2>Today&apos;s weather markets (sample)</h2>
       <section>
         <p className="muted">
@@ -346,7 +544,11 @@ export default function App() {
         ) : weather ? (
           <>
             <p className="muted">
-              Day: {weather.target_day_label} · matched {weather.total_matched ?? weather.markets.length} · showing{" "}
+              Days: {weather.target_day_label}
+              {weather.secondary_target_day_label
+                ? ` + ${weather.secondary_target_day_label}`
+                : ""}{" "}
+              · matched {weather.total_matched ?? weather.markets.length} · showing{" "}
               {weather.showing ?? weather.markets.length} · Gamma pages {weather.max_pages_used ?? "—"}
             </p>
             <div className="table-wrap">

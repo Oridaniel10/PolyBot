@@ -1,5 +1,5 @@
 import html
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import requests
 
@@ -18,9 +18,43 @@ class TelegramBot:
         self.token = token
         self.chat_id = chat_id
         self.base_url = f"https://api.telegram.org/bot{token}"
+        self._last_update_id: int = 0
 
     def is_configured(self) -> bool:
         return bool(self.token and self.chat_id)
+
+    def get_updates(self, timeout: int = 1) -> List[Dict[str, Any]]:
+        if not self.is_configured():
+            return []
+        try:
+            resp = requests.get(
+                f"{self.base_url}/getUpdates",
+                params={"offset": self._last_update_id + 1, "timeout": timeout},
+                timeout=timeout + 5,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            updates = data.get("result", [])
+            if updates:
+                self._last_update_id = max(u.get("update_id", 0) for u in updates)
+            return updates
+        except Exception:
+            return []
+
+    def poll_commands(self) -> List[str]:
+        """Poll for new text messages from the configured chat. Returns list of message texts."""
+        updates = self.get_updates(timeout=0)
+        messages: List[str] = []
+        for u in updates:
+            msg = u.get("message") or {}
+            chat = msg.get("chat") or {}
+            chat_id_str = str(chat.get("id") or "")
+            if chat_id_str != str(self.chat_id):
+                continue
+            text = (msg.get("text") or "").strip()
+            if text:
+                messages.append(text)
+        return messages
 
     def send_message(self, text: str, parse_mode: Optional[str] = None) -> Dict[str, Any]:
         if not self.is_configured():

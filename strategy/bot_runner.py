@@ -42,7 +42,7 @@ from strategy.fingerprint import portfolio_snapshot_fingerprint
 from strategy.momentum import prune_old_price_sample_files
 from strategy.loop import run_once
 from strategy.sync_portfolio import sync_state_with_portfolio
-from strategy.time_utils import now_in_report_timezone
+from strategy.time_utils import format_report_local_hhmm, now_in_report_timezone
 from telegram_bot import TelegramBot, tg_escape
 
 
@@ -115,6 +115,8 @@ def run_bot() -> None:
             echo_terminal=True,
             terminal_title="bot started — portfolio snapshot",
             headline_html="🚀 <b>Bot started</b> · synced portfolio snapshot",
+            state=state,
+            blacklist_ids=get_effective_settings().blacklist_market_ids,
         )
     except Exception as err:
         print(term_wrap(TERM_RED, f"[startup portfolio message failed] {err!r}"))
@@ -130,7 +132,15 @@ def run_bot() -> None:
             state = sync_state_with_portfolio(client, state)
             fp = portfolio_snapshot_fingerprint(client)
             prev_fp = str(state.get("last_portfolio_fingerprint") or "")
-            if telegram.is_configured() and prev_fp and fp != prev_fp:
+            tracked_count = len(state.get("active_trades", {}))
+            # only alert on structural change when we actually have
+            # positions — avoids false alerts from stale/empty API reads
+            if (
+                telegram.is_configured()
+                and prev_fp
+                and fp != prev_fp
+                and tracked_count > 0
+            ):
                 threading.Thread(
                     target=send_portfolio_telegram,
                     args=(
@@ -146,12 +156,14 @@ def run_bot() -> None:
                             "<i>positions, share size, avg entry, or cash changed — "
                             "not mark-only</i>"
                         ),
+                        "state": state,
+                        "blacklist_ids": get_effective_settings().blacklist_market_ids,
                     },
                     daemon=True,
                 ).start()
             state = run_once(client, telegram, state)
             if should_send_hourly_summary(state, now):
-                state["last_hourly_summary_slot"] = now.strftime("%Y-%m-%d-%H")
+                state["last_hourly_summary_slot"] = now.strftime("%Y-%m-%d-%H-%M")
                 threading.Thread(
                     target=send_hourly_summary_report,
                     args=(telegram, client, state, now),
@@ -169,7 +181,9 @@ def run_bot() -> None:
             try:
                 if telegram.is_configured():
                     telegram.send_html_chunks(
-                        f"🔴 <b>bot loop error</b>\n<pre>{tg_escape(repr(error))}</pre>"
+                        f"🔴 <b>bot loop error</b>\n"
+                        f"🕐 <code>{tg_escape(format_report_local_hhmm())}</code>\n"
+                        f"<pre>{tg_escape(repr(error))}</pre>"
                     )
             except requests.RequestException:
                 pass
@@ -181,6 +195,30 @@ def run_bot() -> None:
                 write_state(state)
             except Exception as err:
                 print(term_wrap(TERM_RED, f"[persist state failed] {err!r}"))
+        # --- check for Telegram commands ---
+        try:
+            for cmd in telegram.poll_commands():
+                cmd_lower = cmd.lower().strip()
+                if cmd_lower in ("/status", "/report", "status", "report", "דוח"):
+                    _bl = get_effective_settings().blacklist_market_ids
+                    threading.Thread(
+                        target=send_portfolio_telegram,
+                        args=(telegram, client, "on-demand status report"),
+                        kwargs={
+                            "headline_html": "📋 <b>On-demand status report</b>",
+                            "state": state,
+                            "blacklist_ids": _bl,
+                        },
+                        daemon=True,
+                    ).start()
+                elif cmd_lower in ("/help", "help", "עזרה"):
+                    telegram.send_html_chunks(
+                        "📖 <b>Commands:</b>\n"
+                        "<code>/status</code> — portfolio report\n"
+                        "<code>/help</code> — this message"
+                    )
+        except Exception:
+            pass
         interval = get_effective_settings().scan_interval_seconds
         log_sleep_terminal(interval)
         time.sleep(interval)

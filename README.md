@@ -58,6 +58,10 @@ python main_bot.py
 # or: uvicorn main_bot:app --host 0.0.0.0 --port 8080
 ```
 
+### Phone / another network (HTTPS)
+
+`127.0.0.1` only works on your PC. For mobile data or another Wi‑Fi, use **`./start.sh`**: it runs [Cloudflare quick Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-apps/do-more-with-tunnels/trycloudflare/) and prints a **`https://….trycloudflare.com`** URL — open that on your phone (same session as the bot; UI uses relative `/api` paths). Quick tunnels are ephemeral and not for production; for a stable hostname use a [named tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-apps/) on your domain.
+
 ## Run (dashboard + API only — no trading bot)
 
 From repo root:
@@ -70,7 +74,7 @@ python app/dashboard.py
 
 `app/dashboard.py` is the **router** when imported; running it as `__main__` starts uvicorn with the same `/api/*` routes and static files under `/dashboard/`, **without** spawning the bot thread.
 
-- `GET /` — plain health for Cloud Run
+- `GET /` — redirects to `/dashboard/` when `ui/dist` exists; otherwise plain text (health)
 - `GET /api/health` — JSON health
 - `GET /api/pnl/summary` — day / week aggregates from `data/pnl_ledger.jsonl`
 - `GET /api/portfolio/positions` — live open positions + cash (Data API; does not wait on the slow weather scan)

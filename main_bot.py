@@ -24,7 +24,7 @@ from pathlib import Path
 import uvicorn
 from dotenv import load_dotenv
 from fastapi import FastAPI
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 import main as bot_main
@@ -117,9 +117,14 @@ if _UI_DIST.is_dir():
     )
 
 
-@app.get("/", response_class=PlainTextResponse)
-def root() -> str:
-    return "Bot is running"
+@app.get("/")
+def root():
+    # UI is built with vite base=/dashboard/ — root is only plain health if dist missing
+    if _UI_DIST.is_dir():
+        return RedirectResponse(url="/dashboard/", status_code=302)
+    return PlainTextResponse(
+        "Bot is running (no ui/dist — run: cd ui && npm run build)\n"
+    )
 
 
 if __name__ == "__main__":

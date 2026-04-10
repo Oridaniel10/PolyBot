@@ -1,5 +1,6 @@
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import timedelta
 from typing import Any, Dict, List, Optional
 
 from config.constants import TERM_DIM
@@ -31,6 +32,10 @@ def run_once(
     event_cache: Dict[str, List[Dict[str, Any]]] = {}
     now = now_in_report_timezone()
     target_day_label = build_target_day_label(now)
+    prev_day_label = build_target_day_label(now - timedelta(days=1))
+    extra_day_labels = (
+        [prev_day_label] if prev_day_label != target_day_label else []
+    )
     active_trades = state.setdefault("active_trades", {})
 
     # --- parallel pre-fetch: markets scan + flush pending + balance ---
@@ -44,6 +49,7 @@ def run_once(
         fut_markets = pool.submit(
             client.get_highest_temperature_markets,
             target_day_label=target_day_label,
+            extra_target_day_labels=extra_day_labels,
             anchor_ids=anchor_ids,
         )
         fut_flush = pool.submit(client.flush_pending_limit_sells, active_trades)
@@ -54,7 +60,14 @@ def run_once(
         balance = fut_balance.result()
 
     cash = float(balance.get("cash") or 0)
-    print_scan_summary(markets, state, settings, target_day_label, cash)
+    print_scan_summary(
+        markets,
+        state,
+        settings,
+        target_day_label,
+        cash,
+        secondary_day_label=prev_day_label if extra_day_labels else None,
+    )
 
     scanned_market_ids: set[str] = set()
     sample_markets: Dict[str, Dict[str, Any]] = {}
