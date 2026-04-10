@@ -2,9 +2,11 @@ import json
 import math
 import random
 import re
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -27,6 +29,8 @@ HIGHEST_TEMPERATURE_KEYWORDS = (
 )
 LIVE_POSITION_MIN_CUR_PRICE = 1e-6
 LIVE_POSITION_MIN_CURRENT_VALUE_USD = 0.01
+DATA_API_POSITIONS_CACHE_TTL_SEC = 12.0
+CLOB_BALANCE_ALLOWANCE_CACHE_TTL_SEC = 50.0
 CLOB_ORDER_SIDE_BUY = "BUY"
 CLOB_ORDER_SIDE_SELL = "SELL"
 CLOB_RETRY_ATTEMPTS = 6
@@ -40,6 +44,26 @@ HIGHEST_TEMPERATURE_QUERY_PATTERNS = (
     r"^highest temperature in .+\?$",
     r"^will the highest temperature in .+ be .+ on .+\?$",
 )
+
+
+def title_matches_highest_temp_target_day(
+    title_lower: str, target_day_label: str
+) -> bool:
+    """
+    gamma often uses 'on april 10?' but many markets use 'on april 10, 2026?'.
+    require month+day with a word boundary so 'april 1' does not match 'april 10'.
+    """
+    label = (target_day_label or "").strip().lower()
+    if not label:
+        return True
+    parts = label.split()
+    if len(parts) < 2 or not parts[-1].isdigit():
+        return f" on {label}?" in title_lower
+    day = parts[-1]
+    month = " ".join(parts[:-1])
+    return bool(re.search(rf" on {re.escape(month)} {re.escape(day)}\b", title_lower))
+
+
 TEMPERATURE_PATTERNS = (
     r"\bdaily temperature\b",
     r"\btemperature\b",
@@ -69,13 +93,41 @@ def condition_id_variants(condition_id: str) -> List[str]:
     return variants
 
 
+def condition_ids_equivalent(a: str, b: str) -> bool:
+    va = set(condition_id_variants(a))
+    vb = set(condition_id_variants(b))
+    return bool(va & vb)
+
+
+def gamma_market_condition_id(market: Dict[str, Any]) -> str:
+    raw = (
+        market.get("conditionId")
+        or market.get("condition_id")
+        or market.get("questionID")
+        or market.get("questionId")
+        or ""
+    )
+    return str(raw).strip()
+
+
+def gamma_market_matches_condition(market: Dict[str, Any], condition_id: str) -> bool:
+    if not condition_id or not isinstance(market, dict):
+        return False
+    gc = gamma_market_condition_id(market)
+    if not gc:
+        return False
+    return condition_ids_equivalent(gc, condition_id)
+
+
 def is_book_live_position(row: Dict[str, Any]) -> bool:
     size = float(row.get("size") or 0)
     if size < 1e-9:
         return False
     cur = float(row.get("curPrice") or 0)
     val = float(row.get("currentValue") or 0)
-    return cur > LIVE_POSITION_MIN_CUR_PRICE or val > LIVE_POSITION_MIN_CURRENT_VALUE_USD
+    return (
+        cur > LIVE_POSITION_MIN_CUR_PRICE or val > LIVE_POSITION_MIN_CURRENT_VALUE_USD
+    )
 
 
 def parse_clob_token_ids(market: Dict[str, Any]) -> List[str]:
@@ -166,7 +218,9 @@ def midpoint_price_from_clob(clob: Any, token_id: str) -> float:
     return 0.0
 
 
-def clob_sell_price_hint(clob: Any, token_id: str, book: Any, reference_price: float) -> float:
+def clob_sell_price_hint(
+    clob: Any, token_id: str, book: Any, reference_price: float
+) -> float:
     candidates: List[float] = []
     if book and getattr(book, "bids", None):
         try:
@@ -297,6 +351,20 @@ class PolymarketClient:
         self.trading_address = config.proxy_address or self.wallet_address
         self._condition_market_cache: Dict[str, str] = {}
         self._slug_market_cache: Dict[str, str] = {}
+        self._temp_id_range: Optional[tuple] = None
+        self._temp_id_range_lock = threading.Lock()
+        self._data_positions_cache_monotonic: float = 0.0
+        self._data_positions_cache_rows: List[Dict[str, Any]] = []
+        self._balance_allowance_monotonic: float = 0.0
+        self._balance_allowance_cash_usd: float = 0.0
+        self._balance_allowance_extras: Dict[str, Any] = {}
+
+    def invalidate_data_positions_cache(self) -> None:
+        self._data_positions_cache_monotonic = 0.0
+        self._data_positions_cache_rows = []
+
+    def invalidate_balance_allowance_cache(self) -> None:
+        self._balance_allowance_monotonic = 0.0
 
     def resolve_clob_signature_type(self) -> Optional[int]:
         if self.config.clob_signature_type is not None:
@@ -353,35 +421,110 @@ class PolymarketClient:
                 return market_id
         return None
 
-    def resolve_market_id_from_condition(self, condition_id: str) -> Optional[str]:
-        if not condition_id:
+    def get_market_by_id(self, market_id: str) -> Optional[Dict[str, Any]]:
+        mid = str(market_id).strip()
+        if not mid:
             return None
-        cached = self._condition_market_cache.get(condition_id)
-        if cached:
-            return cached
-        url = f"{self.config.gamma_base_url.rstrip('/')}/markets"
-        for variant in condition_id_variants(condition_id):
-            try:
-                payload = self._request(
-                    "GET",
-                    url,
-                    params={"condition_ids": variant},
-                    with_auth=False,
-                )
-            except requests.RequestException:
-                continue
-            if isinstance(payload, list) and payload:
-                market_id = str(payload[0].get("id") or "")
-                if market_id:
-                    self._condition_market_cache[condition_id] = market_id
-                    self._condition_market_cache[variant] = market_id
-                    return market_id
+        base = f"{self.config.gamma_base_url.rstrip('/')}/markets"
+        try:
+            payload = self._request("GET", f"{base}/{mid}", with_auth=False)
+        except requests.RequestException:
+            payload = None
+        if isinstance(payload, dict) and str(payload.get("id") or "") == mid:
+            return payload
+        try:
+            lst = self._request("GET", base, params={"id": mid}, with_auth=False)
+        except requests.RequestException:
+            return None
+        if isinstance(lst, list) and lst:
+            first = lst[0]
+            if str(first.get("id") or "") == mid:
+                return first
         return None
 
-    def get_data_api_positions(self) -> List[Dict[str, Any]]:
+    def get_markets_for_event_id(self, event_id: str) -> List[Dict[str, Any]]:
+        """
+        sibling markets under the same Gamma event.
+
+        uses /events/{id} which reliably embeds the correct market list.
+        /markets?event_id=X is unreliable — Gamma silently ignores unknown
+        params and returns unrelated popular markets instead.
+        """
+        eid = str(event_id or "").strip()
+        if not eid:
+            return []
+        root = self.config.gamma_base_url.rstrip("/")
+        try:
+            ev = self._request("GET", f"{root}/events/{eid}", with_auth=False)
+        except requests.RequestException:
+            ev = None
+        if isinstance(ev, dict):
+            mk = ev.get("markets")
+            if isinstance(mk, list):
+                return [m for m in mk if isinstance(m, dict)]
+        return []
+
+    def get_market_by_condition_id(self, condition_id: str) -> Optional[Dict[str, Any]]:
+        """
+        loads a gamma market dict by condition id (tries common query param names).
+
+        validates condition id on the returned object — gamma may ignore bad params
+        and return an unrelated list; taking [0] would sell the wrong token.
+        """
+        if not condition_id:
+            return None
+        root = condition_id.strip()
+        cached_mid = self._condition_market_cache.get(root)
+        if isinstance(cached_mid, str) and cached_mid:
+            got = self.get_market_by_id(cached_mid)
+            if got and gamma_market_matches_condition(got, condition_id):
+                return got
+            for v in condition_id_variants(condition_id):
+                self._condition_market_cache.pop(v, None)
+        url = f"{self.config.gamma_base_url.rstrip('/')}/markets"
+        for variant in condition_id_variants(condition_id):
+            for param_key in ("condition_ids", "conditionId"):
+                try:
+                    payload = self._request(
+                        "GET",
+                        url,
+                        params={param_key: variant},
+                        with_auth=False,
+                    )
+                except requests.RequestException:
+                    continue
+                if not isinstance(payload, list) or not payload:
+                    continue
+                for m in payload:
+                    if not isinstance(m, dict):
+                        continue
+                    if not gamma_market_matches_condition(m, condition_id):
+                        continue
+                    mid = str(m.get("id") or "")
+                    if mid:
+                        for v in condition_id_variants(condition_id):
+                            self._condition_market_cache[v] = mid
+                        return m
+        return None
+
+    def resolve_market_id_from_condition(self, condition_id: str) -> Optional[str]:
+        m = self.get_market_by_condition_id(condition_id)
+        return str(m.get("id") or "") if m else None
+
+    def get_data_api_positions(
+        self, *, force_refresh: bool = False
+    ) -> List[Dict[str, Any]]:
         user = (self.trading_address or self.wallet_address or "").strip()
         if not user:
             return []
+        now = time.monotonic()
+        if (
+            not force_refresh
+            and self._data_positions_cache_rows
+            and (now - self._data_positions_cache_monotonic)
+            < DATA_API_POSITIONS_CACHE_TTL_SEC
+        ):
+            return self._data_positions_cache_rows
         url = f"{DATA_API_BASE_URL.rstrip('/')}/positions"
         try:
             response = self.session.get(
@@ -391,7 +534,10 @@ class PolymarketClient:
             data = response.json()
         except (requests.RequestException, ValueError):
             return []
-        return data if isinstance(data, list) else []
+        rows = data if isinstance(data, list) else []
+        self._data_positions_cache_rows = rows
+        self._data_positions_cache_monotonic = time.monotonic()
+        return rows
 
     def _auth_headers(self) -> Dict[str, str]:
         headers = {
@@ -466,34 +612,123 @@ class PolymarketClient:
                 seen_market_ids.add(market_id)
         return filtered_markets
 
+    def _is_highest_temp_market(
+        self, market: Dict[str, Any], target_day_label: Optional[str]
+    ) -> bool:
+        title = (market.get("question") or market.get("title") or "").strip().lower()
+        if "highest temperature" not in title:
+            return False
+        if not any(re.match(p, title) for p in HIGHEST_TEMPERATURE_QUERY_PATTERNS):
+            return False
+        if target_day_label and not title_matches_highest_temp_target_day(
+            title, target_day_label
+        ):
+            return False
+        return True
+
+    def _discover_temp_id_range(
+        self, anchor_ids: List[int], target_day_label: Optional[str]
+    ) -> tuple:
+        """Find the range of Gamma market IDs that contain temperature markets."""
+        if anchor_ids:
+            lo = min(anchor_ids) - 300
+            hi = max(anchor_ids) + 300
+            return (lo, hi)
+        # No anchors: scan Gamma pages starting from high offsets
+        for start_offset in range(30000, 80000, 5000):
+            try:
+                markets = self.get_markets(
+                    limit=1000,
+                    max_pages=1,
+                    active_only=True,
+                    extra_params={"offset": start_offset},
+                )
+                for m in markets:
+                    if self._is_highest_temp_market(m, target_day_label):
+                        mid = int(m.get("id") or 0)
+                        if mid > 0:
+                            return (mid - 300, mid + 600)
+            except Exception:
+                continue
+        return (0, 0)
+
     def get_highest_temperature_markets(
-        self, *, target_day_label: Optional[str] = None
+        self,
+        *,
+        target_day_label: Optional[str] = None,
+        max_pages: int = 80,
+        anchor_ids: Optional[List[int]] = None,
     ) -> List[Dict[str, Any]]:
-        markets = self.get_markets(limit=1000, max_pages=80, active_only=True)
+        # --- step 1: determine the ID range to scan ---
+        with self._temp_id_range_lock:
+            id_range = self._temp_id_range
+
+        if id_range is None or id_range == (0, 0):
+            anchors = anchor_ids or []
+            id_range = self._discover_temp_id_range(anchors, target_day_label)
+            with self._temp_id_range_lock:
+                self._temp_id_range = id_range
+
+        lo, hi = id_range
+        if lo == 0 and hi == 0:
+            return []
+
+        # --- step 2: fetch individual markets by ID (parallel, throttled) ---
+        root = self.config.gamma_base_url.rstrip("/")
         highest_markets: List[Dict[str, Any]] = []
-        seen_market_ids = set()
+        seen: Set[str] = set()
+        lock = threading.Lock()
 
-        for market in markets:
-            market_id = str(market.get("id") or "")
-            if not market_id or market_id in seen_market_ids:
-                continue
+        def fetch_one(mid: int) -> Optional[Dict[str, Any]]:
+            try:
+                resp = self.session.get(
+                    f"{root}/markets/{mid}",
+                    headers={"Accept": "application/json"},
+                    timeout=REQUEST_TIMEOUT_SECONDS,
+                )
+                if resp.status_code == 404:
+                    return None
+                if resp.status_code in RETRY_STATUS_CODES:
+                    time.sleep(1.0)
+                    resp = self.session.get(
+                        f"{root}/markets/{mid}",
+                        headers={"Accept": "application/json"},
+                        timeout=REQUEST_TIMEOUT_SECONDS,
+                    )
+                if resp.status_code != 200:
+                    return None
+                m = resp.json()
+                if not isinstance(m, dict):
+                    return None
+                if not m.get("active"):
+                    return None
+                if self._is_highest_temp_market(m, target_day_label):
+                    return m
+                return None
+            except Exception:
+                return None
 
-            title = (
-                (market.get("question") or market.get("title") or "").strip().lower()
-            )
-            description = (market.get("description") or "").lower()
-            text = f"{title} {description}"
-            title_matches_query = any(
-                re.match(pattern, title)
-                for pattern in HIGHEST_TEMPERATURE_QUERY_PATTERNS
-            )
-            if target_day_label and f" on {target_day_label.lower()}?" not in title:
-                continue
-            if title_matches_query and any(
-                keyword in text for keyword in HIGHEST_TEMPERATURE_KEYWORDS
-            ):
-                highest_markets.append(market)
-                seen_market_ids.add(market_id)
+        ids_to_scan = list(range(lo, hi + 1))
+        # 5 workers → ~50 req/s → 250 req/10s (under 300 limit)
+        with ThreadPoolExecutor(max_workers=5) as pool:
+            futures = {pool.submit(fetch_one, mid): mid for mid in ids_to_scan}
+            for fut in as_completed(futures):
+                m = fut.result()
+                if m is None:
+                    continue
+                mid_str = str(m.get("id") or "")
+                with lock:
+                    if mid_str and mid_str not in seen:
+                        seen.add(mid_str)
+                        highest_markets.append(m)
+
+        # --- step 3: tighten cached range to actual found IDs + padding ---
+        found_ids = [
+            int(m["id"]) for m in highest_markets if str(m.get("id", "")).isdigit()
+        ]
+        if found_ids:
+            with self._temp_id_range_lock:
+                self._temp_id_range = (min(found_ids) - 20, max(found_ids) + 20)
 
         return highest_markets
 
@@ -656,7 +891,9 @@ class PolymarketClient:
                 continue
         return []
 
-    def get_portfolio_balance(self) -> Dict[str, Any]:
+    def get_portfolio_balance(
+        self, *, force_allowance_refresh: bool = False
+    ) -> Dict[str, Any]:
         positions_value = self.compute_positions_market_value_usd()
         if not self.has_private_auth():
             return {
@@ -665,6 +902,21 @@ class PolymarketClient:
                 "total_value": positions_value,
                 "auth_warning": "missing_api_secret_or_passphrase",
             }
+        now = time.monotonic()
+        allowance_fresh = (
+            force_allowance_refresh
+            or (now - self._balance_allowance_monotonic)
+            >= CLOB_BALANCE_ALLOWANCE_CACHE_TTL_SEC
+        )
+        if not allowance_fresh and self._balance_allowance_extras:
+            cash_usd = self._balance_allowance_cash_usd
+            total = cash_usd + positions_value
+            out = dict(self._balance_allowance_extras)
+            out["cash"] = cash_usd
+            out["positions_market_value"] = positions_value
+            out["total_value"] = total
+            out["balance_allowance_cached"] = True
+            return out
         try:
             from py_clob_client.clob_types import AssetType, BalanceAllowanceParams
 
@@ -675,6 +927,13 @@ class PolymarketClient:
             if isinstance(payload, dict):
                 raw_balance = int(payload.get("balance") or 0)
                 cash_usd = raw_balance / 1_000_000.0
+                self._balance_allowance_monotonic = time.monotonic()
+                self._balance_allowance_cash_usd = cash_usd
+                self._balance_allowance_extras = {
+                    "raw_balance": str(raw_balance),
+                    "allowances": payload.get("allowances"),
+                    "source": "py_clob_client",
+                }
                 total = cash_usd + positions_value
                 return {
                     "cash": cash_usd,
@@ -750,7 +1009,7 @@ class PolymarketClient:
                     rs = self.resolve_market_id_from_slug(slug)
                     if rs:
                         row_mid = rs
-            if row_mid == mid:
+            if row_mid == mid or (cid and condition_ids_equivalent(mid, cid)):
                 total += size
         return total
 
@@ -779,10 +1038,41 @@ class PolymarketClient:
                 continue
             if order_fully_filled(info):
                 active_trades.pop(market_id, None)
+                self.invalidate_data_positions_cache()
+                self.invalidate_balance_allowance_cache()
                 continue
             if order_terminal_cancelled(info):
                 trade.pop("pending_limit_sell_order_id", None)
                 trade.pop("pending_limit_sell_price", None)
+
+    def get_clob_yes_price(self, market: Dict[str, Any]) -> float:
+        """Get the real best-ask price for a YES token.
+        Uses Gamma bestAsk first (no API call), CLOB orderbook as fallback."""
+        # Gamma already provides bestAsk on the market object
+        best_ask = market.get("bestAsk")
+        if best_ask is not None:
+            try:
+                val = float(best_ask)
+                if 0 < val <= 1:
+                    return val
+            except (TypeError, ValueError):
+                pass
+        # fallback: hit CLOB orderbook directly
+        try:
+            token_id = yes_token_id_from_market(market)
+        except (ValueError, KeyError):
+            return 0.0
+        clob = self.make_clob_client()
+        try:
+            book = clob.get_order_book(token_id)
+            if book and getattr(book, "asks", None):
+                return float(book.asks[0].price)
+        except Exception:
+            pass
+        mid = midpoint_price_from_clob(clob, token_id)
+        if mid > 0:
+            return mid
+        return 0.0
 
     def place_market_buy_yes(
         self, market: Dict[str, Any], usd_amount: float
@@ -812,7 +1102,10 @@ class PolymarketClient:
                     return exec_buy
 
                 posted = clob_retry_transient(make_buy_exec(order_type))
-                return posted if isinstance(posted, dict) else {"raw": posted}
+                out = posted if isinstance(posted, dict) else {"raw": posted}
+                self.invalidate_data_positions_cache()
+                self.invalidate_balance_allowance_cache()
+                return out
             except Exception as err:
                 errors.append(f"{order_type}:{err!r}")
                 continue
@@ -882,6 +1175,8 @@ class PolymarketClient:
                 out["sell_attempt_summary"] = format_sell_attempt_summary(
                     market, share_size, ref, min_sz, None, "filled via market order"
                 )
+                self.invalidate_data_positions_cache()
+                self.invalidate_balance_allowance_cache()
                 return out
             except Exception as err:
                 errors.append(f"auto_{order_type}:{err!r}")
@@ -949,6 +1244,8 @@ class PolymarketClient:
                 limit_px,
                 "posted as GTC limit (no immediate book match for market order)",
             )
+            self.invalidate_data_positions_cache()
+            self.invalidate_balance_allowance_cache()
             return out
         except Exception as err:
             errors.append(f"limit_gtc:{err!r}")
@@ -967,3 +1264,19 @@ class PolymarketClient:
         }
         endpoint = f"{self.config.clob_base_url.rstrip('/')}/claim"
         return self._request("POST", endpoint, json_body=claim_payload, with_auth=True)
+
+
+def gamma_event_ids_for_market(market: Dict[str, Any]) -> List[str]:
+    out: List[str] = []
+    ev = market.get("events")
+    if isinstance(ev, list):
+        for item in ev:
+            if isinstance(item, dict):
+                rid = str(item.get("id") or "").strip()
+                if rid and rid not in out:
+                    out.append(rid)
+    for key in ("eventId", "event_id"):
+        rid = str(market.get(key) or "").strip()
+        if rid and rid not in out:
+            out.append(rid)
+    return out

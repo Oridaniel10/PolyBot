@@ -1,0 +1,23 @@
+{
+  "buy_min_threshold": 0.55,
+  "buy_max_threshold": 0.7,
+  "stop_loss_threshold": 0.44,
+  "take_profit_threshold": 0.98,
+  "min_lead_over_runner_up": 0.07,
+  "enable_competition_filter": false,
+  "enable_momentum": false,
+  "momentum_window_min": 10,
+  "momentum_rise": 0.25,
+  "momentum_min_price": 0.4,
+  "momentum_max_entry": 0.65,
+  "momentum_peer_drop": 0.1,
+  "churn_max_stop_cycles": 1,
+  "churn_cooldown_sec": 1200,
+  "blacklist_market_ids": [],
+  "scan_interval_seconds": 20,
+  "min_order_notional_usd": 2.0,
+  "max_buy_notional_usd": 5.0,
+  "max_trade_fraction_of_cash": 0.9,
+  "dashboard_weather_max_pages": 6,
+  "cash_reserve_usd": 5.0
+}

@@ -1,8 +1,14 @@
+FROM node:20-alpine AS ui
+WORKDIR /ui
+COPY ui/package.json ./
+RUN npm install
+COPY ui/ ./
+RUN npm run build
+
 FROM python:3.12-slim
 
 WORKDIR /app
 
-# git: required for pip install from git+https:// (py-clob-client)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     git \
@@ -13,8 +19,10 @@ RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir -r requirements.txt
 
 COPY . .
+COPY --from=ui /ui/dist ./ui/dist
 
 ENV PORT=8080
+ENV PYTHONUNBUFFERED=1
 EXPOSE 8080
 
-CMD ["python", "main_bot.py"]
+CMD ["python", "-u", "main_bot.py"]

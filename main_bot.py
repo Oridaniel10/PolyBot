@@ -19,12 +19,20 @@ import sys
 import threading
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import uvicorn
+from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.responses import PlainTextResponse
+from fastapi.staticfiles import StaticFiles
 
 import main as bot_main
+from app.dashboard import dashboard_router
+
+_DOTENV_PATH = Path(__file__).resolve().parent / ".env"
+if _DOTENV_PATH.is_file():
+    load_dotenv(_DOTENV_PATH, override=True)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -35,6 +43,15 @@ logging.basicConfig(
 log = logging.getLogger("main_bot")
 
 BOT_THREAD_RESTART_DELAY_SEC = 60
+
+# runs as soon as the worker imports this module (visible in Cloud Run *application* logs)
+log.info(
+    "main_bot imported pid=%s PORT=%s K_SERVICE=%s",
+    os.getpid(),
+    os.environ.get("PORT", ""),
+    os.environ.get("K_SERVICE", ""),
+)
+print("main_bot: module loaded (stdout)", flush=True)
 
 
 def log_cloud_env_hint() -> None:
@@ -81,11 +98,23 @@ def start_bot_background() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    log.info("FastAPI lifespan: startup — spawning bot thread")
+    print("main_bot: lifespan startup (stdout)", flush=True)
     start_bot_background()
     yield
+    log.info("FastAPI lifespan: shutdown")
 
 
 app = FastAPI(lifespan=lifespan)
+app.include_router(dashboard_router)
+
+_UI_DIST = Path(__file__).resolve().parent / "ui" / "dist"
+if _UI_DIST.is_dir():
+    app.mount(
+        "/dashboard",
+        StaticFiles(directory=str(_UI_DIST), html=True),
+        name="dashboard",
+    )
 
 
 @app.get("/", response_class=PlainTextResponse)
@@ -95,5 +124,12 @@ def root() -> str:
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "8080"))
-    log.info("listening on 0.0.0.0:%s (set PORT on Cloud Run)", port)
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    log.info("uvicorn starting host=0.0.0.0 port=%s", port)
+    print(f"main_bot: uvicorn bind 0.0.0.0:{port} (stdout)", flush=True)
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=port,
+        log_level="info",
+        access_log=True,
+    )

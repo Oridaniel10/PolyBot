@@ -1,0 +1,13 @@
+---
+description: Polymarket bot — layout, no DB, rate limits
+globs: "*.py,ui/**/*"
+alwaysApply: false
+---
+
+# Polymarket bot
+
+- Keep the **strategy anchor**: `strategy/trades.py` + `strategy/loop.py` orchestration; do not duplicate buy/sell logic in `main.py` (entry is thin).
+- **Config:** `config/constants.py` defaults; runtime overrides in `data/runtime_config.json`. Bot reads merged settings each tick via `get_effective_settings()`. Buy sizing uses **tradable cash** = free cash minus `cash_reserve_usd` (default `CASH_RESERVE_USD`).
+- **Persistence:** no SQL — `state.json`, `data/*.json`, `data/*.jsonl` only.
+- **API:** extend `app/dashboard.py` under `/api`; dashboard static at `/dashboard/` from `ui/dist`.
+- **External APIs:** stay within **POLY_RATE_LIMITS.MD**; avoid extra Gamma pagination unless necessary; document new polling.

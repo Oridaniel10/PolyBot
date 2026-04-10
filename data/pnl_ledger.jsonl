@@ -1,0 +1,13 @@
+{"ts_iso":"2026-04-09T20:15:29.859814+03:00","side":"sell","market_id":"1871688","reason":"stop-loss","shares":5.3508,"entry":0.6499,"mark":0.439,"est_pnl_usd":-1.1285}
+{"ts_iso":"2026-04-10T11:47:07.062198+03:00","side":"buy","market_id":"1886436","usd":5.0,"yes_price":0.61,"shares_est":8.196721}
+{"ts_iso":"2026-04-10T11:47:08.766343+03:00","side":"buy","market_id":"1886503","usd":5.0,"yes_price":0.6,"shares_est":8.333333}
+{"ts_iso":"2026-04-10T11:49:54.045200+03:00","side":"sell","market_id":"1886436","reason":"stop-loss","shares":10.234693,"entry":0.475728,"mark":0.27,"est_pnl_usd":-2.1056}
+{"ts_iso":"2026-04-10T11:50:13.839283+03:00","side":"sell","market_id":"1886503","reason":"take-profit","shares":5.01425,"entry":0.997,"mark":0.994,"est_pnl_usd":-0.015}
+{"ts_iso":"2026-04-10T11:52:36.229352+03:00","side":"buy","market_id":"1886436","usd":5.0,"yes_price":0.61,"shares_est":8.196721}
+{"ts_iso":"2026-04-10T12:22:25.531185+03:00","side":"sell","market_id":"1886437","reason":"stop-loss","shares":11.433335,"entry":0.6,"mark":0.18,"est_pnl_usd":-4.802}
+{"ts_iso":"2026-04-10T12:22:27.529877+03:00","side":"buy","market_id":"1886503","usd":3.1277,"yes_price":0.6,"shares_est":5.212898}
+{"ts_iso":"2026-04-10T12:22:44.431519+03:00","side":"sell","market_id":"1886514","reason":"stop-loss","shares":8.49921,"entry":0.669999,"mark":0.43,"est_pnl_usd":-2.0398}
+{"ts_iso":"2026-04-10T12:55:27.912196+03:00","side":"buy","market_id":"1886514","usd":5.0,"yes_price":0.59,"shares_est":8.474576}
+{"ts_iso":"2026-04-10T12:58:23.895271+03:00","side":"sell","market_id":"1886411","reason":"take-profit","shares":8.560871,"entry":0.689999,"mark":0.9665,"est_pnl_usd":2.3671}
+{"ts_iso":"2026-04-10T12:59:08.593428+03:00","side":"buy","market_id":"1886533","usd":5.0,"yes_price":0.62,"shares_est":8.064516}
+{"ts_iso":"2026-04-10T12:59:40.117158+03:00","side":"buy","market_id":"1886394","usd":5.0,"yes_price":0.65,"shares_est":7.692308}

@@ -9,3 +9,4 @@ __pycache__
 .pytest_cache
 .cursor
 .idea
+ui/node_modules

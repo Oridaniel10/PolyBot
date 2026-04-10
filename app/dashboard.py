@@ -1,0 +1,295 @@
+import sys
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+if __name__ == "__main__":
+    _repo_root = Path(__file__).resolve().parent.parent
+    if str(_repo_root) not in sys.path:
+        sys.path.insert(0, str(_repo_root))
+
+from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel, Field
+
+from config import constants as C
+from config.settings import (
+    default_runtime_dict,
+    get_effective_settings,
+    load_blacklist_day_ids,
+    load_runtime_config_file,
+    save_blacklist_day_file,
+    save_runtime_config_file,
+)
+from notifications.dashboard_notify import notify_dashboard_change
+from polymarket_client import PolymarketClient, condition_ids_equivalent
+from state.pnl_ledger import pnl_summary_day_week
+from state.store import read_state
+from strategy.bot_runner import build_config
+from strategy.time_utils import build_target_day_label, now_in_report_timezone
+
+dashboard_router = APIRouter(prefix="/api", tags=["dashboard"])
+
+
+class RuntimeConfigUpdate(BaseModel):
+    buy_min_threshold: Optional[float] = Field(None, ge=0.01, le=0.99)
+    buy_max_threshold: Optional[float] = Field(None, ge=0.01, le=0.99)
+    stop_loss_threshold: Optional[float] = Field(None, ge=0.01, le=0.99)
+    take_profit_threshold: Optional[float] = Field(None, ge=0.01, le=0.99)
+    min_lead_over_runner_up: Optional[float] = Field(None, ge=0.0, le=0.95)
+    enable_competition_filter: Optional[bool] = None
+    enable_momentum: Optional[bool] = None
+    momentum_window_min: Optional[int] = Field(None, ge=1, le=1440)
+    momentum_rise: Optional[float] = Field(None, ge=0.0, le=5.0)
+    momentum_min_price: Optional[float] = Field(None, ge=0.01, le=0.99)
+    momentum_max_entry: Optional[float] = Field(None, ge=0.01, le=0.99)
+    momentum_peer_drop: Optional[float] = Field(None, ge=0.0, le=1.0)
+    churn_max_stop_cycles: Optional[int] = Field(None, ge=1, le=20)
+    churn_cooldown_sec: Optional[int] = Field(None, ge=60, le=86400)
+    blacklist_market_ids: Optional[List[str]] = None
+    scan_interval_seconds: Optional[int] = Field(None, ge=5, le=600)
+    min_order_notional_usd: Optional[float] = Field(None, ge=0.0, le=1_000_000)
+    max_buy_notional_usd: Optional[float] = Field(None, ge=0.0, le=1_000_000)
+    max_trade_fraction_of_cash: Optional[float] = Field(None, ge=0.0, le=1.0)
+    dashboard_weather_max_pages: Optional[int] = Field(None, ge=1, le=80)
+    cash_reserve_usd: Optional[float] = Field(None, ge=0.0, le=1_000_000)
+
+
+class BlacklistToggle(BaseModel):
+    market_id: str = Field(..., min_length=1)
+    enabled: bool = True
+
+
+@dashboard_router.get("/pnl/summary")
+def api_pnl_summary() -> Dict[str, Any]:
+    return pnl_summary_day_week()
+
+
+@dashboard_router.get("/portfolio/positions")
+def api_portfolio_positions() -> Dict[str, Any]:
+    out: Dict[str, Any] = {
+        "cash_usd": 0.0,
+        "positions_mtm_usd": 0.0,
+        "total_usd": 0.0,
+        "rows": [],
+        "error": None,
+    }
+    try:
+        client = PolymarketClient(build_config())
+        bal = client.get_portfolio_balance(force_allowance_refresh=False)
+        out["cash_usd"] = round(float(bal.get("cash") or 0), 2)
+        out["positions_mtm_usd"] = round(
+            float(bal.get("positions_market_value") or 0), 2
+        )
+        out["total_usd"] = round(float(bal.get("total_value") or 0), 2)
+        positions = client.get_open_positions()
+        tracked = read_state().get("active_trades", {})
+        rows: List[Dict[str, Any]] = []
+        for p in positions:
+            mid = str(p.get("market_id") or p.get("marketId") or "").strip()
+            cid = str(p.get("condition_id") or "").strip()
+            bot_tracked = bool(mid and mid in tracked)
+            if not bot_tracked and cid:
+                for tv in tracked.values():
+                    tc = str(tv.get("condition_id") or "")
+                    if tc and condition_ids_equivalent(tc, cid):
+                        bot_tracked = True
+                        break
+            sz = float(p.get("size") or 0)
+            cur = float(p.get("cur_price") or 0)
+            avg = float(p.get("avg_price") or 0)
+            cv = float(p.get("current_value") or 0)
+            val = cv if cv > 1e-6 else cur * sz
+            rows.append(
+                {
+                    "market_id": mid or None,
+                    "condition_id": cid or None,
+                    "title": str(p.get("title") or ""),
+                    "outcome": str(p.get("outcome") or ""),
+                    "shares": round(sz, 6),
+                    "avg_price": round(avg, 6),
+                    "cur_price": round(cur, 6),
+                    "cash_pnl": round(float(p.get("cash_pnl") or 0), 2),
+                    "value_usd": round(val, 2),
+                    "bot_tracked": bot_tracked,
+                }
+            )
+        out["rows"] = rows
+    except Exception as exc:
+        out["error"] = repr(exc)
+    return out
+
+
+@dashboard_router.get("/runtime-config")
+def api_get_runtime_config() -> Dict[str, Any]:
+    base = default_runtime_dict()
+    merged = load_runtime_config_file()
+    eff = get_effective_settings()
+    return {
+        "runtime": {**base, **{k: merged[k] for k in base if k in merged}},
+        "blacklist_day_ids": sorted(load_blacklist_day_ids()),
+        "effective_blacklist": sorted(eff.blacklist_market_ids),
+    }
+
+
+@dashboard_router.post("/runtime-config")
+def api_post_runtime_config(body: RuntimeConfigUpdate) -> Dict[str, Any]:
+    cur = load_runtime_config_file()
+    patch = {k: v for k, v in body.model_dump(exclude_none=True).items()}
+    if "buy_min_threshold" in patch and "buy_max_threshold" in patch:
+        if patch["buy_min_threshold"] > patch["buy_max_threshold"]:
+            patch["buy_min_threshold"], patch["buy_max_threshold"] = (
+                patch["buy_max_threshold"],
+                patch["buy_min_threshold"],
+            )
+    min_n = patch.get("min_order_notional_usd")
+    max_b = patch.get("max_buy_notional_usd")
+    if min_n is not None and max_b is not None and min_n > max_b:
+        raise HTTPException(
+            status_code=400,
+            detail="min_order_notional_usd cannot exceed max_buy_notional_usd",
+        )
+    changed_lines: List[str] = []
+    for key, new_value in patch.items():
+        old_value = cur.get(key)
+        if old_value != new_value:
+            changed_lines.append(f"✅ {key}: {old_value!r} -> {new_value!r}")
+    cur.update(patch)
+    save_runtime_config_file(cur)
+    if changed_lines:
+        notify_dashboard_change("Runtime config updated (dashboard)", changed_lines)
+    return {"ok": True, "runtime": load_runtime_config_file()}
+
+
+@dashboard_router.post("/runtime-config/reset")
+def api_reset_runtime_config() -> Dict[str, Any]:
+    defaults = default_runtime_dict()
+    cur = load_runtime_config_file()
+    changed_lines: List[str] = []
+    for key in defaults:
+        old_value = cur.get(key)
+        new_value = defaults[key]
+        if old_value != new_value:
+            changed_lines.append(f"🔄 {key}: {old_value!r} -> {new_value!r}")
+    save_runtime_config_file(defaults)
+    if changed_lines:
+        notify_dashboard_change("Runtime config RESET to defaults (dashboard)", changed_lines)
+    return {"ok": True, "runtime": load_runtime_config_file(), "changes": len(changed_lines)}
+
+
+@dashboard_router.post("/blacklist/toggle")
+def api_blacklist_toggle(body: BlacklistToggle) -> Dict[str, Any]:
+    mid = body.market_id.strip()
+    ids = set(load_blacklist_day_ids())
+    if body.enabled:
+        ids.add(mid)
+    else:
+        ids.discard(mid)
+    save_blacklist_day_file(sorted(ids))
+    notify_dashboard_change(
+        "Blacklist updated (dashboard)",
+        [f"market_id={mid}", f"enabled={body.enabled}", f"today_ids_count={len(ids)}"],
+    )
+    return {"ok": True, "blacklist_day_ids": sorted(ids)}
+
+
+@dashboard_router.get("/markets/weather-today")
+def api_weather_markets_today(
+    limit: int = Query(30, ge=1, le=200),
+    max_pages: Optional[int] = Query(
+        None,
+        ge=1,
+        le=80,
+        description="Gamma pages to scan (default from runtime dashboard_weather_max_pages)",
+    ),
+) -> Dict[str, Any]:
+    now = now_in_report_timezone()
+    label = build_target_day_label(now)
+    eff = get_effective_settings()
+    mp = max_pages if max_pages is not None else eff.dashboard_weather_max_pages
+    try:
+        client = PolymarketClient(build_config())
+        markets = client.get_highest_temperature_markets(
+            target_day_label=label,
+            max_pages=mp,
+        )
+    except Exception as exc:
+        return {
+            "target_day_label": label,
+            "error": repr(exc),
+            "markets": [],
+            "total_matched": 0,
+            "showing": 0,
+            "max_pages_used": mp,
+        }
+    total = len(markets)
+    markets = markets[:limit]
+    slim: List[Dict[str, Any]] = []
+    for m in markets:
+        slim.append(
+            {
+                "id": str(m.get("id") or ""),
+                "question": m.get("question") or m.get("title") or "",
+                "lastTradePrice": m.get("lastTradePrice"),
+                "probability": m.get("probability"),
+            }
+        )
+    return {
+        "target_day_label": label,
+        "markets": slim,
+        "total_matched": total,
+        "showing": len(slim),
+        "max_pages_used": mp,
+        "error": None,
+    }
+
+
+@dashboard_router.get("/health")
+def api_health() -> Dict[str, str]:
+    return {"status": "ok"}
+
+
+def create_dashboard_app():
+    """
+    FastAPI app: /api/* + static UI at /dashboard/ — without the trading bot thread.
+    """
+    import os
+
+    from dotenv import load_dotenv
+    from fastapi import FastAPI
+    from fastapi.responses import PlainTextResponse
+    from fastapi.staticfiles import StaticFiles
+
+    load_dotenv(C.ENV_FILE, override=True)
+    app = FastAPI(title="Polymarket dashboard (API + UI, no bot)")
+    app.include_router(dashboard_router)
+    if C.UI_DIST_DIR.is_dir():
+        app.mount(
+            "/dashboard",
+            StaticFiles(directory=str(C.UI_DIST_DIR), html=True),
+            name="dashboard",
+        )
+
+    @app.get("/", response_class=PlainTextResponse)
+    def root() -> str:
+        p = os.environ.get("PORT", "8080")
+        return (
+            "Polymarket dashboard server.\n"
+            f"  UI:  http://127.0.0.1:{p}/dashboard/\n"
+            f"  API: http://127.0.0.1:{p}/api/health\n"
+            "Bot + same UI/API: python main_bot.py\n"
+        )
+
+    return app
+
+
+if __name__ == "__main__":
+    import os
+
+    import uvicorn
+
+    _port = int(os.environ.get("PORT", "8080"))
+    print(
+        f"Starting dashboard only (no bot). Open http://127.0.0.1:{_port}/dashboard/\n"
+        f"Build UI first if missing: cd ui && npm install && npm run build\n",
+        flush=True,
+    )
+    uvicorn.run(create_dashboard_app(), host="0.0.0.0", port=_port)
