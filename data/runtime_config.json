@@ -14,9 +14,9 @@
   "churn_max_stop_cycles": 1,
   "churn_cooldown_sec": 1200,
   "blacklist_market_ids": [],
-  "scan_interval_seconds": 20,
+  "scan_interval_seconds": 30,
   "min_order_notional_usd": 2.0,
-  "max_buy_notional_usd": 5.0,
+  "max_buy_notional_usd": 4.0,
   "max_trade_fraction_of_cash": 0.9,
   "dashboard_weather_max_pages": 6,
   "cash_reserve_usd": 10.0

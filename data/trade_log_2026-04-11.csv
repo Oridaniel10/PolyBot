@@ -1,2 +1,25 @@
 timestamp,local_hhmm,action,market_id,market_title,city,price,shares,usd,reason,entry_price,pnl_usd,cash_after,positions_mtm,total_value
 2026-04-11T00:25:10.474138+03:00,00:25,SELL,1886645,Will the highest temperature in Los Angeles be between 66-67°F on April 10?,los angeles,0.965,7.9165,7.64,take-profit,0.5838,3.02,11.83,19.04,30.87
+2026-04-11T00:34:30.378546+03:00,00:34,BUY,1886383,Will the highest temperature in Chicago be between 50-51°F on April 10?,chicago,0.7,7.1429,5.0,,0.7,0.0,18.99,11.26,30.25
+2026-04-11T00:37:55.738337+03:00,00:37,SELL,1886383,Will the highest temperature in Chicago be between 50-51°F on April 10?,chicago,0.2305,10.0843,2.32,stop-loss,0.4829,-2.55,13.99,14.2,28.19
+2026-04-11T00:48:46.211434+03:00,00:48,SELL,1886656,Will the highest temperature in San Francisco be between 64-65°F on April 10?,san francisco,0.445,7.4469,3.31,stop-loss,0.6599,-1.6,15.58,8.61,24.18
+2026-04-11T00:52:45.700915+03:00,00:52,BUY,1886329,Will the highest temperature in Seattle be between 66-67°F on April 10?,seattle,0.699,7.1531,5.0,,0.699,0.0,18.71,6.2,24.9
+2026-04-11T01:01:52.463806+03:00,01:01,SELL,1886359,Will the highest temperature in Atlanta be between 76-77°F on April 10?,atlanta,0.985,9.0462,8.91,take-profit,0.5399,4.03,13.71,13.78,27.49
+2026-04-11T01:31:56.710747+03:00,01:31,SELL,1886329,Will the highest temperature in Seattle be between 66-67°F on April 10?,seattle,0.4365,7.225,3.15,stop-loss,0.6809,-1.77,22.63,3.15,25.79
+2026-04-11T01:32:55.116468+03:00,01:32,SELL,1886329,Will the highest temperature in Seattle be between 66-67°F on April 10?,seattle,0.4365,7.225,3.15,stop-loss,0.6809,-1.77,22.63,3.15,25.79
+2026-04-11T01:33:53.644611+03:00,01:33,SELL,1886329,Will the highest temperature in Seattle be between 66-67°F on April 10?,seattle,0.4365,7.225,3.15,stop-loss,0.6809,-1.77,22.63,3.15,25.79
+2026-04-11T09:39:01.049268+03:00,09:39,BUY,1902098,Will the highest temperature in Busan be 21°C on April 11?,busan,0.68,7.3529,5.0,,0.68,0.0,16.15,6.58,22.73
+2026-04-11T09:39:02.149946+03:00,09:39,BUY,1902141,Will the highest temperature in Kuala Lumpur be 33°C on April 11?,kuala lumpur,0.67,7.4627,5.0,,0.67,0.0,16.15,6.58,22.73
+2026-04-11T09:42:05.292823+03:00,09:42,SELL,1901855,Will the highest temperature in Tel Aviv be 21°C on April 11?,tel aviv,0.48,12.211,5.86,stop-loss,0.4899,-0.12,0.01,22.09,22.1
+2026-04-11T09:49:17.427135+03:00,09:49,SELL,1902098,Will the highest temperature in Busan be 21°C on April 11?,busan,0.405,8.1926,3.32,stop-loss,0.598,-1.58,0.0,19.39,19.39
+2026-04-11T10:29:42.178007+03:00,10:29,SELL,1901949,Will the highest temperature in Chongqing be 20°C on April 11?,chongqing,0.9585,8.789,8.42,take-profit,0.7879,1.5,2.29,18.72,21.02
+2026-04-11T10:46:28.961349+03:00,10:46,SELL,1902067,Will the highest temperature in Moscow be 6°C on April 11?,moscow,0.485,7.697,3.73,stop-loss,0.6999,-1.65,10.57,9.9,20.46
+2026-04-11T10:47:08.512474+03:00,10:47,BUY,1901808,Will the highest temperature in Lucknow be 35°C on April 11?,lucknow,0.64,5.7228,3.66,,0.64,0.0,14.07,6.16,20.23
+2026-04-11T11:13:47.287675+03:00,11:13,SELL,1902141,Will the highest temperature in Kuala Lumpur be 33°C on April 11?,kuala lumpur,0.99,6.6277,6.56,take-profit,0.7447,1.63,10.41,9.67,20.08
+2026-04-11T11:14:29.219356+03:00,11:14,BUY,1901855,Will the highest temperature in Tel Aviv be 21°C on April 11?,tel aviv,0.64,6.25,4.0,,0.64,0.0,16.89,3.11,20.0
+2026-04-11T12:00:06.971911+03:00,12:00,SELL,1901855,Will the highest temperature in Tel Aviv be 21°C on April 11?,tel aviv,0.485,6.6417,3.22,stop-loss,0.5854,-0.67,12.89,7.04,19.93
+2026-04-11T12:04:48.868672+03:00,12:04,BUY,1901930,Will the highest temperature in Warsaw be 11°C on April 11?,warsaw,0.67,5.9701,4.0,,0.67,0.0,16.06,3.85,19.91
+2026-04-11T13:24:29.916022+03:00,13:24,SELL,1901808,Will the highest temperature in Lucknow be 35°C on April 11?,lucknow,0.96,5.702,5.47,take-profit,0.6299,1.88,12.06,9.26,21.32
+2026-04-11T13:25:28.117227+03:00,13:25,SELL,1901808,Will the highest temperature in Lucknow be 35°C on April 11?,lucknow,0.96,5.702,5.47,take-profit,0.6299,1.88,12.06,9.35,21.41
+2026-04-11T13:26:09.552859+03:00,13:26,BUY,1902066,Will the highest temperature in Moscow be 5°C on April 11?,moscow,0.679,5.891,4.0,,0.679,0.0,17.34,3.88,21.22
+2026-04-11T13:50:31.008472+03:00,13:50,BUY,1901855,Will the highest temperature in Tel Aviv be 21°C on April 11?,tel aviv,0.66,4.5597,3.01,,0.66,0.0,13.34,8.37,21.72
