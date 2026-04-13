@@ -25,6 +25,7 @@ from config.settings import (
     get_effective_settings,
     load_runtime_config_file,
 )
+from notifications.forecast_quick_report import build_open_temp_forecast_quick_html
 from notifications.portfolio import (
     send_daily_report,
     send_hourly_summary_report,
@@ -40,6 +41,10 @@ from polymarket_client import PolymarketClient, PolymarketConfig
 from state.store import load_env_file, read_state, write_state
 from strategy.fingerprint import portfolio_snapshot_fingerprint
 from strategy.momentum import prune_old_price_sample_files
+from forecast.digest_runner import (
+    run_forecast_digest_once,
+    start_forecast_digest_background,
+)
 from strategy.loop import run_once
 from strategy.sync_portfolio import sync_state_with_portfolio
 from strategy.time_utils import format_report_local_hhmm, now_in_report_timezone
@@ -126,6 +131,18 @@ def run_bot() -> None:
     except Exception as err:
         print(term_wrap(TERM_RED, f"[startup fingerprint failed] {err!r}"))
 
+    if get_effective_settings().forecast_digest_enabled:
+        try:
+            start_forecast_digest_background(telegram, config)
+            print(
+                term_wrap(
+                    TERM_DIM,
+                    "[forecast] background digest thread started (Telegram every N min)",
+                )
+            )
+        except Exception as err:
+            print(term_wrap(TERM_RED, f"[forecast digest thread failed] {err!r}"))
+
     while True:
         now = now_in_report_timezone()
         try:
@@ -211,10 +228,38 @@ def run_bot() -> None:
                         },
                         daemon=True,
                     ).start()
+                elif cmd_lower in ("/forecast", "/fc", "forecast"):
+                    threading.Thread(
+                        target=lambda: telegram.send_html_chunks(
+                            build_open_temp_forecast_quick_html(client)
+                        ),
+                        daemon=True,
+                    ).start()
+                elif cmd_lower in ("/digest", "/forecast_digest", "digest"):
+                    if telegram.is_configured():
+                        try:
+                            telegram.send_message(
+                                "⏳ Building full forecast digest (all parsable city-days). "
+                                "May take 1–3 minutes; messages will follow in chunks."
+                            )
+                        except Exception:
+                            pass
+
+                    def run_full_digest() -> None:
+                        run_forecast_digest_once(
+                            client,
+                            telegram,
+                            force=True,
+                            send_telegram=True,
+                        )
+
+                    threading.Thread(target=run_full_digest, daemon=True).start()
                 elif cmd_lower in ("/help", "help", "עזרה"):
                     telegram.send_html_chunks(
                         "📖 <b>Commands:</b>\n"
                         "<code>/status</code> — portfolio report\n"
+                        "<code>/forecast</code> — model daily max for open temp positions\n"
+                        "<code>/digest</code> — full forecast digest, all city-days (Telegram, one shot)\n"
                         "<code>/help</code> — this message"
                     )
         except Exception:

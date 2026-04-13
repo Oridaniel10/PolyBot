@@ -5,6 +5,9 @@ from polymarket_client import PolymarketClient
 
 from config.constants import REPORT_HOURS, TIMEZONE
 from config.settings import get_effective_settings
+from forecast.cache_store import load_forecast_cache
+from forecast.parse_title import parse_highest_temp_title
+from notifications.forecast_cache_fmt import portfolio_position_forecast_html
 from notifications.terminal import print_terminal_block
 from strategy.blacklist_display import collect_blacklist_status_rows
 from strategy.city_tz import city_local_time_str
@@ -84,6 +87,12 @@ def build_full_portfolio_html(client: PolymarketClient, title_line_html: str) ->
     if not positions:
         parts.append("<i>(no live positions)</i>")
         return "\n".join(parts)
+    cache_miss_tip = False
+    if load_forecast_cache() is None:
+        for pos in positions:
+            if parse_highest_temp_title(str(pos.get("title") or "")):
+                cache_miss_tip = True
+                break
     for index, pos in enumerate(positions, start=1):
         title = tg_escape(pos.get("title") or pos.get("market_id", "?"))
         entry = float(pos.get("avg_price") or 0)
@@ -109,6 +118,18 @@ def build_full_portfolio_html(client: PolymarketClient, title_line_html: str) ->
             f"   📦 <code>{size:.4f}</code>{oc}  ·  entry <code>{entry:.4f}</code>"
             f"  ·  mark <code>{mark:.4f}</code>  ·  {pnl_html}"
             f"  ·  🏠<code>{loc}</code>{lt_html}"
+        )
+        fc = portfolio_position_forecast_html(
+            str(pos.get("market_id") or ""),
+            str(pos.get("title") or ""),
+            mark if mark > 1e-9 else None,
+        )
+        if fc:
+            parts.append(fc)
+    if cache_miss_tip:
+        parts.append(
+            "<i>Forecast cache empty — run <code>python -m forecast</code> "
+            "or dashboard “Refresh forecast preview”.</i>"
         )
     return "\n".join(parts)
 

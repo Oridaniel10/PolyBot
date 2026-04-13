@@ -1,4 +1,5 @@
 import hashlib
+import os
 import time
 from typing import Any, Dict, List, Optional
 
@@ -61,6 +62,13 @@ from strategy.probability import (
     stop_loss_reference_if_triggered,
     take_profit_decision_probability,
 )
+from forecast.forecast_service import get_forecast_max_for_city_day
+from forecast.parse_title import (
+    forecast_contradicts_strongly,
+    forecast_supports_yes,
+    parse_highest_temp_title,
+)
+from strategy.flow_signals import flow_peer_recommends_exit
 from strategy.sizing import compute_buy_usd_amount, planned_buy_cap_lines
 from strategy.time_utils import format_report_local_hhmm, now_in_report_timezone
 from telegram_bot import TelegramBot, tg_escape
@@ -68,6 +76,36 @@ from telegram_bot import TelegramBot, tg_escape
 
 def _telegram_local_clock_html() -> str:
     return f"🕐 <code>{tg_escape(format_report_local_hhmm())}</code>\n"
+
+
+def _trade_headline_with_forecast_html(
+    client: PolymarketClient,
+    market: Dict[str, Any],
+    headline_html: str,
+) -> str:
+    snap = ""
+    try:
+        from forecast.trade_snapshot import temp_market_trade_context_html
+
+        snap = temp_market_trade_context_html(client, market) or ""
+    except Exception:
+        pass
+    if not snap:
+        try:
+            from notifications.forecast_cache_fmt import (
+                portfolio_position_forecast_html,
+            )
+
+            snap = portfolio_position_forecast_html(
+                str(market.get("id") or ""),
+                str(market.get("question") or market.get("title") or ""),
+                None,
+            ) or ""
+        except Exception:
+            pass
+    if snap:
+        return f"{headline_html}\n{snap}"
+    return headline_html
 
 
 def _trade_csv_base(title: str) -> Dict[str, Any]:
@@ -179,9 +217,41 @@ def place_buy(
         )
         return
 
+    forecast_usd_factor = 1.0
+    parsed_fc = parse_highest_temp_title(str(title))
+    if parsed_fc:
+        ow_key = ""
+        if getattr(settings, "enable_openweather_forecast", False):
+            ow_key = os.getenv("OPENWEATHER_API_KEY", "").strip()
+        _om, _ow, cons = get_forecast_max_for_city_day(
+            parsed_fc.city_key,
+            parsed_fc.event_date,
+            parsed_fc.tz_name,
+            openweather_api_key=ow_key,
+        )
+        if cons is not None:
+            margin = float(getattr(settings, "forecast_contradict_margin_c", 2.5))
+            if getattr(
+                settings, "forecast_gate_buy", False
+            ) and forecast_contradicts_strongly(cons, parsed_fc, margin):
+                print(
+                    term_wrap(
+                        TERM_DIM,
+                        f"[forecast] skip buy — model contradicts this bracket "
+                        f"(max≈{cons:.1f}°C)\n  {title}",
+                    )
+                )
+                return
+            strong_x = forecast_contradicts_strongly(cons, parsed_fc, margin)
+            if getattr(settings, "forecast_reduce_usd_if_weak", False) and (
+                not forecast_supports_yes(cons, parsed_fc) and not strong_x
+            ):
+                fac = float(getattr(settings, "forecast_weak_size_factor", 0.45))
+                forecast_usd_factor = min(1.0, max(0.1, fac))
+
     balance_before = client.get_portfolio_balance(force_allowance_refresh=True)
     cash = float(balance_before.get("cash") or 0)
-    usd = compute_buy_usd_amount(cash, probability, settings)
+    usd = compute_buy_usd_amount(cash, probability, settings) * forecast_usd_factor
     if usd <= 0:
         frac, cap_hard, planned, reserve_usd, tradable = planned_buy_cap_lines(
             cash, settings
@@ -294,7 +364,14 @@ def place_buy(
         }
     )
     try:
-        send_portfolio_telegram(telegram, client, headline, headline_html=headline_html)
+        send_portfolio_telegram(
+            telegram,
+            client,
+            headline,
+            headline_html=_trade_headline_with_forecast_html(
+                client, market, headline_html
+            ),
+        )
     except Exception as err:
         print(term_wrap(TERM_RED, f"buy ok but telegram failed: {err!r}"))
 
@@ -554,7 +631,12 @@ def close_position(
         )
         try:
             send_portfolio_telegram(
-                telegram, client, headline, headline_html=headline_html
+                telegram,
+                client,
+                headline,
+                headline_html=_trade_headline_with_forecast_html(
+                    client, market, headline_html
+                ),
             )
         except Exception as err:
             print(
@@ -624,7 +706,14 @@ def close_position(
         churn_on_take_profit(state, market_id)
 
     try:
-        send_portfolio_telegram(telegram, client, headline, headline_html=headline_html)
+        send_portfolio_telegram(
+            telegram,
+            client,
+            headline,
+            headline_html=_trade_headline_with_forecast_html(
+                client, market, headline_html
+            ),
+        )
     except Exception as err:
         print(term_wrap(TERM_RED, f"sell ok but telegram failed: {err!r}"))
 
@@ -661,7 +750,11 @@ def claim_position(
         return
     state.get("active_trades", {}).pop(key, None)
     headline = f"TRADE: CLAIM\n{title}"
-    headline_html = f"🟡 <b>CLAIM</b> <i>(bot)</i>\n{tg_escape(title)}"
+    headline_html = _trade_headline_with_forecast_html(
+        client,
+        market,
+        f"🟡 <b>CLAIM</b> <i>(bot)</i>\n{tg_escape(title)}",
+    )
     log_trade_claim_terminal(str(title))
     balance_after = client.get_portfolio_balance(force_allowance_refresh=False)
     cash_after = float(balance_after.get("cash") or 0)
@@ -740,6 +833,31 @@ def process_single_market(
                 )
                 return
 
+    if (
+        getattr(settings, "enable_flow_peer_exit", False)
+        and has_position
+        and trade_row
+        and market_can_post_clob_orders(market)
+    ):
+        feids = gamma_event_ids_for_market(market)
+        if feids and flow_peer_recommends_exit(
+            market_id,
+            feids[0],
+            settings,
+            now_ts=time.time(),
+        ):
+            close_position(
+                client,
+                market,
+                state,
+                telegram,
+                gamma_probability,
+                "flow-peer-surge",
+                settings,
+                state_trade_key=sk,
+            )
+            return
+
     prob_stop = stop_loss_reference_if_triggered(market, trade_row, settings.stop_loss)
     if prob_stop is not None:
         close_position(
@@ -807,6 +925,7 @@ def process_single_market(
     if allow_new_buys and (not has_position) and market_can_post_clob_orders(market):
         # --- time gate: no buys before BUY_EARLIEST_HOUR in city's timezone ---
         from strategy.city_tz import city_local_hour
+
         _title = str(market.get("question") or market.get("title") or "")
         _city_hour = city_local_hour(_title)
         if _city_hour is not None and _city_hour < BUY_EARLIEST_HOUR:

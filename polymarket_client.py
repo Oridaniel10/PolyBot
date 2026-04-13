@@ -30,6 +30,9 @@ HIGHEST_TEMPERATURE_KEYWORDS = (
 LIVE_POSITION_MIN_CUR_PRICE = 1e-6
 LIVE_POSITION_MIN_CURRENT_VALUE_USD = 0.01
 DATA_API_POSITIONS_CACHE_TTL_SEC = 12.0
+# Gamma /markets offset scans often miss daily weather; public-search finds events reliably.
+HIGHEST_TEMP_PUBLIC_SEARCH_CACHE_TTL_SEC = 120.0
+HIGHEST_TEMP_PUBLIC_SEARCH_MAX_PAGES = 8
 CLOB_BALANCE_ALLOWANCE_CACHE_TTL_SEC = 50.0
 CLOB_ORDER_SIDE_BUY = "BUY"
 CLOB_ORDER_SIDE_SELL = "SELL"
@@ -353,6 +356,9 @@ class PolymarketClient:
         self._slug_market_cache: Dict[str, str] = {}
         self._temp_id_range: Optional[tuple] = None
         self._temp_id_range_lock = threading.Lock()
+        self._highest_temp_public_search_cache: Optional[
+            tuple[float, tuple[str, ...], List[Dict[str, Any]]]
+        ] = None
         self._data_positions_cache_monotonic: float = 0.0
         self._data_positions_cache_rows: List[Dict[str, Any]] = []
         self._balance_allowance_monotonic: float = 0.0
@@ -677,6 +683,77 @@ class PolymarketClient:
                 continue
         return (0, 0)
 
+    def _public_search_highest_temperature_markets(
+        self,
+        target_day_label: Optional[str],
+        extra_target_day_labels: Optional[List[str]],
+    ) -> List[Dict[str, Any]]:
+        """
+        Gamma list endpoints often omit weather; public-search returns multi-market events.
+        """
+        root = self.config.gamma_base_url.rstrip("/")
+        labels = self._merge_target_day_labels(
+            target_day_label, extra_target_day_labels
+        )
+        specific_queries: List[str] = []
+        for lb in labels:
+            q = str(lb or "").strip().lower()
+            if q:
+                specific_queries.append(f"highest temperature {q}")
+        query_phases: List[List[str]] = []
+        if specific_queries:
+            query_phases.append(specific_queries)
+            query_phases.append(["highest temperature"])
+        else:
+            query_phases.append(["highest temperature"])
+
+        seen: Set[str] = set()
+        out: List[Dict[str, Any]] = []
+
+        def run_queries(query_list: List[str]) -> None:
+            for q in query_list:
+                for page in range(HIGHEST_TEMP_PUBLIC_SEARCH_MAX_PAGES):
+                    try:
+                        data = self._request(
+                            "GET",
+                            f"{root}/public-search",
+                            params={"q": q, "page": page},
+                            with_auth=False,
+                        )
+                    except (requests.RequestException, ValueError, TypeError):
+                        break
+                    if not isinstance(data, dict):
+                        break
+                    events = data.get("events")
+                    if not isinstance(events, list):
+                        break
+                    for ev in events:
+                        mk = ev.get("markets")
+                        if not isinstance(mk, list):
+                            continue
+                        for m in mk:
+                            if not isinstance(m, dict):
+                                continue
+                            if not m.get("active"):
+                                continue
+                            if not self._is_highest_temp_market(
+                                m, target_day_label, extra_target_day_labels
+                            ):
+                                continue
+                            mid = str(m.get("id") or "")
+                            if mid and mid not in seen:
+                                seen.add(mid)
+                                out.append(m)
+                    pag = data.get("pagination")
+                    if not isinstance(pag, dict) or not pag.get("hasMore"):
+                        break
+
+        for i, phase in enumerate(query_phases):
+            run_queries(phase)
+            if out and i == 0 and len(query_phases) > 1:
+                break
+        return out
+
     def get_highest_temperature_markets(
         self,
         *,
@@ -685,6 +762,43 @@ class PolymarketClient:
         max_pages: int = 80,
         anchor_ids: Optional[List[int]] = None,
     ) -> List[Dict[str, Any]]:
+        labels_key = tuple(
+            self._merge_target_day_labels(
+                target_day_label, extra_target_day_labels
+            )
+        )
+        now_m = time.monotonic()
+        cached = self._highest_temp_public_search_cache
+        if cached is not None:
+            ts, key, lst = cached
+            if (
+                now_m - ts < HIGHEST_TEMP_PUBLIC_SEARCH_CACHE_TTL_SEC
+                and key == labels_key
+            ):
+                return list(lst)
+
+        search_hits = self._public_search_highest_temperature_markets(
+            target_day_label, extra_target_day_labels
+        )
+        if search_hits:
+            found_ids = [
+                int(m["id"])
+                for m in search_hits
+                if str(m.get("id", "")).isdigit()
+            ]
+            if found_ids:
+                with self._temp_id_range_lock:
+                    self._temp_id_range = (
+                        min(found_ids) - 40,
+                        max(found_ids) + 40,
+                    )
+            self._highest_temp_public_search_cache = (
+                now_m,
+                labels_key,
+                search_hits,
+            )
+            return search_hits
+
         # --- step 1: determine the ID range to scan ---
         with self._temp_id_range_lock:
             id_range = self._temp_id_range
@@ -1323,6 +1437,92 @@ class PolymarketClient:
         raise PolyApiException(
             error_msg=f"sell failed\n{summary}\nerrors={' | '.join(errors)}"
         )
+
+    def get_data_api_live_volume(self, event_id: str) -> List[Dict[str, Any]]:
+        eid = str(event_id or "").strip()
+        if not eid.isdigit():
+            return []
+        url = f"{DATA_API_BASE_URL.rstrip('/')}/live-volume"
+        try:
+            response = self.session.get(
+                url, params={"id": int(eid)}, timeout=REQUEST_TIMEOUT_SECONDS
+            )
+            response.raise_for_status()
+            data = response.json()
+        except (requests.RequestException, ValueError, TypeError):
+            return []
+        if isinstance(data, list):
+            return [x for x in data if isinstance(x, dict)]
+        if isinstance(data, dict):
+            return [data]
+        return []
+
+    def get_data_api_open_interest_map(
+        self, condition_ids: List[str]
+    ) -> Dict[str, float]:
+        ids = [
+            str(c).strip()
+            for c in condition_ids
+            if c and str(c).strip().lower().startswith("0x")
+        ]
+        if not ids:
+            return {}
+        url = f"{DATA_API_BASE_URL.rstrip('/')}/oi"
+        out: Dict[str, float] = {}
+        chunk = 20
+        for i in range(0, len(ids), chunk):
+            part = ids[i : i + chunk]
+            joined = ",".join(part)
+            try:
+                response = self.session.get(
+                    url,
+                    params={"market": joined},
+                    timeout=REQUEST_TIMEOUT_SECONDS,
+                )
+                response.raise_for_status()
+                rows = response.json()
+            except (requests.RequestException, ValueError, TypeError):
+                continue
+            if not isinstance(rows, list):
+                continue
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                mk = str(row.get("market") or "").strip()
+                try:
+                    val = float(row.get("value") or 0)
+                except (TypeError, ValueError):
+                    continue
+                if mk:
+                    out[mk] = val
+        return out
+
+    def post_clob_order_books(self, token_ids: List[str]) -> List[Dict[str, Any]]:
+        if not token_ids:
+            return []
+        base = f"{self.config.clob_base_url.rstrip('/')}/books"
+        merged: List[Dict[str, Any]] = []
+        chunk = 40
+        headers = {"Accept": "application/json", "Content-Type": "application/json"}
+        for i in range(0, len(token_ids), chunk):
+            part = token_ids[i : i + chunk]
+            body = [{"token_id": str(t).strip()} for t in part if str(t).strip()]
+            if not body:
+                continue
+            try:
+                response = self.session.post(
+                    base,
+                    json=body,
+                    headers=headers,
+                    timeout=REQUEST_TIMEOUT_SECONDS,
+                )
+                response.raise_for_status()
+                data = response.json()
+            except (requests.RequestException, ValueError, TypeError):
+                continue
+            if isinstance(data, list):
+                merged.extend([x for x in data if isinstance(x, dict)])
+        return merged
 
     def claim_market(self, market_id: str) -> Dict[str, Any]:
         claim_payload = {

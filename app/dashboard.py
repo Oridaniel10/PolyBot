@@ -12,6 +12,11 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from config import constants as C
+from forecast.cache_store import (
+    forecast_cache_age_sec,
+    load_forecast_cache,
+    save_forecast_cache_after_gamma_fetch,
+)
 from config.settings import (
     default_runtime_dict,
     get_effective_settings,
@@ -24,6 +29,7 @@ from notifications.dashboard_notify import notify_dashboard_change
 from polymarket_client import PolymarketClient, condition_ids_equivalent
 from state.pnl_ledger import pnl_summary_day_week
 from state.store import read_state
+from forecast.digest_runner import build_forecast_preview_payload
 from strategy.bot_runner import build_config
 from strategy.time_utils import build_target_day_label, now_in_report_timezone
 
@@ -52,6 +58,23 @@ class RuntimeConfigUpdate(BaseModel):
     max_trade_fraction_of_cash: Optional[float] = Field(None, ge=0.0, le=1.0)
     dashboard_weather_max_pages: Optional[int] = Field(None, ge=1, le=80)
     cash_reserve_usd: Optional[float] = Field(None, ge=0.0, le=1_000_000)
+    forecast_digest_enabled: Optional[bool] = None
+    forecast_digest_refresh_interval_sec: Optional[int] = Field(None, ge=60, le=3600)
+    forecast_digest_telegram_interval_sec: Optional[int] = Field(None, ge=0, le=86400)
+    forecast_digest_interval_sec: Optional[int] = Field(None, ge=120, le=3600)
+    forecast_digest_scope: Optional[str] = None
+    forecast_digest_max_location_groups: Optional[int] = Field(None, ge=4, le=500)
+    enable_openweather_forecast: Optional[bool] = None
+    enable_flow_sampling: Optional[bool] = None
+    flow_max_events_per_tick: Optional[int] = Field(None, ge=1, le=40)
+    enable_flow_peer_exit: Optional[bool] = None
+    flow_peer_window_sec: Optional[int] = Field(None, ge=120, le=3600)
+    flow_peer_surge_drop: Optional[float] = Field(None, ge=0.0, le=1.0)
+    flow_peer_surge_rise: Optional[float] = Field(None, ge=0.0, le=1.0)
+    forecast_gate_buy: Optional[bool] = None
+    forecast_contradict_margin_c: Optional[float] = Field(None, ge=0.0, le=15.0)
+    forecast_reduce_usd_if_weak: Optional[bool] = None
+    forecast_weak_size_factor: Optional[float] = Field(None, ge=0.05, le=1.0)
 
 
 class BlacklistToggle(BaseModel):
@@ -246,6 +269,97 @@ def api_weather_markets_today(
         "max_pages_used": mp,
         "error": None,
     }
+
+
+@dashboard_router.get("/forecast/preview")
+def api_forecast_preview(
+    max_pages: Optional[int] = Query(
+        None,
+        ge=1,
+        le=80,
+        description="Gamma pages (default from runtime dashboard_weather_max_pages)",
+    ),
+    refresh: bool = Query(
+        False,
+        description="if true, bypass data/forecast_cache.json and refetch",
+    ),
+) -> Dict[str, Any]:
+    now = now_in_report_timezone()
+    label = build_target_day_label(now)
+    prev_label = build_target_day_label(now - timedelta(days=1))
+    extra = [prev_label] if prev_label != label else []
+    eff = get_effective_settings()
+    mp = max_pages if max_pages is not None else eff.dashboard_weather_max_pages
+
+    if not refresh:
+        cached = load_forecast_cache()
+        age = forecast_cache_age_sec()
+        cg = cached.get("groups") if isinstance(cached, dict) else None
+        cache_has_groups = isinstance(cg, list) and len(cg) > 0
+        if (
+            isinstance(cached, dict)
+            and cached.get("groups") is not None
+            and age is not None
+            and age < float(C.FORECAST_CACHE_MAX_AGE_SEC)
+            and cache_has_groups
+        ):
+            out = dict(cached)
+            out["from_cache"] = True
+            out["cache_age_sec"] = round(age, 1)
+            out.setdefault("error", None)
+            return out
+
+    try:
+        client = PolymarketClient(build_config())
+        markets = client.get_highest_temperature_markets(
+            target_day_label=label,
+            extra_target_day_labels=extra,
+            max_pages=mp,
+        )
+    except Exception as exc:
+        stale = load_forecast_cache()
+        if isinstance(stale, dict) and stale.get("groups"):
+            out = dict(stale)
+            out["from_cache"] = True
+            out["stale_after_error"] = True
+            out["error"] = repr(exc)
+            out["cache_age_sec"] = round(forecast_cache_age_sec() or 0.0, 1)
+            return out
+        return {
+            "error": repr(exc),
+            "target_day_label": label,
+            "max_pages_used": mp,
+        }
+    if not markets:
+        stale = load_forecast_cache()
+        sg = stale.get("groups") if isinstance(stale, dict) else None
+        if isinstance(stale, dict) and isinstance(sg, list) and len(sg) > 0:
+            out = dict(stale)
+            out["from_cache"] = True
+            out["stale_after_error"] = True
+            out["error"] = (
+                "Live fetch returned 0 highest-temperature markets; showing cached snapshot."
+            )
+            out["cache_age_sec"] = round(forecast_cache_age_sec() or 0.0, 1)
+            return out
+    preview = build_forecast_preview_payload(markets, eff)
+    preview["target_day_label"] = label
+    preview["secondary_target_day_label"] = prev_label if extra else None
+    preview["max_pages_used"] = mp
+    preview["markets_scanned"] = len(markets)
+    preview["error"] = None
+    preview["from_cache"] = False
+    try:
+        save_forecast_cache_after_gamma_fetch(
+            preview, gamma_market_count=len(markets)
+        )
+    except OSError:
+        pass
+    if not markets and not (preview.get("groups") or []):
+        preview["error"] = (
+            "Live fetch returned 0 highest-temperature markets and no usable cache on disk."
+        )
+    return preview
 
 
 @dashboard_router.get("/trades/today")

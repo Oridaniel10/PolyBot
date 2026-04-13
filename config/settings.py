@@ -38,6 +38,23 @@ def default_runtime_dict() -> Dict[str, Any]:
         "max_trade_fraction_of_cash": C.MAX_TRADE_FRACTION_OF_CASH,
         "dashboard_weather_max_pages": 6,
         "cash_reserve_usd": C.CASH_RESERVE_USD,
+        "forecast_digest_enabled": C.FORECAST_DIGEST_ENABLED,
+        "forecast_digest_refresh_interval_sec": C.FORECAST_DIGEST_REFRESH_INTERVAL_SEC,
+        "forecast_digest_telegram_interval_sec": C.FORECAST_DIGEST_TELEGRAM_INTERVAL_SEC,
+        "forecast_digest_interval_sec": C.FORECAST_DIGEST_INTERVAL_SEC,
+        "forecast_digest_scope": C.FORECAST_DIGEST_SCOPE,
+        "forecast_digest_max_location_groups": C.FORECAST_DIGEST_MAX_LOCATION_GROUPS,
+        "enable_openweather_forecast": C.ENABLE_OPENWEATHER_FORECAST,
+        "enable_flow_sampling": C.ENABLE_FLOW_SAMPLING,
+        "flow_max_events_per_tick": C.FLOW_MAX_EVENTS_PER_TICK,
+        "enable_flow_peer_exit": C.ENABLE_FLOW_PEER_EXIT,
+        "flow_peer_window_sec": C.FLOW_PEER_WINDOW_SEC,
+        "flow_peer_surge_drop": C.FLOW_PEER_SURGE_DROP,
+        "flow_peer_surge_rise": C.FLOW_PEER_SURGE_RISE,
+        "forecast_gate_buy": C.FORECAST_GATE_BUY,
+        "forecast_contradict_margin_c": C.FORECAST_CONTRADICT_MARGIN_C,
+        "forecast_reduce_usd_if_weak": C.FORECAST_REDUCE_USD_IF_WEAK,
+        "forecast_weak_size_factor": C.FORECAST_WEAK_SIZE_FACTOR,
     }
 
 
@@ -49,7 +66,13 @@ def load_runtime_config_file() -> Dict[str, Any]:
     try:
         raw = json.loads(C.RUNTIME_CONFIG_FILE.read_text(encoding="utf-8"))
         if isinstance(raw, dict):
-            base.update({k: v for k, v in raw.items() if k in base or k == "blacklist_market_ids"})
+            base.update(
+                {
+                    k: v
+                    for k, v in raw.items()
+                    if k in base or k == "blacklist_market_ids"
+                }
+            )
     except (OSError, json.JSONDecodeError):
         pass
     return base
@@ -86,6 +109,22 @@ class RuntimeSettings:
     max_trade_fraction_of_cash: float
     dashboard_weather_max_pages: int
     cash_reserve_usd: float
+    forecast_digest_enabled: bool
+    forecast_digest_refresh_interval_sec: int
+    forecast_digest_telegram_interval_sec: int
+    forecast_digest_scope: str
+    forecast_digest_max_location_groups: int
+    enable_openweather_forecast: bool
+    enable_flow_sampling: bool
+    flow_max_events_per_tick: int
+    enable_flow_peer_exit: bool
+    flow_peer_window_sec: int
+    flow_peer_surge_drop: float
+    flow_peer_surge_rise: float
+    forecast_gate_buy: bool
+    forecast_contradict_margin_c: float
+    forecast_reduce_usd_if_weak: bool
+    forecast_weak_size_factor: float
     blacklist_market_ids: Set[str] = field(default_factory=set)
 
     @classmethod
@@ -104,6 +143,37 @@ class RuntimeSettings:
         dwp = max(1, min(80, dwp))
         reserve = max(0.0, float(d.get("cash_reserve_usd", C.CASH_RESERVE_USD)))
         reserve = min(reserve, 1_000_000.0)
+        legacy_fd = d.get("forecast_digest_interval_sec")
+        refresh_raw = d.get("forecast_digest_refresh_interval_sec")
+        if refresh_raw is not None:
+            refresh_iv = int(refresh_raw)
+        elif legacy_fd is not None:
+            refresh_iv = int(legacy_fd)
+        else:
+            refresh_iv = int(C.FORECAST_DIGEST_REFRESH_INTERVAL_SEC)
+        refresh_iv = max(60, min(3600, refresh_iv))
+        tg_raw = d.get("forecast_digest_telegram_interval_sec")
+        if tg_raw is not None:
+            tg_iv = int(tg_raw)
+        elif legacy_fd is not None:
+            tg_iv = int(legacy_fd)
+        else:
+            tg_iv = int(C.FORECAST_DIGEST_TELEGRAM_INTERVAL_SEC)
+        tg_iv = max(0, min(86400, tg_iv))
+        fscope = str(d.get("forecast_digest_scope", C.FORECAST_DIGEST_SCOPE) or "scan")
+        if fscope not in ("scan", "positions"):
+            fscope = "scan"
+        fd_cap = int(
+            d.get(
+                "forecast_digest_max_location_groups",
+                C.FORECAST_DIGEST_MAX_LOCATION_GROUPS,
+            )
+        )
+        fd_cap = max(4, min(int(C.FORECAST_DIGEST_MAX_GROUPS_CAP), fd_cap))
+        fme = int(d.get("flow_max_events_per_tick", C.FLOW_MAX_EVENTS_PER_TICK))
+        fme = max(1, min(40, fme))
+        fpw = int(d.get("flow_peer_window_sec", C.FLOW_PEER_WINDOW_SEC))
+        fpw = max(120, min(3600, fpw))
         return cls(
             buy_min=float(d.get("buy_min_threshold", C.BUY_MIN_THRESHOLD)),
             buy_max=float(d.get("buy_max_threshold", C.BUY_MAX_THRESHOLD)),
@@ -135,6 +205,40 @@ class RuntimeSettings:
             max_trade_fraction_of_cash=frac,
             dashboard_weather_max_pages=dwp,
             cash_reserve_usd=reserve,
+            forecast_digest_enabled=bool(
+                d.get("forecast_digest_enabled", C.FORECAST_DIGEST_ENABLED)
+            ),
+            forecast_digest_refresh_interval_sec=refresh_iv,
+            forecast_digest_telegram_interval_sec=tg_iv,
+            forecast_digest_scope=fscope,
+            forecast_digest_max_location_groups=fd_cap,
+            enable_openweather_forecast=bool(
+                d.get("enable_openweather_forecast", C.ENABLE_OPENWEATHER_FORECAST)
+            ),
+            enable_flow_sampling=bool(
+                d.get("enable_flow_sampling", C.ENABLE_FLOW_SAMPLING)
+            ),
+            flow_max_events_per_tick=fme,
+            enable_flow_peer_exit=bool(
+                d.get("enable_flow_peer_exit", C.ENABLE_FLOW_PEER_EXIT)
+            ),
+            flow_peer_window_sec=fpw,
+            flow_peer_surge_drop=float(
+                d.get("flow_peer_surge_drop", C.FLOW_PEER_SURGE_DROP)
+            ),
+            flow_peer_surge_rise=float(
+                d.get("flow_peer_surge_rise", C.FLOW_PEER_SURGE_RISE)
+            ),
+            forecast_gate_buy=bool(d.get("forecast_gate_buy", C.FORECAST_GATE_BUY)),
+            forecast_contradict_margin_c=float(
+                d.get("forecast_contradict_margin_c", C.FORECAST_CONTRADICT_MARGIN_C)
+            ),
+            forecast_reduce_usd_if_weak=bool(
+                d.get("forecast_reduce_usd_if_weak", C.FORECAST_REDUCE_USD_IF_WEAK)
+            ),
+            forecast_weak_size_factor=float(
+                d.get("forecast_weak_size_factor", C.FORECAST_WEAK_SIZE_FACTOR)
+            ),
             blacklist_market_ids=ids,
         )
 

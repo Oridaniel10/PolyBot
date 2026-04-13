@@ -1,6 +1,5 @@
 """Map city names (from market titles) to IANA timezones for local-hour gating."""
 
-import re
 from datetime import datetime
 from typing import Optional
 
@@ -21,6 +20,7 @@ CITY_TZ = {
     "chengdu": "Asia/Shanghai",
     "chicago": "America/Chicago",
     "chongqing": "Asia/Shanghai",
+    "cape town": "Africa/Johannesburg",
     "dallas": "America/Chicago",
     "denver": "America/Denver",
     "helsinki": "Europe/Helsinki",
@@ -28,7 +28,9 @@ CITY_TZ = {
     "houston": "America/Chicago",
     "istanbul": "Europe/Istanbul",
     "jakarta": "Asia/Jakarta",
+    "jeddah": "Asia/Riyadh",
     "kuala lumpur": "Asia/Kuala_Lumpur",
+    "lagos": "Africa/Lagos",
     "london": "Europe/London",
     "los angeles": "America/Los_Angeles",
     "lucknow": "Asia/Kolkata",
@@ -81,7 +83,7 @@ def city_local_hour(title: str) -> Optional[int]:
     city = _extract_city_from_title(title)
     if not city:
         return None
-    tz_name = CITY_TZ.get(city)
+    tz_name = CITY_TZ.get(city.strip().lower())
     if not tz_name:
         return None
     try:
@@ -97,7 +99,7 @@ def city_local_time_str(title: str) -> str:
     city = _extract_city_from_title(title)
     if not city:
         return ""
-    tz_name = CITY_TZ.get(city)
+    tz_name = CITY_TZ.get(city.strip().lower())
     if not tz_name:
         return ""
     try:

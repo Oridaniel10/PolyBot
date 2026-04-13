@@ -79,6 +79,7 @@ python app/dashboard.py
 - `GET /api/pnl/summary` — day / week aggregates from `data/pnl_ledger.jsonl`
 - `GET /api/portfolio/positions` — live open positions + cash (Data API; does not wait on the slow weather scan)
 - `GET /api/markets/weather-today` — today’s highest-temperature scan (same logic as the bot)
+- `GET /api/forecast/preview` — Open-Meteo (+ optional OpenWeather) vs YES prices (same grouping as the Telegram digest; **read-only**)
 - `GET|POST /api/runtime-config` — read/write `data/runtime_config.json`
 - `POST /api/blacklist/toggle` — body `{"market_id":"…","enabled":true}` → `data/blacklist_day.json` (calendar day)
 - `GET /dashboard/` — React UI (after `ui` build)
@@ -98,6 +99,27 @@ Merged **each tick** with env-backed sizing. Keys include:
 ## Anti-churn policy
 
 Per `market_id`: count **bot stop-loss** exits; at **≥ churn_max_stop_cycles** set `cooldown_until` for **churn_cooldown_sec**. **Take-profit** clears the counter. When cooldown expires, counter resets so trading can resume.
+
+## Forecast (see it + effect on the bot)
+
+**Where the forecast appears (pick one or more):**
+
+| Goal | Command / place |
+|------|------------------|
+| **Telegram digest** (HTML every N seconds) | From repo root: `python -m forecast` — **always** sends on the configured interval and **ignores** `forecast_digest_enabled` (so you can leave that checkbox off on the bot and use this process only). The bot / `main_bot.py` background thread respects `forecast_digest_enabled`. **Do not** run both digest paths to the same chat unless you want duplicate messages. |
+| **Browser (no Telegram)** | Build `ui/` then run `python app/dashboard.py` or `main_bot.py` → open `/dashboard/` → section **Forecast preview** (calls `/api/forecast/preview`). |
+
+Optional second model: set `OPENWEATHER_API_KEY` in `.env` and turn on `enable_openweather_forecast` in `data/runtime_config.json` (or the dashboard form).
+
+**Does it change buy/sell?** By **default, no** — digest and preview are informative. The bot only uses forecasts for **decisions** when you enable runtime flags (merged each tick):
+
+- **`forecast_gate_buy`** — can **block** a buy if the external model strongly contradicts the bracket.
+- **`forecast_reduce_usd_if_weak`** — can **shrink** buy notional when the model does not support YES (`forecast_weak_size_factor`).
+- **`enable_flow_peer_exit`** — can trigger a **sell** (`flow-peer-surge`) from sampled flow data, not from the digest HTML.
+
+Defaults for these are **off** in `config/constants.py` unless overridden in `runtime_config.json`. Details: [STRATEGY_LOGIC.md](STRATEGY_LOGIC.md).
+
+**Smoke test (digest + optional live Gamma/Open-Meteo):** `python tests/test_forecast_digest.py`
 
 ## Momentum & samples
 

@@ -57,6 +57,40 @@ type WeatherResp = {
   max_pages_used?: number;
 };
 
+type ForecastPreviewGroup = {
+  city_key: string;
+  date_iso: string;
+  timezone_label: string;
+  open_meteo_c: number | null;
+  openweather_c: number | null;
+  consensus_c: number | null;
+  member_market_ids?: string[];
+};
+
+type ForecastPreviewResp = {
+  error?: string | null;
+  generated_at_local?: string;
+  scope?: string;
+  openweather_enabled?: boolean;
+  openweather_key_configured?: boolean;
+  group_count?: number;
+  groups?: ForecastPreviewGroup[];
+  target_day_label?: string;
+  secondary_target_day_label?: string | null;
+  max_pages_used?: number;
+  markets_scanned?: number;
+  from_cache?: boolean;
+  cache_age_sec?: number;
+  stale_after_error?: boolean;
+  digest_meta?: {
+    markets_in_scope?: number;
+    markets_parsable_temp_title?: number;
+    city_day_groups_total?: number;
+    city_day_groups_included?: number;
+    digest_max_groups_applied?: number;
+  };
+};
+
 type RuntimeResp = {
   runtime: Record<string, unknown>;
   blacklist_day_ids: string[];
@@ -84,6 +118,22 @@ type FormState = {
   max_trade_fraction_of_cash: number;
   dashboard_weather_max_pages: number;
   cash_reserve_usd: number;
+  forecast_digest_enabled: boolean;
+  forecast_digest_refresh_interval_sec: number;
+  forecast_digest_telegram_interval_sec: number;
+  forecast_digest_scope: string;
+  forecast_digest_max_location_groups: number;
+  enable_openweather_forecast: boolean;
+  enable_flow_sampling: boolean;
+  flow_max_events_per_tick: number;
+  enable_flow_peer_exit: boolean;
+  flow_peer_window_sec: number;
+  flow_peer_surge_drop: number;
+  flow_peer_surge_rise: number;
+  forecast_gate_buy: boolean;
+  forecast_contradict_margin_c: number;
+  forecast_reduce_usd_if_weak: boolean;
+  forecast_weak_size_factor: number;
 };
 
 const defaultForm = (): FormState => ({
@@ -107,12 +157,30 @@ const defaultForm = (): FormState => ({
   max_trade_fraction_of_cash: 0.2,
   dashboard_weather_max_pages: 6,
   cash_reserve_usd: 10,
+  forecast_digest_enabled: true,
+  forecast_digest_refresh_interval_sec: 120,
+  forecast_digest_telegram_interval_sec: 0,
+  forecast_digest_scope: "scan",
+  forecast_digest_max_location_groups: 80,
+  enable_openweather_forecast: false,
+  enable_flow_sampling: true,
+  flow_max_events_per_tick: 8,
+  enable_flow_peer_exit: false,
+  flow_peer_window_sec: 600,
+  flow_peer_surge_drop: 0.12,
+  flow_peer_surge_rise: 0.1,
+  forecast_gate_buy: false,
+  forecast_contradict_margin_c: 2.5,
+  forecast_reduce_usd_if_weak: false,
+  forecast_weak_size_factor: 0.45,
 });
 
 function runtimeToForm(rt: Record<string, unknown>, prev: FormState): FormState {
   const n = (k: string, d: number) => Number(rt[k] ?? d);
   const i = (k: string, d: number) => Math.round(Number(rt[k] ?? d));
   const b = (k: string, d: boolean) => Boolean(rt[k] ?? d);
+  const sc = String(rt["forecast_digest_scope"] ?? prev.forecast_digest_scope ?? "scan").toLowerCase();
+  const scope = sc === "positions" ? "positions" : "scan";
   return {
     buy_min_threshold: n("buy_min_threshold", prev.buy_min_threshold),
     buy_max_threshold: n("buy_max_threshold", prev.buy_max_threshold),
@@ -134,6 +202,37 @@ function runtimeToForm(rt: Record<string, unknown>, prev: FormState): FormState 
     max_trade_fraction_of_cash: n("max_trade_fraction_of_cash", prev.max_trade_fraction_of_cash),
     dashboard_weather_max_pages: i("dashboard_weather_max_pages", prev.dashboard_weather_max_pages),
     cash_reserve_usd: n("cash_reserve_usd", prev.cash_reserve_usd),
+    forecast_digest_enabled: b("forecast_digest_enabled", prev.forecast_digest_enabled),
+    forecast_digest_refresh_interval_sec: Math.round(
+      Number(
+        rt["forecast_digest_refresh_interval_sec"] ??
+          rt["forecast_digest_interval_sec"] ??
+          prev.forecast_digest_refresh_interval_sec,
+      ),
+    ),
+    forecast_digest_telegram_interval_sec: Math.round(
+      Number(
+        rt["forecast_digest_telegram_interval_sec"] ??
+          rt["forecast_digest_interval_sec"] ??
+          prev.forecast_digest_telegram_interval_sec,
+      ),
+    ),
+    forecast_digest_scope: scope,
+    forecast_digest_max_location_groups: i(
+      "forecast_digest_max_location_groups",
+      prev.forecast_digest_max_location_groups,
+    ),
+    enable_openweather_forecast: b("enable_openweather_forecast", prev.enable_openweather_forecast),
+    enable_flow_sampling: b("enable_flow_sampling", prev.enable_flow_sampling),
+    flow_max_events_per_tick: i("flow_max_events_per_tick", prev.flow_max_events_per_tick),
+    enable_flow_peer_exit: b("enable_flow_peer_exit", prev.enable_flow_peer_exit),
+    flow_peer_window_sec: i("flow_peer_window_sec", prev.flow_peer_window_sec),
+    flow_peer_surge_drop: n("flow_peer_surge_drop", prev.flow_peer_surge_drop),
+    flow_peer_surge_rise: n("flow_peer_surge_rise", prev.flow_peer_surge_rise),
+    forecast_gate_buy: b("forecast_gate_buy", prev.forecast_gate_buy),
+    forecast_contradict_margin_c: n("forecast_contradict_margin_c", prev.forecast_contradict_margin_c),
+    forecast_reduce_usd_if_weak: b("forecast_reduce_usd_if_weak", prev.forecast_reduce_usd_if_weak),
+    forecast_weak_size_factor: n("forecast_weak_size_factor", prev.forecast_weak_size_factor),
   };
 }
 
@@ -141,6 +240,8 @@ export default function App() {
   const [pnl, setPnl] = useState<PnlSummary | null>(null);
   const [positions, setPositions] = useState<PortfolioResp | null>(null);
   const [weather, setWeather] = useState<WeatherResp | null>(null);
+  const [forecastPreview, setForecastPreview] = useState<ForecastPreviewResp | null>(null);
+  const [forecastLoading, setForecastLoading] = useState(true);
   const [cfg, setCfg] = useState<RuntimeResp | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -201,6 +302,20 @@ export default function App() {
     }
   }, []);
 
+  const loadForecastPreview = useCallback(async (refresh = false) => {
+    setForecastLoading(true);
+    try {
+      const q = refresh ? "?refresh=1" : "";
+      const r = await api(`/api/forecast/preview${q}`);
+      const j = (await r.json()) as ForecastPreviewResp;
+      setForecastPreview(j);
+    } catch (e) {
+      setForecastPreview({ error: String(e) });
+    } finally {
+      setForecastLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     void loadCore();
   }, [loadCore]);
@@ -209,9 +324,14 @@ export default function App() {
     void loadWeather();
   }, [loadWeather]);
 
+  useEffect(() => {
+    void loadForecastPreview();
+  }, [loadForecastPreview]);
+
   async function refreshAll() {
     await loadCore();
     await loadWeather();
+    await loadForecastPreview(true);
   }
 
   async function resetToDefaults() {
@@ -575,6 +695,67 @@ export default function App() {
         ) : null}
       </section>
 
+      <h2>Forecast preview (models vs markets)</h2>
+      <section>
+        <p className="muted">
+          Open-Meteo (+ optional OpenWeather). Uses <code>data/forecast_cache.json</code> when fresh (&lt;10m);
+          run <code>python -m forecast</code> or click refresh below to rebuild. Same grouping as the Telegram digest.
+        </p>
+        {forecastLoading ? (
+          <p className="muted">loading forecast preview…</p>
+        ) : forecastPreview?.error ? (
+          <p className="err">{forecastPreview.error}</p>
+        ) : forecastPreview?.groups?.length ? (
+          <>
+            <p className="muted">
+              local {forecastPreview.generated_at_local ?? "—"} · scope <code>{forecastPreview.scope}</code> ·
+              groups {forecastPreview.group_count} · days {forecastPreview.target_day_label}
+              {forecastPreview.secondary_target_day_label
+                ? ` + ${forecastPreview.secondary_target_day_label}`
+                : ""}{" "}
+              · Gamma pages {forecastPreview.max_pages_used ?? "—"} · scanned {forecastPreview.markets_scanned ?? "—"}{" "}
+              · OW enabled {forecastPreview.openweather_enabled ? "yes" : "no"} · key{" "}
+              {forecastPreview.openweather_key_configured ? "present" : "missing"}
+              {forecastPreview.from_cache
+                ? ` · cache ${forecastPreview.cache_age_sec != null ? `${forecastPreview.cache_age_sec}s old` : ""}`
+                : ""}
+              {forecastPreview.stale_after_error ? " · stale (live fetch failed)" : ""}
+            </p>
+            {forecastPreview.digest_meta ? (
+              <p className="muted" style={{ marginTop: 4 }}>
+                digest: parsable titles {forecastPreview.digest_meta.markets_parsable_temp_title ?? "—"} /{" "}
+                {forecastPreview.digest_meta.markets_in_scope ?? "—"} scanned · distinct city-days{" "}
+                {forecastPreview.digest_meta.city_day_groups_total ?? "—"} · included{" "}
+                {forecastPreview.digest_meta.city_day_groups_included ?? "—"} · cap{" "}
+                {forecastPreview.digest_meta.digest_max_groups_applied ?? "—"}
+              </p>
+            ) : null}
+            {forecastPreview.groups.map((g) => (
+              <div key={`${g.city_key}-${g.date_iso}`} style={{ marginBottom: "1.25rem" }}>
+                <div style={{ fontWeight: "bold", marginBottom: 4 }}>
+                  {g.city_key} · {g.date_iso} · {g.timezone_label} local
+                </div>
+                <p className="muted" style={{ margin: "0 0 0.5rem" }}>
+                  Daily max forecast: OM {g.open_meteo_c != null ? `${g.open_meteo_c.toFixed(1)}°C` : "—"} · OW{" "}
+                  {g.openweather_c != null ? `${g.openweather_c.toFixed(1)}°C` : "—"} · consensus{" "}
+                  {g.consensus_c != null ? `${g.consensus_c.toFixed(1)}°C` : "—"}
+                </p>
+              </div>
+            ))}
+          </>
+        ) : (
+          <p className="muted">No parsable temperature markets in this scan (or empty batch).</p>
+        )}
+        <button
+          type="button"
+          className="secondary"
+          disabled={busy}
+          onClick={() => void loadForecastPreview(true)}
+        >
+          Refresh forecast preview (ignore cache)
+        </button>
+      </section>
+
       <h2>Daily blacklist</h2>
       <section>
         <p className="muted">merged with runtime blacklist · per calendar day file · Telegram on change</p>
@@ -657,6 +838,106 @@ export default function App() {
             momentum
           </label>
         </div>
+
+        <h3 style={{ marginTop: "1.25rem" }}>Forecast &amp; flow</h3>
+        <p className="muted">
+          <b>Refresh</b> = Gamma + Open-Meteo + <code>forecast_cache.json</code>. <b>Telegram</b> = optional digest
+          message cadence (0 = never auto; use <code>/digest</code> in chat). Standalone{" "}
+          <code>python -m forecast</code> uses the same two intervals.
+        </p>
+        <div className="form-grid">
+          {(
+            [
+              ["forecast_digest_refresh_interval_sec", "forecast refresh / cache (sec)", true],
+              ["forecast_digest_telegram_interval_sec", "Telegram digest (sec, 0=off)", true],
+              ["forecast_digest_max_location_groups", "forecast max city-day groups (4–500, not /digest)", true],
+              ["flow_max_events_per_tick", "flow max events per bot tick", true],
+              ["flow_peer_window_sec", "flow peer window (sec)", true],
+              ["flow_peer_surge_drop", "flow peer surge drop ratio", false],
+              ["flow_peer_surge_rise", "flow peer surge rise ratio", false],
+              ["forecast_contradict_margin_c", "forecast gate margin (°C)", false],
+              ["forecast_weak_size_factor", "weak forecast size factor (0–1)", false],
+            ] as const
+          ).map(([k, label, asInt]) => (
+            <div key={k}>
+              <label htmlFor={k}>{label}</label>
+              <input
+                id={k}
+                type="number"
+                step="any"
+                value={String(form[k as keyof FormState])}
+                onChange={(e) =>
+                  setForm((f) => ({
+                    ...f,
+                    [k]: e.target.value === "" ? 0 : asInt ? Math.round(Number(e.target.value)) : Number(e.target.value),
+                  }))
+                }
+              />
+            </div>
+          ))}
+          <div>
+            <label htmlFor="forecast_digest_scope">forecast digest scope</label>
+            <select
+              id="forecast_digest_scope"
+              value={form.forecast_digest_scope}
+              onChange={(e) => setForm((f) => ({ ...f, forecast_digest_scope: e.target.value }))}
+            >
+              <option value="scan">scan (weather batch)</option>
+              <option value="positions">positions only</option>
+            </select>
+          </div>
+        </div>
+        <div className="form-grid" style={{ marginTop: "0.5rem" }}>
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={form.forecast_digest_enabled}
+              onChange={(e) => setForm((f) => ({ ...f, forecast_digest_enabled: e.target.checked }))}
+            />
+            forecast digest (Telegram)
+          </label>
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={form.enable_openweather_forecast}
+              onChange={(e) => setForm((f) => ({ ...f, enable_openweather_forecast: e.target.checked }))}
+            />
+            OpenWeather second source
+          </label>
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={form.enable_flow_sampling}
+              onChange={(e) => setForm((f) => ({ ...f, enable_flow_sampling: e.target.checked }))}
+            />
+            flow sampling (jsonl)
+          </label>
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={form.enable_flow_peer_exit}
+              onChange={(e) => setForm((f) => ({ ...f, enable_flow_peer_exit: e.target.checked }))}
+            />
+            flow peer surge exit
+          </label>
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={form.forecast_gate_buy}
+              onChange={(e) => setForm((f) => ({ ...f, forecast_gate_buy: e.target.checked }))}
+            />
+            forecast gate buy (blocks weak YES)
+          </label>
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={form.forecast_reduce_usd_if_weak}
+              onChange={(e) => setForm((f) => ({ ...f, forecast_reduce_usd_if_weak: e.target.checked }))}
+            />
+            reduce USD if forecast weak
+          </label>
+        </div>
+
         <div className="row" style={{ gap: "0.75rem", marginTop: "0.5rem" }}>
           <button type="button" disabled={busy} onClick={() => void saveThresholds()}>
             Save (Telegram notify)

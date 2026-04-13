@@ -1,4 +1,6 @@
 .env
+data/
+
 venv/
 __pycache__/
 *.pyc
@@ -25,3 +27,8 @@ logs/
 /date/trade_log_*.csv
 /data/price_samples/*
 /data/price_samples
+/data/trade_log_2026-04-11.csv
+/data/*csv
+/data/*
+*data/
+data
