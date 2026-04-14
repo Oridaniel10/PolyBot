@@ -75,6 +75,7 @@ class RuntimeConfigUpdate(BaseModel):
     forecast_contradict_margin_c: Optional[float] = Field(None, ge=0.0, le=15.0)
     forecast_reduce_usd_if_weak: Optional[bool] = None
     forecast_weak_size_factor: Optional[float] = Field(None, ge=0.05, le=1.0)
+    research_exit_on_model_flip: Optional[bool] = None
 
 
 class BlacklistToggle(BaseModel):

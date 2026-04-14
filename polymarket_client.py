@@ -687,6 +687,9 @@ class PolymarketClient:
         self,
         target_day_label: Optional[str],
         extra_target_day_labels: Optional[List[str]],
+        *,
+        include_inactive: bool = False,
+        max_pages: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         """
         Gamma list endpoints often omit weather; public-search returns multi-market events.
@@ -709,10 +712,16 @@ class PolymarketClient:
 
         seen: Set[str] = set()
         out: List[Dict[str, Any]] = []
+        page_cap = (
+            max_pages
+            if max_pages is not None
+            else HIGHEST_TEMP_PUBLIC_SEARCH_MAX_PAGES
+        )
+        page_cap = max(1, min(40, int(page_cap)))
 
         def run_queries(query_list: List[str]) -> None:
             for q in query_list:
-                for page in range(HIGHEST_TEMP_PUBLIC_SEARCH_MAX_PAGES):
+                for page in range(page_cap):
                     try:
                         data = self._request(
                             "GET",
@@ -734,7 +743,7 @@ class PolymarketClient:
                         for m in mk:
                             if not isinstance(m, dict):
                                 continue
-                            if not m.get("active"):
+                            if not include_inactive and not m.get("active"):
                                 continue
                             if not self._is_highest_temp_market(
                                 m, target_day_label, extra_target_day_labels
@@ -761,6 +770,8 @@ class PolymarketClient:
         extra_target_day_labels: Optional[List[str]] = None,
         max_pages: int = 80,
         anchor_ids: Optional[List[int]] = None,
+        include_inactive: bool = False,
+        public_search_max_pages: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         labels_key = tuple(
             self._merge_target_day_labels(
@@ -769,7 +780,11 @@ class PolymarketClient:
         )
         now_m = time.monotonic()
         cached = self._highest_temp_public_search_cache
-        if cached is not None:
+        if (
+            cached is not None
+            and not include_inactive
+            and public_search_max_pages is None
+        ):
             ts, key, lst = cached
             if (
                 now_m - ts < HIGHEST_TEMP_PUBLIC_SEARCH_CACHE_TTL_SEC
@@ -778,7 +793,10 @@ class PolymarketClient:
                 return list(lst)
 
         search_hits = self._public_search_highest_temperature_markets(
-            target_day_label, extra_target_day_labels
+            target_day_label,
+            extra_target_day_labels,
+            include_inactive=include_inactive,
+            max_pages=public_search_max_pages,
         )
         if search_hits:
             found_ids = [
@@ -792,11 +810,12 @@ class PolymarketClient:
                         min(found_ids) - 40,
                         max(found_ids) + 40,
                     )
-            self._highest_temp_public_search_cache = (
-                now_m,
-                labels_key,
-                search_hits,
-            )
+            if not include_inactive:
+                self._highest_temp_public_search_cache = (
+                    now_m,
+                    labels_key,
+                    search_hits,
+                )
             return search_hits
 
         # --- step 1: determine the ID range to scan ---

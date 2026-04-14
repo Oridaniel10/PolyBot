@@ -55,6 +55,7 @@ def default_runtime_dict() -> Dict[str, Any]:
         "forecast_contradict_margin_c": C.FORECAST_CONTRADICT_MARGIN_C,
         "forecast_reduce_usd_if_weak": C.FORECAST_REDUCE_USD_IF_WEAK,
         "forecast_weak_size_factor": C.FORECAST_WEAK_SIZE_FACTOR,
+        "research_exit_on_model_flip": C.RESEARCH_EXIT_ON_MODEL_FLIP,
     }
 
 
@@ -125,6 +126,7 @@ class RuntimeSettings:
     forecast_contradict_margin_c: float
     forecast_reduce_usd_if_weak: bool
     forecast_weak_size_factor: float
+    research_exit_on_model_flip: bool
     blacklist_market_ids: Set[str] = field(default_factory=set)
 
     @classmethod
@@ -238,6 +240,9 @@ class RuntimeSettings:
             ),
             forecast_weak_size_factor=float(
                 d.get("forecast_weak_size_factor", C.FORECAST_WEAK_SIZE_FACTOR)
+            ),
+            research_exit_on_model_flip=bool(
+                d.get("research_exit_on_model_flip", C.RESEARCH_EXIT_ON_MODEL_FLIP)
             ),
             blacklist_market_ids=ids,
         )

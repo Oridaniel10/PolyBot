@@ -10,6 +10,21 @@ BLACKLIST_FILE = DATA_DIR / "blacklist_day.json"
 PRICE_SAMPLES_DIR = DATA_DIR / "price_samples"
 FLOW_SAMPLES_FILE = DATA_DIR / "flow_samples.jsonl"
 FORECAST_CACHE_FILE = DATA_DIR / "forecast_cache.json"
+RESEARCH_DIR = DATA_DIR / "research"
+RESEARCH_CITIES_FILE = RESEARCH_DIR / "cities.json"
+RESEARCH_RESOLUTION_REGISTRY_FILE = RESEARCH_DIR / "resolution_registry.json"
+RESEARCH_RESOLUTION_OVERRIDES_FILE = RESEARCH_DIR / "resolution_overrides.json"
+RESEARCH_DAILY_RUNS_FILE = RESEARCH_DIR / "daily_runs.jsonl"
+RESEARCH_FORECASTS_HISTORY_FILE = RESEARCH_DIR / "forecasts_history.jsonl"
+RESEARCH_TRUTH_DAILY_FILE = RESEARCH_DIR / "truth_daily.jsonl"
+RESEARCH_MARKET_OUTCOMES_FILE = RESEARCH_DIR / "market_outcomes.jsonl"
+RESEARCH_CALIBRATION_LATEST_FILE = RESEARCH_DIR / "calibration_latest.json"
+RESEARCH_EVENT_SUMMARY_FILE = RESEARCH_DIR / "event_summary_latest.json"
+RESEARCH_CITY_TABLES_DIR = RESEARCH_DIR / "city_tables"
+RESEARCH_EXPORTS_DIR = RESEARCH_DIR / "exports"
+# compact JSON output (new rows only; old jsonl lines unchanged)
+RESEARCH_REGISTRY_RSRC_MAX_LEN = 360
+RESEARCH_OUTCOME_QUESTION_MAX_LEN = 120
 # UI + on-demand portfolio: treat cache as fresh under this age (aligns with digest interval)
 # treat dashboard cache as fresh if younger than ~3× digest refresh
 FORECAST_CACHE_MAX_AGE_SEC = 360
@@ -32,7 +47,13 @@ MAX_CONCURRENT_POSITIONS = 7
 TAKE_PROFIT_COMPARE_SLACK = 0.002
 # after a "below CLOB min" sell skip we set a long cooldown — must not block risk exits
 SELL_BYPASS_MIN_COOLDOWN_REASONS = frozenset(
-    {"take-profit", "stop-loss", "momentum-peer-drop", "flow-peer-surge"}
+    {
+        "take-profit",
+        "stop-loss",
+        "momentum-peer-drop",
+        "flow-peer-surge",
+        "research-model-flip",
+    }
 )
 DEFAULT_ORDER_SIZE = 10.0
 MAX_TRADE_FRACTION_OF_CASH = 0.90
@@ -81,6 +102,9 @@ FORECAST_GATE_BUY = True
 FORECAST_CONTRADICT_MARGIN_C = 1.5
 FORECAST_REDUCE_USD_IF_WEAK = True
 FORECAST_WEAK_SIZE_FACTOR = 0.75
+
+# research calibration file under data/research/; optional model exit
+RESEARCH_EXIT_ON_MODEL_FLIP = False
 
 YES_LABEL = "YES"
 STATUS_CLOSED = frozenset({"closed", "claimable", "resolved"})

@@ -858,6 +858,39 @@ def process_single_market(
             )
             return
 
+    if (
+        getattr(settings, "research_exit_on_model_flip", False)
+        and has_position
+        and trade_row
+        and market_can_post_clob_orders(market)
+    ):
+        t_exit = str(market.get("question") or market.get("title") or "")
+        p_exit = parse_highest_temp_title(t_exit)
+        if p_exit:
+            ow_key_exit = ""
+            if getattr(settings, "enable_openweather_forecast", False):
+                ow_key_exit = os.getenv("OPENWEATHER_API_KEY", "").strip()
+            _om_e, _ow_e, cons_e = get_forecast_max_for_city_day(
+                p_exit.city_key,
+                p_exit.event_date,
+                p_exit.tz_name,
+                openweather_api_key=ow_key_exit,
+            )
+            if cons_e is not None:
+                margin_e = float(getattr(settings, "forecast_contradict_margin_c", 2.5))
+                if forecast_contradicts_strongly(cons_e, p_exit, margin_e):
+                    close_position(
+                        client,
+                        market,
+                        state,
+                        telegram,
+                        gamma_probability,
+                        "research-model-flip",
+                        settings,
+                        state_trade_key=sk,
+                    )
+                    return
+
     prob_stop = stop_loss_reference_if_triggered(market, trade_row, settings.stop_loss)
     if prob_stop is not None:
         close_position(

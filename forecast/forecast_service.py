@@ -8,6 +8,7 @@ from typing import Dict, Optional, Tuple
 from forecast.geocode import city_lat_lon
 from forecast.open_meteo import fetch_daily_max_temp_c as fetch_om
 from forecast.openweather import fetch_daily_max_temp_c as fetch_ow
+from research.calibration_apply import adjust_consensus_optional
 
 _CACHE: Dict[
     Tuple[str, str],
@@ -39,7 +40,8 @@ def get_forecast_max_for_city_day(
     ck = (city_key.lower(), event_date.isoformat())
     hit = _CACHE.get(ck)
     if hit and (now - hit[3]) < _CACHE_TTL_SEC:
-        return hit[0], hit[1], consensus_two(hit[0], hit[1])
+        # hit[2] is already calibration-adjusted consensus
+        return hit[0], hit[1], hit[2]
 
     ll = city_lat_lon(city_key)
     if not ll:
@@ -50,9 +52,10 @@ def get_forecast_max_for_city_day(
     ow = fetch_ow(lat, lon, event_date, ow_key, tz_name) if ow_key else None
     cons = consensus_two(om, ow)
     # do not cache all-None (transient API / network); avoids "no forecast" stuck ~10min
+    cons_adj = adjust_consensus_optional(cons, city_key)
     if om is not None or ow is not None:
-        _CACHE[ck] = (om, ow, cons, now)
-    return om, ow, cons
+        _CACHE[ck] = (om, ow, cons_adj, now)
+    return om, ow, cons_adj
 
 
 def clear_forecast_cache() -> None:
