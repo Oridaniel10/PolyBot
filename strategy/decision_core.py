@@ -484,17 +484,12 @@ def evaluate_entry(
         if model_p + 1e-9 < peak_min:
             return finish("SKIP", f"model_flat {model_p:.4f} < peak_min {peak_min:.4f}")
 
-    # 7. competition filter — normal buys use min_lead_over_runner_up; cold momentum uses min_lead_momentum_over_runner_up
-    lead_gap = (
-        float(settings.min_lead_momentum_over_runner_up)
-        if is_momentum_entry
-        else float(settings.min_lead_over_runner_up)
-    )
+    # 7. competition filter — required for ALL entries (normal + momentum)
     comp = evaluate_competition(
         client,
         market,
         mkt,
-        lead_gap,
+        float(settings.min_lead_over_runner_up),
         event_cache,
         consensus_c=consensus_c,
         sigma_c_setting=float(settings.research_sigma_c),
@@ -502,7 +497,7 @@ def evaluate_entry(
     if settings.enable_competition_filter and not comp.passes:
         return finish(
             "SKIP",
-            f"competition_fail gap={comp.gap:.4f} < min_lead={lead_gap:.4f}",
+            f"competition_fail gap={comp.gap:.4f} < min_lead={settings.min_lead_over_runner_up:.4f}",
             competition=comp,
         )
 

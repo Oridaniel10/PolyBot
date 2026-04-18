@@ -129,12 +129,7 @@ def _digest_rows(
     row(
         "min_lead_over_runner_up",
         settings.min_lead_over_runner_up,
-        "min probability gap #1 vs #2 — normal buys (e.g. 0.20)",
-    )
-    row(
-        "min_lead_momentum_over_runner_up",
-        settings.min_lead_momentum_over_runner_up,
-        "same for cold momentum entry only (e.g. 0.10)",
+        "min probability gap #1 vs #2 (e.g. 0.15)",
     )
 
     sec("Churn / blacklist")

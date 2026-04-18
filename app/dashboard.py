@@ -47,7 +47,6 @@ class RuntimeConfigUpdate(BaseModel):
     stop_loss_tier_mark_high: Optional[float] = Field(None, ge=0.01, le=0.99)
     take_profit_threshold: Optional[float] = Field(None, ge=0.01, le=0.99)
     min_lead_over_runner_up: Optional[float] = Field(None, ge=0.0, le=0.95)
-    min_lead_momentum_over_runner_up: Optional[float] = Field(None, ge=0.0, le=0.95)
     enable_competition_filter: Optional[bool] = None
     enable_momentum: Optional[bool] = None
     momentum_window_min: Optional[int] = Field(None, ge=1, le=1440)
@@ -428,6 +427,7 @@ def api_trades_history(
     date: str = Query(..., description="YYYY-MM-DD"),
 ) -> List[Dict[str, Any]]:
     import csv as csv_mod
+
     path = C.DATA_DIR / f"trade_log_{date}.csv"
     if not path.is_file():
         return []
@@ -453,6 +453,7 @@ def api_decisions_recent(
     limit: int = Query(50, ge=1, le=200),
 ) -> List[Dict[str, Any]]:
     from strategy.decision_core import get_recent_decisions
+
     return get_recent_decisions(limit)
 
 
@@ -461,6 +462,7 @@ def api_stats_summary(
     date: str = Query(..., description="YYYY-MM-DD"),
 ) -> Dict[str, Any]:
     import csv as csv_mod
+
     path = C.DATA_DIR / f"trade_log_{date}.csv"
     if not path.is_file():
         return {"date": date, "error": "no_data"}

@@ -44,11 +44,6 @@ BUY_MIN_THRESHOLD = 0.55
 BUY_MAX_THRESHOLD = 0.70
 # when true, skip buy_min/buy_max band in process_single_market and CLOB band checks in place_buy
 BUY_DISABLE_PRICE_BAND = False
-# before USD market buy: walk visible CLOB asks; skip if VWAP or any level would exceed band hi,
-# or if the book cannot cover this fraction of notional (hidden depth could print worse).
-MARKET_BUY_ENFORCE_VISIBLE_BOOK = True
-MARKET_BUY_VISIBLE_UNFILLED_MAX_FRAC = 0.05
-MARKET_BUY_VISIBLE_UNFILLED_MIN_USD = 0.35
 # flat weak-price bar when stop_loss_use_entry_tiers is false
 STOP_LOSS_THRESHOLD = 0.39
 # tiered SL: if entry < split → exit when mark/gamma below mark_low; else below mark_high
@@ -83,17 +78,12 @@ SELL_BYPASS_MIN_COOLDOWN_REASONS = frozenset(
 )
 DEFAULT_ORDER_SIZE = 10.0
 MAX_TRADE_FRACTION_OF_CASH = 0.90
-MAX_BUY_NOTIONAL_USD = 3.0
+MAX_BUY_NOTIONAL_USD = 5.0
 MIN_ORDER_NOTIONAL_USD = 2.0
 # never allocate buys from this portion of free cash (runtime + UI override)
-CASH_RESERVE_USD = 25.0
+CASH_RESERVE_USD = 38.0
 
-# gap (probability pts) this bucket must lead #2 by for BUY when competition filter is on (normal path).
-# override: runtime min_lead_over_runner_up
-MIN_LEAD_OVER_RUNNER_UP = 0.20
-# cold momentum entry: same filter on, but uses this gap instead of MIN_LEAD_OVER_RUNNER_UP.
-# override: runtime min_lead_momentum_over_runner_up
-MIN_LEAD_MOMENTUM_OVER_RUNNER_UP = 0.10
+MIN_LEAD_OVER_RUNNER_UP = 0.15
 ENABLE_COMPETITION_FILTER = True
 
 # smart engine: momentum windows and thresholds
@@ -102,8 +92,9 @@ MOMENTUM_WINDOW_SECONDS = 900
 PORTFOLIO_TELEGRAM_MOMENTUM_LONG_SEC = 7200
 MOMENTUM_FAST_EXIT_DROP = 0.20
 MOMENTUM_COMPETITOR_SURGE = 0.15
-MOMENTUM_ENTRY_RISE = 0.20
-# cold momentum entry (no position in this event): market-YES must be rank 1 only, plus competition gap
+MOMENTUM_ENTRY_RISE = 0.15
+# momentum entry when we do not already hold this event: must be market-YES rank 1
+# AND pass competition filter (gap >= MIN_LEAD_OVER_RUNNER_UP)
 MOMENTUM_ENTRY_MAX_RANK = 1
 # momentum switch / defensive exit: leader YES >= held_mark + this gap (probability points, 0.15 = +15pp)
 MOMENTUM_SWITCH_ABOVE_HELD_GAP = 0.15
@@ -117,8 +108,7 @@ MOMENTUM_DECISION_DEBUG_LOG = False
 
 # smart engine: time-decay exit
 TIME_DECAY_HOURS = 2.0
-# min gain vs entry to avoid time-decay exit (fraction: 0.05 = need at least +5% from entry)
-TIME_DECAY_MIN_GAIN = 0.05
+TIME_DECAY_MIN_GAIN = 0.02
 TIME_DECAY_MAX_PRICE = 0.85
 
 # legacy momentum (kept for backward compat with price sample infra)

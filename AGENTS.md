@@ -20,7 +20,7 @@ Respect Polymarket limits; see **[POLY_RATE_LIMITS.MD](POLY_RATE_LIMITS.MD)** an
 | **Decision engine** | `strategy/decision_core.py` — central entry/exit orchestrator |
 | **Probability model** | `strategy/probability_engine.py` — Gaussian P(YES) per bucket |
 | **Momentum engine** | `strategy/momentum_engine.py` — 15-min fast exit, competitor surge, entry signal |
-| **Competition filter** | `strategy/competition_filter.py` — normal buys: `min_lead_over_runner_up`; cold momentum entry: `min_lead_momentum_over_runner_up` (`evaluate_entry`) |
+| **Competition filter** | `strategy/competition_filter.py` — 15% lead gap requirement |
 | **Time filter** | `strategy/time_filter.py` — entry window (14:00-24:00) + time-decay exit |
 | Thresholds | `config/settings.py`, `data/runtime_config.json` (incl. `cash_reserve_usd`, sizing) |
 | Gates / CLOB | `strategy/gates.py` |

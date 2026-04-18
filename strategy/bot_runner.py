@@ -92,7 +92,9 @@ def dispatch_telegram_commands(
             if not cmd_lower:
                 continue
             if cmd_lower in ("/status", "/report", "status", "report", "דוח"):
-                print(term_wrap(TERM_DIM, f"[telegram] on-demand command: {cmd_lower!r}"))
+                print(
+                    term_wrap(TERM_DIM, f"[telegram] on-demand command: {cmd_lower!r}")
+                )
                 _bl = get_effective_settings().blacklist_market_ids
                 threading.Thread(
                     target=send_portfolio_telegram,

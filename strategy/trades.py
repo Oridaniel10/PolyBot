@@ -13,9 +13,6 @@ from config.constants import (
     DUST_SHARES_EPS,
     FORECAST_CONTRADICT_MARGIN_C,
     FORECAST_EXACT_BUCKET_SUPPORT_SLACK_C,
-    MARKET_BUY_ENFORCE_VISIBLE_BOOK,
-    MARKET_BUY_VISIBLE_UNFILLED_MAX_FRAC,
-    MARKET_BUY_VISIBLE_UNFILLED_MIN_USD,
     MAX_CONCURRENT_POSITIONS,
     MOMENTUM_ENTRY_RISE,
     MOMENTUM_MAX_ENTRY,
@@ -217,20 +214,17 @@ def place_buy(
         or market.get("title")
         or market.get("id", "unknown-market")
     )
-    # verify real CLOB price before committing (prefer live orderbook over Gamma bestAsk)
+    # verify real CLOB price before committing
     clob_price = client.get_clob_yes_price(market)
-    book_best = client.get_clob_yes_best_ask_from_book(market)
-    if book_best > 0:
-        clob_price = book_best
     mom_relax = bool(
         trade_decision is not None
         and getattr(trade_decision, "momentum_relaxed_gates", False)
     )
     mom_lo_pb = float(getattr(settings, "momentum_min_price", MOMENTUM_MIN_PRICE))
     mom_hi_pb = float(getattr(settings, "momentum_max_entry", MOMENTUM_MAX_ENTRY))
-    hi = mom_hi_pb if mom_relax else float(settings.buy_max)
-    lo = mom_lo_pb if mom_relax else float(settings.buy_min)
     if not getattr(settings, "buy_disable_price_band", False):
+        hi = mom_hi_pb if mom_relax else float(settings.buy_max)
+        lo = mom_lo_pb if mom_relax else float(settings.buy_min)
         if clob_price > 0 and clob_price > hi + 1e-9:
             print(
                 term_wrap(
@@ -326,52 +320,6 @@ def place_buy(
             )
         )
         return
-    if MARKET_BUY_ENFORCE_VISIBLE_BOOK and not getattr(
-        settings, "buy_disable_price_band", False
-    ):
-        filled, vwap_est, max_px, unfilled = client.estimate_yes_market_buy_usd_walk(
-            market, float(usd)
-        )
-        if filled <= 1e-9:
-            print(
-                term_wrap(
-                    TERM_DIM,
-                    f"[book] skip buy — no visible YES asks on CLOB\n  {title}",
-                )
-            )
-            return
-        tol = 1e-6
-        if max_px > hi + tol:
-            print(
-                term_wrap(
-                    TERM_DIM,
-                    f"[book] skip buy — market walk would print up to {max_px:.4f} "
-                    f"> band_hi={hi:.4f} (thin stack / stale quote)\n  {title}",
-                )
-            )
-            return
-        if vwap_est > hi + tol:
-            print(
-                term_wrap(
-                    TERM_DIM,
-                    f"[book] skip buy — full ${usd:.2f} walk VWAP≈{vwap_est:.4f} "
-                    f"> band_hi={hi:.4f}\n  {title}",
-                )
-            )
-            return
-        unfilled_cap = max(
-            float(MARKET_BUY_VISIBLE_UNFILLED_MIN_USD),
-            float(MARKET_BUY_VISIBLE_UNFILLED_MAX_FRAC) * float(usd),
-        )
-        if unfilled > unfilled_cap + 1e-9:
-            print(
-                term_wrap(
-                    TERM_DIM,
-                    f"[book] skip buy — visible depth leaves ${unfilled:.2f} unfilled "
-                    f"(cap ${unfilled_cap:.2f}); rest could print above book\n  {title}",
-                )
-            )
-            return
     try:
         order = client.place_market_buy_yes(market, usd)
     except PolyApiException as err:
@@ -396,26 +344,7 @@ def place_buy(
         except requests.RequestException:
             pass
         return
-    fill_px, fill_sh = client.resolve_buy_fill_after_market_yes(
-        market_id,
-        quote_price=float(probability),
-        usd_notional=float(usd),
-    )
-    quote_px = float(probability)
-    if 1e-9 < fill_px <= 1.0 + 1e-9:
-        probability = float(fill_px)
-    if fill_sh > 1e-9:
-        shares = round(float(fill_sh), 6)
-    else:
-        shares = round(usd / probability, 6) if probability else 0.0
-    if abs(probability - quote_px) > 0.01:
-        print(
-            term_wrap(
-                TERM_YELLOW,
-                f"[fill] quoted best ask ~{quote_px:.4f} → position avg ~{probability:.4f} "
-                f"(market buy VWAP / thin book)\n  {title}",
-            )
-        )
+    shares = round(usd / probability, 6) if probability else 0.0
     tp_bar = max(
         0.0,
         min(1.0, float(settings.take_profit) - TAKE_PROFIT_COMPARE_SLACK),
@@ -453,12 +382,6 @@ def place_buy(
         f"order_ref={order_ref_from_response(order) or order}"
     )
     oref = order_ref_from_response(order) or str(order)
-    slip_html = ""
-    if abs(float(probability) - quote_px) > 0.01:
-        slip_html = (
-            f"\n⚠️ <b>fill avg</b> <code>{probability:.4f}</code> vs quoted best ask "
-            f"<code>{quote_px:.4f}</code> <i>(market VWAP)</i>"
-        )
     headline_html = _status_portfolio_headline_html(
         (
             f"🟢 <b>BUY YES</b> <i>(bot)</i>\n"
@@ -466,7 +389,7 @@ def place_buy(
             f"💰 cash <code>${cash:.2f}</code>  ·  reserve <code>${reserve_usd:.2f}</code>"
             f"  ·  tradable <code>${tradable:.2f}</code>\n"
             f"💵 <code>${usd:.2f}</code>  ·  shares ~<code>{shares:.4f}</code>"
-            f"  ·  yes ~<code>{probability:.4f}</code>{slip_html}\n"
+            f"  ·  yes ~<code>{probability:.4f}</code>\n"
             f"{format_buy_max_risk_line_html(usd)}\n"
             f"{format_buy_exit_plan_html(probability, shares, tp_bar, sl_bar)}\n"
             f"📏 min({frac * 100:.0f}%×tradable, ${cap_hard:.0f} cap) → "

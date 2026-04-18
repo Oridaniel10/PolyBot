@@ -27,7 +27,6 @@ def default_runtime_dict() -> Dict[str, Any]:
         "stop_loss_tier_mark_high": C.STOP_LOSS_TIER_MARK_HIGH,
         "take_profit_threshold": C.TAKE_PROFIT_THRESHOLD,
         "min_lead_over_runner_up": C.MIN_LEAD_OVER_RUNNER_UP,
-        "min_lead_momentum_over_runner_up": C.MIN_LEAD_MOMENTUM_OVER_RUNNER_UP,
         "enable_competition_filter": C.ENABLE_COMPETITION_FILTER,
         "enable_momentum": C.ENABLE_MOMENTUM,
         "momentum_window_min": C.MOMENTUM_WINDOW_MIN,
@@ -143,7 +142,6 @@ class RuntimeSettings:
     stop_loss_tier_mark_high: float
     take_profit: float
     min_lead_over_runner_up: float
-    min_lead_momentum_over_runner_up: float
     enable_competition_filter: bool
     enable_momentum: bool
     momentum_window_min: int
@@ -309,15 +307,6 @@ class RuntimeSettings:
         sl_mlow = max(0.01, min(0.99, sl_mlow))
         sl_mhigh = float(d.get("stop_loss_tier_mark_high", C.STOP_LOSS_TIER_MARK_HIGH))
         sl_mhigh = max(0.01, min(0.99, sl_mhigh))
-        min_lead = float(d.get("min_lead_over_runner_up", C.MIN_LEAD_OVER_RUNNER_UP))
-        min_lead = max(0.0, min(0.95, min_lead))
-        min_lead_mom = float(
-            d.get(
-                "min_lead_momentum_over_runner_up",
-                C.MIN_LEAD_MOMENTUM_OVER_RUNNER_UP,
-            )
-        )
-        min_lead_mom = max(0.0, min(0.95, min_lead_mom))
         return cls(
             buy_min=float(d.get("buy_min_threshold", C.BUY_MIN_THRESHOLD)),
             buy_max=float(d.get("buy_max_threshold", C.BUY_MAX_THRESHOLD)),
@@ -332,8 +321,9 @@ class RuntimeSettings:
             stop_loss_tier_mark_low=sl_mlow,
             stop_loss_tier_mark_high=sl_mhigh,
             take_profit=float(d.get("take_profit_threshold", C.TAKE_PROFIT_THRESHOLD)),
-            min_lead_over_runner_up=min_lead,
-            min_lead_momentum_over_runner_up=min_lead_mom,
+            min_lead_over_runner_up=float(
+                d.get("min_lead_over_runner_up", C.MIN_LEAD_OVER_RUNNER_UP)
+            ),
             enable_competition_filter=bool(
                 d.get("enable_competition_filter", C.ENABLE_COMPETITION_FILTER)
             ),

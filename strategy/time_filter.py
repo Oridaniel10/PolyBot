@@ -48,7 +48,7 @@ def should_time_decay_exit(
     trade: Dict[str, Any],
     current_price: float,
     decay_hours: float = 2.0,
-    min_gain_pct: float = 0.05,
+    min_gain_pct: float = 0.02,
     max_price_for_decay: float = 0.85,
     now_ts: Optional[float] = None,
 ) -> Tuple[bool, str]:
