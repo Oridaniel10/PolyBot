@@ -56,10 +56,10 @@ A buy is executed only when **ALL** conditions pass, checked in order:
 | 9 | **Market prob ceiling** | market_yes ≤ max (skipped when momentum path qualifies) | `MAX_MARKET_PROB_FOR_BUY = 0.75` | `config/constants.py:148` |
 | 10 | **Model prob floor** | model_prob ≥ min (skipped when momentum path qualifies) | `MIN_MODEL_PROB_FOR_BUY = 0.10` | `config/constants.py:149` |
 | 11 | **Not flat distribution** | model peak gate (skipped when momentum path qualifies) | `DECISION_MIN_MODEL_PEAK_PROB = 0.12` | `config/constants.py:152` |
-| 12 | **Momentum entry** ⚡ | YES up ≥15% in 15m **and** `momentum_min_price ≤ price ≤ momentum_max_entry` **and** market-YES **rank = 1** in the event → bypass competition, edge, model rows 9–11, **forecast contradict** at `place_buy`, and use momentum CLOB band | `MOMENTUM_ENTRY_RISE`, `MOMENTUM_WINDOW_SECONDS`, `MOMENTUM_ENTRY_MAX_RANK = 1`, `momentum_min_price` / `momentum_max_entry` | `config/constants.py`, `strategy/decision_core.py`, `strategy/trades.py` |
+| 12 | **Momentum entry** ⚡ | YES up ≥15% in 15m **and** `momentum_min_price ≤ price ≤ momentum_max_entry` **and** market-YES **rank = 1** **and** `YES − runner_up_YES ≥ min_lead_over_runner_up` (market race, same as row 13) → bypass model rows 9–11 + model-based competition check, **forecast contradict** at `place_buy`, momentum CLOB band | `MOMENTUM_ENTRY_RISE`, `min_lead_over_runner_up`, `market_yes_lead_gap_vs_runner_up` | `config/constants.py`, `strategy/competition_filter.py`, `strategy/decision_core.py` |
 | 12b | **Momentum switch** 🔁 | hold A; bucket B is **#1** by market YES, momentum rise + band, and `B_yes ≥ A_yes + MOMENTUM_SWITCH_ABOVE_HELD_GAP` → sell A (`momentum-switch-out`), then BUY B (if buy fails, exit-only / defensive) | `MOMENTUM_SWITCH_ABOVE_HELD_GAP = 0.15` | `strategy/decision_core.py` (`detect_momentum_switch`), `strategy/trades.py` |
 | 12c | **Dominant competitor exit** | while holding A: if **#1** sibling (not A) has momentum + band and `leader_yes ≥ mark_A + gap` → SELL A (`momentum-competitor-dominant`) even before the leader market is scanned for a switch-in | same gap constant | `strategy/decision_core.py` (`check_exits`) |
-| 13 | **Competition** | must be #1 with ≥15% lead over #2 (skipped if momentum entry) | `MIN_LEAD_OVER_RUNNER_UP = 0.15` | `config/constants.py:78` |
+| 13 | **Competition** | model or market gap vs runner-up ≥ `min_lead` (skipped if **momentum entry** — momentum already enforces **market** gap in row 12) | `MIN_LEAD_OVER_RUNNER_UP = 0.15`, `min_lead_over_runner_up` in `runtime_config.json` | `config/constants.py`, `strategy/competition_filter.py` |
 | 14 | **No negative momentum** | 15-min change > -10% (skipped if momentum entry) | — | `strategy/decision_core.py` |
 | 15 | **Edge gate** | `edge ≥ required_edge` … (skipped if momentum entry) | `RESEARCH_MIN_EDGE`, … | `config/constants.py`, `strategy/research_signal.py` |
 | 16 | **Forecast gate** | EXACT bracket contradict (skipped for momentum BUY at execution) | `FORECAST_CONTRADICT_MARGIN_C = 2.5` | `config/constants.py`, `strategy/trades.py` |
@@ -70,10 +70,11 @@ A buy is executed only when **ALL** conditions pass, checked in order:
 
 ### Momentum Entry (Ride the Wave) 🌊
 
-If a bucket’s YES price rose **≥15%** in the last **15 minutes** (`MOMENTUM_ENTRY_RISE`, `MOMENTUM_WINDOW_SECONDS`) **and** the current YES is in **`momentum_min_price` … `momentum_max_entry`** (defaults **0.17** … **0.75**) **and** this bucket is **top-1 or top-2 by market YES** among siblings in the same gamma event (`MOMENTUM_ENTRY_MAX_RANK`):
+If a bucket’s YES price rose **≥15%** in the last **15 minutes** (`MOMENTUM_ENTRY_RISE`, `MOMENTUM_WINDOW_SECONDS`) **and** the current YES is in **`momentum_min_price` … `momentum_max_entry`** **and** this bucket is **#1 by market YES** among siblings **and** `our_YES − second_best_YES ≥ min_lead_over_runner_up` (default **0.15**, same knob as competition; see `market_yes_lead_gap_vs_runner_up`):
 
 - **Model / flat / market ceiling rows** in `evaluate_entry` are **skipped** (momentum is the signal).
-- **Competition** (#1 + 15% lead) and **research edge** are **bypassed**.
+- **Model-based competition** (`evaluate_competition` with forecast σ) is **bypassed** — but the **market** lead vs runner-up is **required** as above.
+- **Research edge** is **bypassed**.
 - **Negative 15m momentum** check is **bypassed**.
 - **Forecast “contradicts bracket”** at `place_buy` and **CLOB band** use the **momentum** bounds when `TradeDecision.momentum_relaxed_gates` is set.
 - **Still required:** time + event day, max positions, forecast **exists** (for sizing / city), churn, blacklist, `max_positions_per_event` unless **momentum switch** (row 12b) sold the sibling first.

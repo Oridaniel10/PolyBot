@@ -4,7 +4,7 @@ Uses both model probabilities and market probabilities for a robust comparison.
 """
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from polymarket_client import PolymarketClient, gamma_event_ids_for_market
 from strategy.probability import parse_market_probability
@@ -96,3 +96,27 @@ def evaluate_competition(
         gap=gap,
         method="market_probs",
     )
+
+
+def market_yes_lead_gap_vs_runner_up(
+    market_id: str,
+    candidate_yes: float,
+    siblings: List[Dict[str, Any]],
+) -> Tuple[float, float]:
+    """
+    gap = candidate YES minus best other bucket YES (runner-up in the market race).
+
+    returns:
+    - (gap, runner_up_yes).
+    """
+    runner_up = 0.0
+    for m in siblings:
+        if not isinstance(m, dict):
+            continue
+        smid = str(m.get("id") or "").strip()
+        if not smid or smid == market_id:
+            continue
+        p = parse_market_probability(m)
+        if p > runner_up:
+            runner_up = p
+    return float(candidate_yes) - runner_up, runner_up

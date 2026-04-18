@@ -33,7 +33,11 @@ from config.settings import RuntimeSettings
 from forecast.parse_title import ParsedTempMarket
 from polymarket_client import PolymarketClient, gamma_event_ids_for_market
 from research.calibration_apply import resolved_research_sigma_c
-from strategy.competition_filter import CompetitionResult, evaluate_competition
+from strategy.competition_filter import (
+    CompetitionResult,
+    evaluate_competition,
+    market_yes_lead_gap_vs_runner_up,
+)
 from strategy.momentum_engine import (
     momentum_entry_signal,
     peer_surge_detected,
@@ -379,6 +383,15 @@ def evaluate_entry(
         peer_ids, window_sec=C.MOMENTUM_WINDOW_SECONDS, top_n=3
     )
 
+    min_lead_mkt = float(
+        getattr(settings, "min_lead_over_runner_up", C.MIN_LEAD_OVER_RUNNER_UP)
+    )
+    market_lead_gap, runner_up_yes = (
+        market_yes_lead_gap_vs_runner_up(market_id, mkt, siblings)
+        if siblings
+        else (1.0, 0.0)
+    )
+
     mom_signal, mom_rise = momentum_entry_signal(
         market_id,
         rise_threshold=C.MOMENTUM_ENTRY_RISE,
@@ -386,10 +399,12 @@ def evaluate_entry(
     )
     mom_min = float(getattr(settings, "momentum_min_price", C.MOMENTUM_MIN_PRICE))
     mom_max = float(getattr(settings, "momentum_max_entry", C.MOMENTUM_MAX_ENTRY))
+    # cold momentum: must be #1 by market YES and lead runner-up by min_lead (same 0.15 as competition)
     is_momentum_entry = (
         mom_signal
         and mom_min - 1e-12 <= mkt <= mom_max + 1e-12
-        and rank <= int(C.MOMENTUM_ENTRY_MAX_RANK)
+        and rank == 1
+        and market_lead_gap + 1e-12 >= min_lead_mkt
     )
 
     _, _, momentum_15m = price_change_in_window(market_id, C.MOMENTUM_WINDOW_SECONDS)
@@ -428,6 +443,9 @@ def evaluate_entry(
                 "momentum_15m_pct": round(float(momentum_15m) * 100.0, 2),
                 "window_rise_pct": round(float(mom_rise) * 100.0, 2),
                 "yes_rank": int(rank),
+                "market_lead_gap": round(float(market_lead_gap), 4),
+                "runner_up_yes": round(float(runner_up_yes), 4),
+                "min_lead_required": round(float(min_lead_mkt), 4),
                 "top_peers_15m_pct": [
                     {"id": pid, "chg_pct": round(float(ch) * 100.0, 2)}
                     for pid, ch in top_changes
