@@ -23,6 +23,16 @@ def test_nyc_range_f_midpoint_c() -> None:
     assert 16.5 < p.threshold_c < 17.5
 
 
+def test_atlanta_between_range_f() -> None:
+    p = parse_highest_temp_title(
+        "Will the highest temperature in Atlanta be between 86-87°F on April 15?"
+    )
+    assert p is not None
+    assert p.city_key == "atlanta"
+    assert p.bracket == BracketKind.EXACT
+    assert 29.9 < p.threshold_c < 30.7
+
+
 def test_seattle_below_f() -> None:
     p = parse_highest_temp_title(
         "Will the highest temperature in Seattle be 53°F or below on April 11?"
@@ -35,6 +45,7 @@ def test_seattle_below_f() -> None:
 def main() -> None:
     test_chicago_at_least_f()
     test_nyc_range_f_midpoint_c()
+    test_atlanta_between_range_f()
     test_seattle_below_f()
     print("ok: fahrenheit title parse")
 

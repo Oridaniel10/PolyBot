@@ -27,12 +27,14 @@ from config.settings import (
 )
 from notifications.forecast_quick_report import build_open_temp_forecast_quick_html
 from notifications.portfolio import (
+    maybe_send_portfolio_status_heartbeat,
     send_daily_report,
     send_hourly_summary_report,
     send_portfolio_telegram,
     should_send_hourly_summary,
     should_send_report,
 )
+from notifications.startup_digest import build_startup_strategy_digest_plain
 from notifications.terminal import (
     log_sleep_terminal,
     term_wrap,
@@ -48,7 +50,16 @@ from forecast.digest_runner import (
 from strategy.loop import run_once
 from strategy.sync_portfolio import sync_state_with_portfolio
 from strategy.time_utils import format_report_local_hhmm, now_in_report_timezone
-from telegram_bot import TelegramBot, tg_escape
+from telegram_bot import TelegramBot, normalize_telegram_command_text, tg_escape
+
+from notifications.openrouter_advisor import (
+    advisor_enabled,
+    normalize_question_for_advisor,
+    should_route_message_to_advisor,
+    start_advisor_process,
+)
+
+_ADVISOR_LAST_MONO = 0.0
 
 
 def build_config() -> PolymarketConfig:
@@ -66,6 +77,105 @@ def build_config() -> PolymarketConfig:
         clob_base_url=os.getenv("POLY_CLOB_BASE_URL", "https://clob.polymarket.com"),
         clob_signature_type=clob_sig,
     )
+
+
+def dispatch_telegram_commands(
+    telegram: TelegramBot,
+    client: PolymarketClient,
+    state: dict,
+) -> None:
+    """poll getUpdates and react; safe to call more than once per loop iteration."""
+    global _ADVISOR_LAST_MONO
+    try:
+        for cmd in telegram.poll_commands():
+            cmd_lower = normalize_telegram_command_text(cmd)
+            if not cmd_lower:
+                continue
+            if cmd_lower in ("/status", "/report", "status", "report", "דוח"):
+                print(term_wrap(TERM_DIM, f"[telegram] on-demand command: {cmd_lower!r}"))
+                _bl = get_effective_settings().blacklist_market_ids
+                threading.Thread(
+                    target=send_portfolio_telegram,
+                    args=(telegram, client, "on-demand status report"),
+                    kwargs={
+                        "headline_html": (
+                            "<b>📊 STATUS</b> · <i>on-demand</i>\n"
+                            "📋 <b>On-demand status report</b>"
+                        ),
+                        "state": state,
+                        "blacklist_ids": _bl,
+                    },
+                    daemon=True,
+                ).start()
+            elif cmd_lower in ("/forecast", "/fc", "forecast"):
+                threading.Thread(
+                    target=lambda: telegram.send_html_chunks(
+                        build_open_temp_forecast_quick_html(client)
+                    ),
+                    daemon=True,
+                ).start()
+            elif cmd_lower in ("/digest", "/forecast_digest", "digest"):
+                if telegram.is_configured():
+                    try:
+                        telegram.send_message(
+                            "⏳ Building full forecast digest (all parsable city-days). "
+                            "May take 1–3 minutes; messages will follow in chunks."
+                        )
+                    except Exception:
+                        pass
+
+                def run_full_digest() -> None:
+                    run_forecast_digest_once(
+                        client,
+                        telegram,
+                        force=True,
+                        send_telegram=True,
+                    )
+
+                threading.Thread(target=run_full_digest, daemon=True).start()
+            elif cmd_lower in ("/help", "help", "עזרה"):
+                telegram.send_html_chunks(
+                    "📖 <b>Commands:</b>\n"
+                    "<code>/status</code> — portfolio report\n"
+                    "<code>/forecast</code> — all open positions + OM/calibration per row\n"
+                    "<code>/digest</code> — full forecast digest, all city-days (Telegram, one shot)\n"
+                    "<code>/ask …</code> — OpenRouter advisor (needs <code>OPENROUTER_API_KEY</code>)\n"
+                    "<code>/help</code> — this message\n"
+                    "<i>Advisor also listens when your message contains the word "
+                    "<code>bot</code> or <code>BOT</code> (separate OS process).</i>\n"
+                    "<i>Optional: <code>ADVISOR_CATCHALL_NON_COMMANDS=1</code> routes other text.</i>\n"
+                    "<i>Tip: Telegram may send <code>/report@YourBot</code> — that works too.</i>"
+                )
+            elif advisor_enabled() and should_route_message_to_advisor(cmd):
+                q = normalize_question_for_advisor(cmd)
+                if len(q.strip()) < 2:
+                    try:
+                        telegram.send_message(
+                            "Advisor: add a question (e.g. /ask why … or mention bot in your text)."
+                        )
+                    except Exception:
+                        pass
+                    continue
+                cd = float(os.getenv("ADVISOR_COOLDOWN_SEC", "45") or 45)
+                now_m = time.monotonic()
+                if now_m - _ADVISOR_LAST_MONO < cd:
+                    try:
+                        telegram.send_message(
+                            f"Advisor: wait ~{int(cd - (now_m - _ADVISOR_LAST_MONO))}s before another question."
+                        )
+                    except Exception:
+                        pass
+                    continue
+                _ADVISOR_LAST_MONO = now_m
+                try:
+                    telegram.send_message(
+                        "⌛ Advisor (OpenRouter) is gathering repo context in a separate process…"
+                    )
+                except Exception:
+                    pass
+                start_advisor_process(q)
+    except Exception as exc:
+        print(term_wrap(TERM_RED, f"[telegram command poll] {exc!r}"))
 
 
 def log_settings_on_startup() -> None:
@@ -113,20 +223,31 @@ def run_bot() -> None:
     except Exception as err:
         print(term_wrap(TERM_RED, f"[startup sync failed] {err!r}"))
     try:
+        st0 = get_effective_settings()
+        digest_plain = build_startup_strategy_digest_plain(st0)
         send_portfolio_telegram(
             telegram,
             client,
             "bot started — synced portfolio (cash + positions)",
             echo_terminal=True,
             terminal_title="bot started — portfolio snapshot",
-            headline_html="🚀 <b>Bot started</b> · synced portfolio snapshot",
+            headline_html=(
+                "<b>📊 STATUS · startup</b>\n"
+                "🚀 <b>Bot started</b> · synced portfolio snapshot"
+            ),
             state=state,
-            blacklist_ids=get_effective_settings().blacklist_market_ids,
+            blacklist_ids=st0.blacklist_market_ids,
+            footer_plain=digest_plain,
         )
     except Exception as err:
         print(term_wrap(TERM_RED, f"[startup portfolio message failed] {err!r}"))
     try:
-        state["last_portfolio_fingerprint"] = portfolio_snapshot_fingerprint(client)
+        prev_fp0 = str(state.get("last_portfolio_fingerprint") or "")
+        state["last_portfolio_fingerprint"] = portfolio_snapshot_fingerprint(
+            client, previous_on_error=prev_fp0
+        )
+        state.setdefault("last_status_heartbeat_ts", 0.0)
+        state["last_status_heartbeat_ts"] = time.time()
         write_state(state)
     except Exception as err:
         print(term_wrap(TERM_RED, f"[startup fingerprint failed] {err!r}"))
@@ -144,17 +265,20 @@ def run_bot() -> None:
             print(term_wrap(TERM_RED, f"[forecast digest thread failed] {err!r}"))
 
     while True:
+        dispatch_telegram_commands(telegram, client, state)
         now = now_in_report_timezone()
+        interrupted = False
         try:
             state = sync_state_with_portfolio(client, state)
-            fp = portfolio_snapshot_fingerprint(client)
             prev_fp = str(state.get("last_portfolio_fingerprint") or "")
+            fp = portfolio_snapshot_fingerprint(client, previous_on_error=prev_fp)
             tracked_count = len(state.get("active_trades", {}))
             # only alert on structural change when we actually have
             # positions — avoids false alerts from stale/empty API reads
             if (
                 telegram.is_configured()
                 and prev_fp
+                and fp
                 and fp != prev_fp
                 and tracked_count > 0
             ):
@@ -169,6 +293,7 @@ def run_bot() -> None:
                         "echo_terminal": True,
                         "terminal_title": "portfolio structure change (external)",
                         "headline_html": (
+                            "<b>📊 STATUS</b> · <i>portfolio change</i>\n"
                             "⚡ <b>Manual / UI trade</b>\n"
                             "<i>positions, share size, avg entry, or cash changed — "
                             "not mark-only</i>"
@@ -193,6 +318,15 @@ def run_bot() -> None:
                     args=(telegram, client, state),
                     daemon=True,
                 ).start()
+        except KeyboardInterrupt:
+            interrupted = True
+            print(
+                term_wrap(
+                    TERM_YELLOW,
+                    "\n[stopped] Ctrl+C — exiting (no second API call in finally).",
+                ),
+                flush=True,
+            )
         except Exception as error:
             print(term_wrap(TERM_RED, f"[loop error] {error!r}"))
             try:
@@ -206,64 +340,40 @@ def run_bot() -> None:
                 pass
         finally:
             try:
-                state["last_portfolio_fingerprint"] = portfolio_snapshot_fingerprint(
-                    client
-                )
-                write_state(state)
-            except Exception as err:
-                print(term_wrap(TERM_RED, f"[persist state failed] {err!r}"))
-        # --- check for Telegram commands ---
-        try:
-            for cmd in telegram.poll_commands():
-                cmd_lower = cmd.lower().strip()
-                if cmd_lower in ("/status", "/report", "status", "report", "דוח"):
-                    _bl = get_effective_settings().blacklist_market_ids
-                    threading.Thread(
-                        target=send_portfolio_telegram,
-                        args=(telegram, client, "on-demand status report"),
-                        kwargs={
-                            "headline_html": "📋 <b>On-demand status report</b>",
-                            "state": state,
-                            "blacklist_ids": _bl,
-                        },
-                        daemon=True,
-                    ).start()
-                elif cmd_lower in ("/forecast", "/fc", "forecast"):
-                    threading.Thread(
-                        target=lambda: telegram.send_html_chunks(
-                            build_open_temp_forecast_quick_html(client)
-                        ),
-                        daemon=True,
-                    ).start()
-                elif cmd_lower in ("/digest", "/forecast_digest", "digest"):
-                    if telegram.is_configured():
-                        try:
-                            telegram.send_message(
-                                "⏳ Building full forecast digest (all parsable city-days). "
-                                "May take 1–3 minutes; messages will follow in chunks."
+                if interrupted:
+                    write_state(state)
+                else:
+                    try:
+                        prev_save = str(state.get("last_portfolio_fingerprint") or "")
+                        state["last_portfolio_fingerprint"] = (
+                            portfolio_snapshot_fingerprint(
+                                client, previous_on_error=prev_save
                             )
+                        )
+                        write_state(state)
+                    except KeyboardInterrupt:
+                        print(
+                            term_wrap(
+                                TERM_YELLOW,
+                                "\n[stopped] Ctrl+C during save — exiting.",
+                            ),
+                            flush=True,
+                        )
+                        interrupted = True
+                        try:
+                            write_state(state)
                         except Exception:
                             pass
-
-                    def run_full_digest() -> None:
-                        run_forecast_digest_once(
-                            client,
-                            telegram,
-                            force=True,
-                            send_telegram=True,
-                        )
-
-                    threading.Thread(target=run_full_digest, daemon=True).start()
-                elif cmd_lower in ("/help", "help", "עזרה"):
-                    telegram.send_html_chunks(
-                        "📖 <b>Commands:</b>\n"
-                        "<code>/status</code> — portfolio report\n"
-                        "<code>/forecast</code> — model daily max for open temp positions\n"
-                        "<code>/digest</code> — full forecast digest, all city-days (Telegram, one shot)\n"
-                        "<code>/help</code> — this message"
-                    )
-        except Exception:
-            pass
+            except Exception as err:
+                print(term_wrap(TERM_RED, f"[persist state failed] {err!r}"))
+        if interrupted:
+            return
+        dispatch_telegram_commands(telegram, client, state)
+        try:
+            if maybe_send_portfolio_status_heartbeat(telegram, client, state):
+                write_state(state)
+        except Exception as hb_err:
+            print(term_wrap(TERM_DIM, f"[status heartbeat] {hb_err!r}"))
         interval = get_effective_settings().scan_interval_seconds
         log_sleep_terminal(interval)
         time.sleep(interval)
@@ -274,4 +384,8 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print(term_wrap(TERM_YELLOW, "\n[stopped] Ctrl+C"), flush=True)
+        sys.exit(0)

@@ -1,12 +1,65 @@
 import html
-from typing import Any, Callable, Dict, List, Optional
+import time
+from typing import Any, Dict, List, Optional
 
 import requests
 
 
 TELEGRAM_TIMEOUT_SECONDS = 15
 TELEGRAM_MAX_CHUNK_CHARS = 3800
-TELEGRAM_HTML_CHUNK_CHARS = 3500
+# stay under Telegram 4096 hard limit (leave headroom for entities)
+TELEGRAM_HTML_CHUNK_CHARS = 4040
+TELEGRAM_SEND_MESSAGE_MAX = 4096
+
+_LAST_GETUPDATES_LOG_MONO = 0.0
+
+
+def split_html_telegram_chunks(html_text: str, max_size: int) -> List[str]:
+    """
+    pack whole lines (split on \\n) into chunks under max_size so we do not cut
+    mid-tag (Telegram HTML parse errors).
+    """
+    if not html_text:
+        return []
+    lines = html_text.split("\n")
+    chunks: List[str] = []
+    cur: List[str] = []
+    cur_len = 0
+
+    def flush() -> None:
+        nonlocal cur, cur_len
+        if cur:
+            chunks.append("\n".join(cur))
+            cur = []
+            cur_len = 0
+
+    for ln in lines:
+        ln_len = len(ln)
+        if ln_len > max_size:
+            flush()
+            for i in range(0, ln_len, max_size):
+                chunks.append(ln[i : i + max_size])
+            continue
+        if cur_len + ln_len + (1 if cur else 0) > max_size and cur:
+            flush()
+        add = ln_len + (1 if cur else 0)
+        cur.append(ln)
+        cur_len += add
+    flush()
+    return chunks
+
+
+def normalize_telegram_command_text(text: str) -> str:
+    """
+    first non-empty line, lowercased; strips @BotUsername from /commands (Telegram default).
+    """
+    lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
+    if not lines:
+        return ""
+    s = lines[0].lower().strip()
+    if s.startswith("/") and "@" in s:
+        s = s.split("@", 1)[0].strip()
+    return s
 
 
 def tg_escape(text: object) -> str:
@@ -38,7 +91,12 @@ class TelegramBot:
             if updates:
                 self._last_update_id = max(u.get("update_id", 0) for u in updates)
             return updates
-        except Exception:
+        except Exception as exc:
+            global _LAST_GETUPDATES_LOG_MONO
+            now_m = time.monotonic()
+            if now_m - _LAST_GETUPDATES_LOG_MONO > 60.0:
+                _LAST_GETUPDATES_LOG_MONO = now_m
+                print(f"[telegram] getUpdates failed: {exc!r}", flush=True)
             return []
 
     def poll_commands(self) -> List[str]:
@@ -93,15 +151,65 @@ class TelegramBot:
                 break
         return sent
 
+    def send_plain_by_lines(self, text: str, max_size: int = TELEGRAM_SEND_MESSAGE_MAX) -> int:
+        """like send_text_chunks but splits on newlines so chunks stay readable."""
+        if not self.is_configured() or not text:
+            return 0
+        sent = 0
+        for chunk in split_html_telegram_chunks(text, max(500, min(max_size, TELEGRAM_SEND_MESSAGE_MAX))):
+            try:
+                self.send_message(chunk)
+                sent += 1
+            except requests.RequestException as exc:
+                print(
+                    f"[telegram] send_plain_by_lines failed after {sent} chunk(s): {exc!r}",
+                    flush=True,
+                )
+                break
+        return sent
+
+    def send_document_text(
+        self,
+        filename: str,
+        text: str,
+        caption: str = "",
+    ) -> bool:
+        """upload UTF-8 text as a document (one chat bubble + file)."""
+        if not self.is_configured():
+            return False
+        raw = (text or "").encode("utf-8")
+        if not raw:
+            return False
+        files = {"document": (filename, raw, "text/plain; charset=utf-8")}
+        data: Dict[str, Any] = {"chat_id": self.chat_id}
+        cap = (caption or "").strip()
+        if cap:
+            data["caption"] = cap[:1024]
+        try:
+            resp = requests.post(
+                f"{self.base_url}/sendDocument",
+                files=files,
+                data=data,
+                timeout=TELEGRAM_TIMEOUT_SECONDS,
+            )
+            resp.raise_for_status()
+            return True
+        except requests.RequestException as exc:
+            print(f"[telegram] sendDocument failed: {exc!r}", flush=True)
+            return False
+
     def send_html_chunks(self, html_text: str, chunk_size: int = TELEGRAM_HTML_CHUNK_CHARS) -> int:
         if not self.is_configured() or not html_text:
             return 0
         sent = 0
-        for start in range(0, len(html_text), chunk_size):
-            chunk = html_text[start : start + chunk_size]
+        for chunk in split_html_telegram_chunks(html_text, chunk_size):
             try:
                 self.send_message(chunk, parse_mode="HTML")
                 sent += 1
-            except requests.RequestException:
+            except requests.RequestException as exc:
+                print(
+                    f"[telegram] send_html_chunks failed after {sent} chunk(s): {exc!r}",
+                    flush=True,
+                )
                 break
         return sent

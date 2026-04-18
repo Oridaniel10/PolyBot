@@ -25,6 +25,9 @@ RESEARCH_EXPORTS_DIR = RESEARCH_DIR / "exports"
 # compact JSON output (new rows only; old jsonl lines unchanged)
 RESEARCH_REGISTRY_RSRC_MAX_LEN = 360
 RESEARCH_OUTCOME_QUESTION_MAX_LEN = 120
+# mandatory Telegram portfolio STATUS (full snapshot) at least this often
+PORTFOLIO_STATUS_HEARTBEAT_SEC = 3600
+
 # UI + on-demand portfolio: treat cache as fresh under this age (aligns with digest interval)
 # treat dashboard cache as fresh if younger than ~3× digest refresh
 FORECAST_CACHE_MAX_AGE_SEC = 360
@@ -34,13 +37,30 @@ TIMEZONE = "Asia/Jerusalem"
 REPORT_HOURS = (10, 13, 16, 19)
 SCAN_INTERVAL_SECONDS = 30
 SELL_BELOW_MIN_COOLDOWN_SEC = 86400
+# repeat Telegram for same market stuck on below_min_order_size at most this often
+SELL_BELOW_MIN_TELEGRAM_COOLDOWN_SEC = 7200
 
-BUY_MIN_THRESHOLD = 0.60
+BUY_MIN_THRESHOLD = 0.55
 BUY_MAX_THRESHOLD = 0.70
-STOP_LOSS_THRESHOLD = 0.50
-TAKE_PROFIT_THRESHOLD = 0.96
-# earliest local hour to place new buys (weather forecasts stabilise late morning)
-BUY_EARLIEST_HOUR = 10
+# when true, skip buy_min/buy_max band in process_single_market and CLOB band checks in place_buy
+BUY_DISABLE_PRICE_BAND = False
+# before USD market buy: walk visible CLOB asks; skip if VWAP or any level would exceed band hi,
+# or if the book cannot cover this fraction of notional (hidden depth could print worse).
+MARKET_BUY_ENFORCE_VISIBLE_BOOK = True
+MARKET_BUY_VISIBLE_UNFILLED_MAX_FRAC = 0.05
+MARKET_BUY_VISIBLE_UNFILLED_MIN_USD = 0.35
+# flat weak-price bar when stop_loss_use_entry_tiers is false
+STOP_LOSS_THRESHOLD = 0.39
+# tiered SL: if entry < split → exit when mark/gamma below mark_low; else below mark_high
+STOP_LOSS_USE_ENTRY_TIERS = True
+STOP_LOSS_TIER_ENTRY_SPLIT = 0.60
+STOP_LOSS_TIER_MARK_LOW = 0.30
+STOP_LOSS_TIER_MARK_HIGH = 0.40
+TAKE_PROFIT_THRESHOLD = 0.97
+# earliest local hour to place new buys (city local TZ from title; 0–23)
+BUY_EARLIEST_HOUR = 14
+# skip new buys when title event date is after today's date in Asia/Jerusalem (report TZ)
+BUY_BLOCK_EVENT_DATE_AFTER_ISRAEL_TODAY = True
 # max open positions at once — limits total portfolio risk
 MAX_CONCURRENT_POSITIONS = 7
 # float slack vs gamma/mark rounding; also helps when take_profit is 0.99 and mark is 0.988
@@ -50,26 +70,63 @@ SELL_BYPASS_MIN_COOLDOWN_REASONS = frozenset(
     {
         "take-profit",
         "stop-loss",
+        "momentum-stop-loss",
+        "competitor-surge",
+        "time-decay",
         "momentum-peer-drop",
         "flow-peer-surge",
         "research-model-flip",
+        "peer-yes-surge",
+        "momentum-switch-out",
+        "momentum-competitor-dominant",
     }
 )
 DEFAULT_ORDER_SIZE = 10.0
 MAX_TRADE_FRACTION_OF_CASH = 0.90
-MAX_BUY_NOTIONAL_USD = 4.0
+MAX_BUY_NOTIONAL_USD = 3.0
 MIN_ORDER_NOTIONAL_USD = 2.0
 # never allocate buys from this portion of free cash (runtime + UI override)
-CASH_RESERVE_USD = 2.0
+CASH_RESERVE_USD = 25.0
 
-MIN_LEAD_OVER_RUNNER_UP = 0.10
+# gap (probability pts) this bucket must lead #2 by for BUY when competition filter is on (normal path).
+# override: runtime min_lead_over_runner_up
+MIN_LEAD_OVER_RUNNER_UP = 0.20
+# cold momentum entry: same filter on, but uses this gap instead of MIN_LEAD_OVER_RUNNER_UP.
+# override: runtime min_lead_momentum_over_runner_up
+MIN_LEAD_MOMENTUM_OVER_RUNNER_UP = 0.10
 ENABLE_COMPETITION_FILTER = True
 
+# smart engine: momentum windows and thresholds
+MOMENTUM_WINDOW_SECONDS = 900
+# portfolio Telegram only: second momentum line vs same price_samples (not used for exits)
+PORTFOLIO_TELEGRAM_MOMENTUM_LONG_SEC = 7200
+MOMENTUM_FAST_EXIT_DROP = 0.20
+MOMENTUM_COMPETITOR_SURGE = 0.15
+MOMENTUM_ENTRY_RISE = 0.20
+# cold momentum entry (no position in this event): market-YES must be rank 1 only, plus competition gap
+MOMENTUM_ENTRY_MAX_RANK = 1
+# momentum switch / defensive exit: leader YES >= held_mark + this gap (probability points, 0.15 = +15pp)
+MOMENTUM_SWITCH_ABOVE_HELD_GAP = 0.15
+# when we already hold another bucket in the same gamma event, the surging / dominant
+# sibling must be this market-YES rank (1 = leader only). used by:
+#   strategy/decision_core.detect_momentum_switch
+#   strategy/decision_core.momentum_competitor_dominates_held_exit (leader is always rank 1)
+MOMENTUM_SWITCH_LEADER_YES_RANK = 1
+# print [momentum_eval] json per evaluate_entry (noisy; turn on when tuning)
+MOMENTUM_DECISION_DEBUG_LOG = False
+
+# smart engine: time-decay exit
+TIME_DECAY_HOURS = 2.0
+# min gain vs entry to avoid time-decay exit (fraction: 0.05 = need at least +5% from entry)
+TIME_DECAY_MIN_GAIN = 0.05
+TIME_DECAY_MAX_PRICE = 0.85
+
+# legacy momentum (kept for backward compat with price sample infra)
 ENABLE_MOMENTUM = False
 MOMENTUM_WINDOW_MIN = 10
 MOMENTUM_RISE = 0.25
-MOMENTUM_MIN_PRICE = 0.40
-MOMENTUM_MAX_ENTRY = 0.65
+MOMENTUM_MIN_PRICE = 0.45
+MOMENTUM_MAX_ENTRY = 0.75
 MOMENTUM_PEER_DROP = 0.10
 PRICE_SAMPLE_RETENTION_DAYS = 7
 PRICE_SAMPLE_MAX_ENTRIES_PER_MARKET = 30
@@ -90,7 +147,7 @@ FORECAST_DIGEST_MAX_LOCATION_GROUPS = 80
 # upper bound for runtime_config / UI; on-demand /digest ignores this and includes all parsable groups
 FORECAST_DIGEST_MAX_GROUPS_CAP = 500
 
-ENABLE_OPENWEATHER_FORECAST = True
+ENABLE_OPENWEATHER_FORECAST = False
 ENABLE_FLOW_SAMPLING = True
 FLOW_MAX_EVENTS_PER_TICK = 8
 ENABLE_FLOW_PEER_EXIT = True
@@ -99,21 +156,72 @@ FLOW_PEER_SURGE_DROP = 0.12
 FLOW_PEER_SURGE_RISE = 0.10
 
 FORECAST_GATE_BUY = True
-FORECAST_CONTRADICT_MARGIN_C = 1.5
+# °C slack for forecast_gate_buy: larger = fewer "contradicts bracket" skips.
+# exact buckets use margin + 0.5 in forecast_contradicts_strongly (see forecast/parse_title.py).
+FORECAST_CONTRADICT_MARGIN_C = 2.5
+# for forecast_supports_yes on EXACT buckets: |forecast − threshold| within this counts as "support"
+FORECAST_EXACT_BUCKET_SUPPORT_SLACK_C = 2.5
 FORECAST_REDUCE_USD_IF_WEAK = True
 FORECAST_WEAK_SIZE_FACTOR = 0.75
 
 # research calibration file under data/research/; optional model exit
 RESEARCH_EXIT_ON_MODEL_FLIP = False
 
+# model-implied P(YES) vs CLOB gate (decision engine)
+RESEARCH_EDGE_GATE_BUY = True
+RESEARCH_MIN_EDGE = 0.08
+# added on top of min_edge plus taker fee drag (probability-scale cushion)
+RESEARCH_MIN_EDGE_AFTER_FEES_ADD = 0.0
+# 0 = derive sigma from calibration MAE; else fixed Gaussian sigma (°C), clamped 0.5..8
+RESEARCH_SIGMA_C = 0.0
+# Polymarket weather taker fee rate (see POLY_FEES.MD) for drag estimate
+RESEARCH_WEATHER_TAKER_FEE_RATE = 0.05
+# when implied P(YES) is strictly above this floor, add boost to edge vs raw (implied−clob).
+# set floor <= 0 in runtime to disable. boost = (implied − floor) × mult added on top of raw edge.
+RESEARCH_EDGE_IMPLIED_SOFT_FLOOR = 0.30
+RESEARCH_EDGE_IMPLIED_SOFT_BOOST = 1.0
+# 0 = disabled; else no new buys after this local hour (city TZ)
+# 23 = last local hour 23:xx; 24 = no upper bound (only BUY_EARLIEST applies)
+BUY_LATEST_LOCAL_HOUR = 24
+
+# decision engine: do not buy dominant-crowd buckets or ultra-weak model buckets
+MAX_MARKET_PROB_FOR_BUY = 0.75
+MIN_MODEL_PROB_FOR_BUY = 0.10
+MAX_POSITIONS_PER_EVENT = 1
+# skip BUY if implied P(YES) for this strike is below this (flat tail / low conviction)
+DECISION_MIN_MODEL_PEAK_PROB = 0.12
+
+# peer YES surge — sibling bucket momentum (same gamma event)
+ENABLE_PEER_SURGE_EXIT = True
+PEER_SURGE_WINDOW_MIN = 10
+PEER_SURGE_RISE_THRESHOLD = 0.20
+PEER_SURGE_EVENT_COOLDOWN_SEC = 1200
+PEER_SURGE_SKIP_BUY_ENABLED = False
+PEER_SURGE_SKIP_BUY_RISE_THRESHOLD = 0.25
+RESEARCH_EDGE_SCALE_SIZE = False
+RESEARCH_EDGE_SIZE_SLOPE = 2.0
+RESEARCH_EDGE_SIZE_CAP_MULT = 1.35
+RESEARCH_CROWD_SOFT_MATCH = False
+RESEARCH_CROWD_SOFT_BAND = 0.04
+RESEARCH_CROWD_SOFT_EDGE_FACTOR = 0.75
+RESEARCH_CROWD_DISAGREE_GAP = 0.08
+RESEARCH_CROWD_DISAGREE_EXTRA_EDGE = 0.03
+# min seconds between repeated Telegram "research skip" for same market+reason
+RESEARCH_SKIP_TELEGRAM_COOLDOWN_SEC = 600
+# when false, no Telegram for decision-engine BUY skips (still logged to console)
+DECISION_SKIP_TELEGRAM_NOTIFY = False
+
 YES_LABEL = "YES"
 STATUS_CLOSED = frozenset({"closed", "claimable", "resolved"})
 DUST_SHARES_EPS = 1e-6
 # when YES on exchange is just under CLOB min (e.g. 4.85 vs 5), market-buy a sliver then sell all
-CLOB_SELL_TOPUP_BUFFER_SHARES = 0.12
-CLOB_SELL_TOPUP_SLIPPAGE_MULT = 1.25
+CLOB_SELL_TOPUP_BUFFER_SHARES = 0.25
+CLOB_SELL_TOPUP_SLIPPAGE_MULT = 1.35
 CLOB_SELL_TOPUP_MIN_USD = 0.35
-CLOB_SELL_TOPUP_MAX_USD = 4.0
+CLOB_SELL_TOPUP_MAX_USD = 15.0
+CLOB_SELL_TOPUP_HARD_USD_CAP = 28.0
+# extra topup rounds in close_position when exchange size still under CLOB min
+CLOB_SELL_TOPUP_MAX_ROUNDS = 6
 
 TERM_RESET = "\033[0m"
 TERM_BOLD = "\033[1m"

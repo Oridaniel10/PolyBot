@@ -6,8 +6,15 @@ Automated Polymarket helper focused on **highest-temperature** style markets: sc
 
 - **Buy / sell rules (Hebrew):** [STRATEGY_LOGIC.md](STRATEGY_LOGIC.md)
 - **Rate limits (read before adding API calls):** [POLY_RATE_LIMITS.MD](POLY_RATE_LIMITS.MD)
+- **Fees (weather taker ~5%):** [POLY_FEES.MD](POLY_FEES.MD)
 - **Polymarket API reference:** [https://docs.polymarket.com/](https://docs.polymarket.com/)
 - **Agent / architecture cheat sheet:** [AGENTS.md](AGENTS.md)
+
+### Trading + research (optional)
+
+- Offline pipeline writes `data/research/*.jsonl` and `calibration_latest.json` (see `research/WORKFLOW.md`).
+- The bot’s Open-Meteo consensus path applies city bias from `calibration_latest.json` (`forecast/forecast_service.py` → `research/calibration_apply.py`).
+- Optional **model vs CLOB edge gate** and sizing knobs live in `data/runtime_config.json` under `research_*` (default off). Regenerate calibration periodically, e.g. `python -m research analyze`, before tightening gates in production.
 
 ## Layout
 
@@ -16,6 +23,7 @@ Automated Polymarket helper focused on **highest-temperature** style markets: sc
 | `main_bot.py` | Cloud Run / Docker: FastAPI health + `/api/*` + `/dashboard/` static + bot thread |
 | `main.py` | CLI entry → `strategy.bot_runner.run_bot` |
 | `strategy/trades.py` | `place_buy`, `close_position`, `claim_position`, `process_single_market` |
+| `strategy/research_signal.py` | optional implied P(YES) vs CLOB edge + size multiplier |
 | `strategy/loop.py` | `run_once` (scan + exit pass + price samples) |
 | `config/` | Constants + `runtime_config.json` merge |
 | `state/` | `state.json` I/O, `pnl_ledger` append |

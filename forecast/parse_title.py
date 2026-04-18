@@ -11,6 +11,8 @@ try:
 except ImportError:
     ZoneInfo = None  # type: ignore[assignment]
 
+from config import constants as C
+
 from strategy.city_tz import CITY_TZ, _extract_city_from_title
 
 
@@ -62,6 +64,10 @@ _RE_ABOVE_F = re.compile(
 )
 _RE_RANGE_F = re.compile(
     r"be\s+(\d+(?:\.\d+)?)\s*-\s*(\d+(?:\.\d+)?)\s*°?\s*f\b",
+    re.IGNORECASE,
+)
+_RE_BETWEEN_RANGE_F = re.compile(
+    r"between\s+(\d+(?:\.\d+)?)\s*-\s*(\d+(?:\.\d+)?)\s*°?\s*f\b",
     re.IGNORECASE,
 )
 _RE_EXACT_F_ON = re.compile(
@@ -169,6 +175,7 @@ def parse_highest_temp_title(title: str) -> Optional[ParsedTempMarket]:
     if bracket is None:
         mb_f = _RE_BELOW_F.search(raw)
         ma_f = _RE_ABOVE_F.search(raw)
+        m_between_f = _RE_BETWEEN_RANGE_F.search(raw)
         mr_f = _RE_RANGE_F.search(raw)
         me_f = _RE_EXACT_F_ON.search(raw)
         if mb_f:
@@ -177,6 +184,11 @@ def parse_highest_temp_title(title: str) -> Optional[ParsedTempMarket]:
         elif ma_f:
             bracket = BracketKind.AT_LEAST
             threshold = _fahrenheit_to_celsius(float(ma_f.group(1)))
+        elif m_between_f:
+            bracket = BracketKind.EXACT
+            lo_f = float(m_between_f.group(1))
+            hi_f = float(m_between_f.group(2))
+            threshold = _fahrenheit_to_celsius((lo_f + hi_f) / 2.0)
         elif mr_f:
             bracket = BracketKind.EXACT
             lo_f = float(mr_f.group(1))
@@ -206,7 +218,12 @@ def parse_highest_temp_title(title: str) -> Optional[ParsedTempMarket]:
     )
 
 
-def forecast_supports_yes(forecast_max_c: float, p: ParsedTempMarket) -> bool:
+def forecast_supports_yes(
+    forecast_max_c: float,
+    p: ParsedTempMarket,
+    *,
+    exact_slack_c: Optional[float] = None,
+) -> bool:
     """
     Rough check: does daily max temp forecast support YES on this bracket?
     Uses slack for model vs observation error.
@@ -216,8 +233,8 @@ def forecast_supports_yes(forecast_max_c: float, p: ParsedTempMarket) -> bool:
         return forecast_max_c <= p.threshold_c + slack
     if p.bracket == BracketKind.AT_LEAST:
         return forecast_max_c >= p.threshold_c - slack
-    # EXACT: allow ±1.5°C for daily max vs discrete bucket
-    return abs(forecast_max_c - p.threshold_c) <= 1.5
+    ex = float(exact_slack_c or C.FORECAST_EXACT_BUCKET_SUPPORT_SLACK_C)
+    return abs(forecast_max_c - p.threshold_c) <= ex
 
 
 def forecast_contradicts_strongly(

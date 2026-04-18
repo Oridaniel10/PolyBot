@@ -109,6 +109,29 @@ def momentum_window_rise(
     return old_yes, new_yes, rise
 
 
+def max_peer_yes_rise_ratio(
+    peer_market_ids: List[str], window_min: int, now_ts: float | None = None
+) -> float:
+    """max fractional rise among peers' yes price over window (0..+inf scale)."""
+    wsec = float(window_min) * 60.0
+    now_ts = now_ts if now_ts is not None else time.time()
+    best = 0.0
+    for pid in peer_market_ids:
+        pid = str(pid).strip()
+        if not pid:
+            continue
+        series = load_samples_for_market(pid, wsec, now_ts)
+        if len(series) < 2:
+            continue
+        a, b = series[0][1], series[-1][1]
+        if a <= 1e-9:
+            continue
+        rise = (b - a) / a
+        if rise > best:
+            best = rise
+    return best
+
+
 def max_peer_yes_drop_ratio(
     peer_market_ids: List[str], window_min: int, now_ts: float | None = None
 ) -> float:

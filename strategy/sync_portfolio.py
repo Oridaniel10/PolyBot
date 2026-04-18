@@ -80,6 +80,11 @@ def sync_state_with_portfolio(
             row["_below_min_order_size"] = bmin
         if prev.get("_warned_gamma_trade_mismatch"):
             row["_warned_gamma_trade_mismatch"] = prev["_warned_gamma_trade_mismatch"]
+        tg_nb = float(prev.get("_below_min_tg_not_before") or 0.0)
+        if tg_nb > time.time():
+            row["_below_min_tg_not_before"] = tg_nb
+        if prev.get("_bypass_min_cooldown_logged"):
+            row["_bypass_min_cooldown_logged"] = prev["_bypass_min_cooldown_logged"]
         pend = prev.get("pending_limit_sell_order_id")
         if pend:
             row["pending_limit_sell_order_id"] = pend

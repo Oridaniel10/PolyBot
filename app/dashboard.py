@@ -37,11 +37,17 @@ dashboard_router = APIRouter(prefix="/api", tags=["dashboard"])
 
 
 class RuntimeConfigUpdate(BaseModel):
-    buy_min_threshold: Optional[float] = Field(None, ge=0.01, le=0.99)
+    buy_min_threshold: Optional[float] = Field(None, ge=0.0, le=0.99)
     buy_max_threshold: Optional[float] = Field(None, ge=0.01, le=0.99)
+    buy_disable_price_band: Optional[bool] = None
     stop_loss_threshold: Optional[float] = Field(None, ge=0.01, le=0.99)
+    stop_loss_use_entry_tiers: Optional[bool] = None
+    stop_loss_tier_entry_split: Optional[float] = Field(None, ge=0.05, le=0.95)
+    stop_loss_tier_mark_low: Optional[float] = Field(None, ge=0.01, le=0.99)
+    stop_loss_tier_mark_high: Optional[float] = Field(None, ge=0.01, le=0.99)
     take_profit_threshold: Optional[float] = Field(None, ge=0.01, le=0.99)
     min_lead_over_runner_up: Optional[float] = Field(None, ge=0.0, le=0.95)
+    min_lead_momentum_over_runner_up: Optional[float] = Field(None, ge=0.0, le=0.95)
     enable_competition_filter: Optional[bool] = None
     enable_momentum: Optional[bool] = None
     momentum_window_min: Optional[int] = Field(None, ge=1, le=1440)
@@ -73,9 +79,41 @@ class RuntimeConfigUpdate(BaseModel):
     flow_peer_surge_rise: Optional[float] = Field(None, ge=0.0, le=1.0)
     forecast_gate_buy: Optional[bool] = None
     forecast_contradict_margin_c: Optional[float] = Field(None, ge=0.0, le=15.0)
+    forecast_exact_bucket_support_slack_c: Optional[float] = Field(
+        None, ge=0.0, le=15.0
+    )
     forecast_reduce_usd_if_weak: Optional[bool] = None
     forecast_weak_size_factor: Optional[float] = Field(None, ge=0.05, le=1.0)
     research_exit_on_model_flip: Optional[bool] = None
+    research_edge_gate_buy: Optional[bool] = None
+    research_min_edge: Optional[float] = Field(None, ge=0.0, le=0.5)
+    research_min_edge_after_fees_add: Optional[float] = Field(None, ge=0.0, le=0.5)
+    research_sigma_c: Optional[float] = Field(None, ge=0.0, le=8.0)
+    research_weather_taker_fee_rate: Optional[float] = Field(None, ge=0.0, le=0.2)
+    research_edge_implied_soft_floor: Optional[float] = Field(None, ge=0.0, le=0.95)
+    research_edge_implied_soft_boost: Optional[float] = Field(None, ge=0.0, le=3.0)
+    buy_earliest_local_hour: Optional[int] = Field(None, ge=0, le=23)
+    buy_latest_local_hour: Optional[int] = Field(None, ge=0, le=24)
+    research_edge_scale_size: Optional[bool] = None
+    research_edge_size_slope: Optional[float] = Field(None, ge=0.0, le=50.0)
+    research_edge_size_cap_mult: Optional[float] = Field(None, ge=1.0, le=3.0)
+    research_crowd_soft_match: Optional[bool] = None
+    research_crowd_soft_band: Optional[float] = Field(None, ge=0.0, le=0.5)
+    research_crowd_soft_edge_factor: Optional[float] = Field(None, ge=0.1, le=1.0)
+    research_crowd_disagree_gap: Optional[float] = Field(None, ge=0.0, le=0.5)
+    research_crowd_disagree_extra_edge: Optional[float] = Field(None, ge=0.0, le=0.5)
+    research_skip_telegram_cooldown_sec: Optional[int] = Field(None, ge=0, le=86400)
+    decision_skip_telegram_notify: Optional[bool] = None
+    max_market_prob_for_buy: Optional[float] = Field(None, ge=0.05, le=0.99)
+    min_model_prob_for_buy: Optional[float] = Field(None, ge=0.0, le=0.95)
+    max_positions_per_event: Optional[int] = Field(None, ge=1, le=20)
+    decision_min_model_peak_prob: Optional[float] = Field(None, ge=0.02, le=0.5)
+    enable_peer_surge_exit: Optional[bool] = None
+    peer_surge_window_min: Optional[int] = Field(None, ge=1, le=180)
+    peer_surge_rise_threshold: Optional[float] = Field(None, ge=0.01, le=2.0)
+    peer_surge_event_cooldown_sec: Optional[int] = Field(None, ge=0, le=86400)
+    peer_surge_skip_buy_enabled: Optional[bool] = None
+    peer_surge_skip_buy_rise_threshold: Optional[float] = Field(None, ge=0.01, le=2.0)
 
 
 class BlacklistToggle(BaseModel):
@@ -196,8 +234,14 @@ def api_reset_runtime_config() -> Dict[str, Any]:
             changed_lines.append(f"🔄 {key}: {old_value!r} -> {new_value!r}")
     save_runtime_config_file(defaults)
     if changed_lines:
-        notify_dashboard_change("Runtime config RESET to defaults (dashboard)", changed_lines)
-    return {"ok": True, "runtime": load_runtime_config_file(), "changes": len(changed_lines)}
+        notify_dashboard_change(
+            "Runtime config RESET to defaults (dashboard)", changed_lines
+        )
+    return {
+        "ok": True,
+        "runtime": load_runtime_config_file(),
+        "changes": len(changed_lines),
+    }
 
 
 @dashboard_router.post("/blacklist/toggle")
@@ -351,9 +395,7 @@ def api_forecast_preview(
     preview["error"] = None
     preview["from_cache"] = False
     try:
-        save_forecast_cache_after_gamma_fetch(
-            preview, gamma_market_count=len(markets)
-        )
+        save_forecast_cache_after_gamma_fetch(preview, gamma_market_count=len(markets))
     except OSError:
         pass
     if not markets and not (preview.get("groups") or []):
@@ -366,6 +408,7 @@ def api_forecast_preview(
 @dashboard_router.get("/trades/today")
 def api_trades_today() -> List[Dict[str, Any]]:
     from state.pnl_ledger import read_trade_csv_today
+
     return read_trade_csv_today()
 
 
@@ -373,10 +416,101 @@ def api_trades_today() -> List[Dict[str, Any]]:
 def api_trades_today_csv():
     from fastapi.responses import FileResponse
     from state.pnl_ledger import trade_csv_path_today
+
     path = trade_csv_path_today()
     if not path.is_file():
         raise HTTPException(404, "no trades today")
     return FileResponse(path, media_type="text/csv", filename=path.name)
+
+
+@dashboard_router.get("/trades/history")
+def api_trades_history(
+    date: str = Query(..., description="YYYY-MM-DD"),
+) -> List[Dict[str, Any]]:
+    import csv as csv_mod
+    path = C.DATA_DIR / f"trade_log_{date}.csv"
+    if not path.is_file():
+        return []
+    try:
+        with path.open("r", encoding="utf-8", newline="") as f:
+            return list(csv_mod.DictReader(f))
+    except OSError:
+        return []
+
+
+@dashboard_router.get("/trades/dates")
+def api_trades_dates() -> List[str]:
+    dates: List[str] = []
+    for p in sorted(C.DATA_DIR.glob("trade_log_*.csv")):
+        stem = p.stem.replace("trade_log_", "")
+        if stem and not stem.endswith("_legacy"):
+            dates.append(stem)
+    return dates
+
+
+@dashboard_router.get("/decisions/recent")
+def api_decisions_recent(
+    limit: int = Query(50, ge=1, le=200),
+) -> List[Dict[str, Any]]:
+    from strategy.decision_core import get_recent_decisions
+    return get_recent_decisions(limit)
+
+
+@dashboard_router.get("/stats/summary")
+def api_stats_summary(
+    date: str = Query(..., description="YYYY-MM-DD"),
+) -> Dict[str, Any]:
+    import csv as csv_mod
+    path = C.DATA_DIR / f"trade_log_{date}.csv"
+    if not path.is_file():
+        return {"date": date, "error": "no_data"}
+    try:
+        with path.open("r", encoding="utf-8", newline="") as f:
+            rows = list(csv_mod.DictReader(f))
+    except OSError:
+        return {"date": date, "error": "read_error"}
+
+    buys = 0
+    sells = 0
+    wins = 0
+    losses = 0
+    total_pnl = 0.0
+    biggest_win = 0.0
+    biggest_loss = 0.0
+    total_buy_usd = 0.0
+    total_sell_usd = 0.0
+    for r in rows:
+        action = str(r.get("action") or "").upper()
+        pnl = float(r.get("pnl_usd") or 0)
+        usd = float(r.get("usd") or 0)
+        if action == "BUY":
+            buys += 1
+            total_buy_usd += usd
+        elif action in ("SELL", "LIMIT_SELL"):
+            sells += 1
+            total_sell_usd += usd
+            total_pnl += pnl
+            if pnl > 0:
+                wins += 1
+                biggest_win = max(biggest_win, pnl)
+            elif pnl < 0:
+                losses += 1
+                biggest_loss = min(biggest_loss, pnl)
+    win_rate = wins / max(1, wins + losses)
+    return {
+        "date": date,
+        "total_trades": len(rows),
+        "buys": buys,
+        "sells": sells,
+        "wins": wins,
+        "losses": losses,
+        "win_rate": round(win_rate, 4),
+        "total_pnl": round(total_pnl, 2),
+        "biggest_win": round(biggest_win, 2),
+        "biggest_loss": round(biggest_loss, 2),
+        "total_buy_usd": round(total_buy_usd, 2),
+        "total_sell_usd": round(total_sell_usd, 2),
+    }
 
 
 @dashboard_router.get("/health")
@@ -423,7 +557,7 @@ if __name__ == "__main__":
 
     import uvicorn
 
-    _port = int(os.environ.get("PORT", "8080"))
+    _port = int(os.environ.get("PORT", "8081"))
     print(
         f"Starting dashboard only (no bot). Open http://127.0.0.1:{_port}/dashboard/\n"
         f"Build UI first if missing: cd ui && npm install && npm run build\n",

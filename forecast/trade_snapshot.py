@@ -17,7 +17,7 @@ def temp_market_trade_context_html(
     market: Dict[str, Any],
 ) -> str:
     """
-    Open-Meteo (+ optional OW) daily max for this market's city-day.
+    Open-Meteo daily max for this market's city-day (optional OW blend if enabled).
     """
     title = str(market.get("question") or market.get("title") or "")
     anchor = parse_highest_temp_title(title)
@@ -27,15 +27,15 @@ def temp_market_trade_context_html(
     from config.settings import get_effective_settings
 
     settings = get_effective_settings()
-    ow_key = ""
-    if getattr(settings, "enable_openweather_forecast", False):
-        ow_key = os.getenv("OPENWEATHER_API_KEY", "").strip()
+    blend = bool(getattr(settings, "enable_openweather_forecast", False))
+    ow_key = os.getenv("OPENWEATHER_API_KEY", "").strip() if blend else ""
 
     om, ow, cons = get_forecast_max_for_city_day(
         anchor.city_key,
         anchor.event_date,
         anchor.tz_name,
         openweather_api_key=ow_key,
+        use_openweather=blend,
     )
     fc = []
     if cons is not None:

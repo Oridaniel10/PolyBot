@@ -1,0 +1,167 @@
+"""15-minute momentum tracker for fast exit, competitor surge, and momentum entry.
+
+Replaces the old momentum.py with proper min/max tracking and rate-of-change
+computation instead of first/last approximation.
+"""
+
+import time
+from typing import Any, Dict, List, Optional, Tuple
+
+from strategy.probability import parse_market_probability
+from strategy.momentum import (
+    append_price_sample,
+    load_samples_for_market,
+    prune_old_price_sample_files,
+    record_samples_for_market_dicts,
+    trim_price_samples_async,
+)
+
+
+def price_change_in_window(
+    market_id: str,
+    window_sec: float = 900.0,
+    now_ts: Optional[float] = None,
+) -> Tuple[float, float, float]:
+    """
+    compute price change over window.
+
+    returns:
+    - (oldest_price, newest_price, change_pct) where change_pct is fractional.
+    """
+    now_ts = now_ts or time.time()
+    series = load_samples_for_market(market_id, window_sec, now_ts)
+    if len(series) < 2:
+        return 0.0, 0.0, 0.0
+    old_price = series[0][1]
+    new_price = series[-1][1]
+    if old_price <= 1e-9:
+        return old_price, new_price, 0.0
+    change = (new_price - old_price) / old_price
+    return old_price, new_price, change
+
+
+def max_drawdown_in_window(
+    market_id: str,
+    window_sec: float = 900.0,
+    now_ts: Optional[float] = None,
+) -> float:
+    """max peak-to-trough decline in window as a fraction (0..1)."""
+    now_ts = now_ts or time.time()
+    series = load_samples_for_market(market_id, window_sec, now_ts)
+    if len(series) < 2:
+        return 0.0
+    peak = series[0][1]
+    max_dd = 0.0
+    for _, price in series:
+        if price > peak:
+            peak = price
+        if peak > 1e-9:
+            dd = (peak - price) / peak
+            if dd > max_dd:
+                max_dd = dd
+    return max_dd
+
+
+def should_fast_exit(
+    market_id: str,
+    drop_threshold: float = 0.15,
+    window_sec: float = 900.0,
+    now_ts: Optional[float] = None,
+) -> Tuple[bool, float]:
+    """
+    check if our position dropped more than threshold in the window.
+
+    returns:
+    - (should_exit, drawdown_pct).
+    """
+    # needs enough price_samples in the window; a sudden cliff without prior highs
+    # can understate drawdown vs intuitive "lost 99%" — see STRATEGY_LOGIC.md exits.
+    dd = max_drawdown_in_window(market_id, window_sec, now_ts)
+    return dd >= drop_threshold, dd
+
+
+def peer_surge_detected(
+    peer_market_ids: List[str],
+    surge_threshold: float = 0.15,
+    window_sec: float = 900.0,
+    now_ts: Optional[float] = None,
+) -> Tuple[bool, str, float]:
+    """
+    check if any peer bucket surged above threshold.
+
+    returns:
+    - (detected, surging_market_id, rise_pct).
+    """
+    now_ts = now_ts or time.time()
+    best_rise = 0.0
+    best_mid = ""
+    for pid in peer_market_ids:
+        pid = str(pid).strip()
+        if not pid:
+            continue
+        _, _, change = price_change_in_window(pid, window_sec, now_ts)
+        if change > best_rise:
+            best_rise = change
+            best_mid = pid
+    return best_rise >= surge_threshold, best_mid, best_rise
+
+
+def momentum_entry_signal(
+    market_id: str,
+    rise_threshold: float = 0.15,
+    window_sec: float = 900.0,
+    now_ts: Optional[float] = None,
+) -> Tuple[bool, float]:
+    """
+    check if this bucket has positive momentum for entry.
+
+    returns:
+    - (signal_active, rise_pct).
+    """
+    _, _, change = price_change_in_window(market_id, window_sec, now_ts)
+    return change >= rise_threshold, change
+
+
+def yes_rank_by_market_prob(market_id: str, siblings: List[Dict[str, Any]]) -> int:
+    """
+    1-based rank by gamma/market YES (1 = highest). missing id → large rank.
+    """
+    rows: List[Tuple[str, float]] = []
+    for m in siblings:
+        if not isinstance(m, dict):
+            continue
+        mid = str(m.get("id") or "").strip()
+        if not mid:
+            continue
+        rows.append((mid, parse_market_probability(m)))
+    if not rows:
+        return 999
+    rows.sort(key=lambda x: -x[1])
+    for i, (mid, _) in enumerate(rows, start=1):
+        if mid == market_id:
+            return i
+    return 999
+
+
+def top_price_change_peers(
+    market_ids: List[str],
+    window_sec: float = 900.0,
+    now_ts: Optional[float] = None,
+    top_n: int = 3,
+) -> List[Tuple[str, float]]:
+    """
+    peers sorted by 15m fractional price change (best first).
+
+    returns:
+    - up to top_n (market_id, change_pct) pairs.
+    """
+    now_ts = now_ts or time.time()
+    out: List[Tuple[str, float]] = []
+    for raw in market_ids:
+        mid = str(raw).strip()
+        if not mid:
+            continue
+        _, _, ch = price_change_in_window(mid, window_sec, now_ts)
+        out.append((mid, ch))
+    out.sort(key=lambda x: -x[1])
+    return out[: max(0, int(top_n))]

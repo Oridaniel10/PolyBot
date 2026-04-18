@@ -8,7 +8,6 @@ from config.settings import get_effective_settings
 from notifications.terminal import print_scan_summary, term_wrap
 from polymarket_client import PolymarketClient
 from strategy.market_match import trade_row_matches_gamma_market, warn_gamma_trade_mismatch_once
-from strategy.flow_sampling import record_flow_samples
 from strategy.momentum import record_samples_for_market_dicts
 from strategy.time_utils import build_target_day_label, now_in_report_timezone
 from strategy.trades import process_single_market
@@ -140,19 +139,6 @@ def run_once(
                     f"not in today's '{target_day_label}' scan (take-profit / stop / claim)",
                 )
             )
-
-    merged_by_id: Dict[str, Dict[str, Any]] = {
-        str(m.get("id") or ""): m for m in markets if m.get("id")
-    }
-    for mid, m in sample_markets.items():
-        merged_by_id[str(mid)] = m
-    record_flow_samples(
-        client,
-        list(merged_by_id.values()),
-        state,
-        event_cache,
-        settings,
-    )
 
     # --- record price samples in background thread ---
     samples = list(sample_markets.values())

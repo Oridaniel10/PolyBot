@@ -20,6 +20,7 @@ def read_state() -> Dict[str, Any]:
         "last_sync_at": "",
         "last_portfolio_fingerprint": "",
         "last_hourly_summary_slot": "",
+        "last_status_heartbeat_ts": 0.0,
         "churn_by_market": {},
     }
     if not sf.is_file():
@@ -34,6 +35,7 @@ def read_state() -> Dict[str, Any]:
         data.setdefault("last_sync_at", "")
         data.setdefault("last_portfolio_fingerprint", "")
         data.setdefault("last_hourly_summary_slot", "")
+        data.setdefault("last_status_heartbeat_ts", 0.0)
         data.setdefault("churn_by_market", {})
         return data
     except (OSError, json.JSONDecodeError):

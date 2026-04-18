@@ -1,4 +1,4 @@
-"""Build Telegram HTML digest: Open-Meteo (+ optional OW) daily max per city-day (~every N min)."""
+"""Build Telegram HTML digest: Open-Meteo daily max per city-day (~every N min); optional OW blend."""
 
 import sys
 from pathlib import Path
@@ -88,6 +88,7 @@ def _digest_group_rows(
     settings: Any,
     ow_key: str,
     *,
+    use_openweather: bool = False,
     full_city_day_coverage: bool = False,
 ) -> List[Dict[str, Any]]:
     from config import constants as C
@@ -136,6 +137,7 @@ def _digest_group_rows(
             p0.event_date,
             p0.tz_name,
             openweather_api_key=ow_key,
+            use_openweather=use_openweather,
         )
         member_ids = sorted(
             {
@@ -176,7 +178,11 @@ def build_forecast_preview_payload(
     ow_enabled = bool(getattr(settings, "enable_openweather_forecast", False))
     ow_key = os.getenv("OPENWEATHER_API_KEY", "").strip() if ow_enabled else ""
     groups = _digest_group_rows(
-        scoped, settings, ow_key, full_city_day_coverage=full_city_day_coverage
+        scoped,
+        settings,
+        ow_key,
+        use_openweather=ow_enabled,
+        full_city_day_coverage=full_city_day_coverage,
     )
     cap_applied = (
         len(grouped_all) if full_city_day_coverage else _digest_max_groups(settings)
@@ -221,14 +227,18 @@ def build_forecast_digest_html(
     )
 
     rows = _digest_group_rows(
-        scoped, settings, ow_key, full_city_day_coverage=full_city_day_coverage
+        scoped,
+        settings,
+        ow_key,
+        use_openweather=ow_enabled,
+        full_city_day_coverage=full_city_day_coverage,
     )
     total_groups = len(groups)
 
     lines: List[str] = [
         f"📡 <b>Forecast digest</b>  <code>{tg_escape(format_report_local_hhmm())}</code>",
-        f"<i>scope={tg_escape(scope)} · Open-Meteo + "
-        f"({'OW' if ow_key else 'no'}) OpenWeather"
+        f"<i>scope={tg_escape(scope)} · "
+        f"{'Open-Meteo + OW blend' if ow_enabled else 'Open-Meteo only (calibrated)'}"
         f"{' · <b>all city-days</b>' if full_city_day_coverage else ''}</i>",
         "",
     ]
@@ -262,7 +272,7 @@ def build_forecast_digest_html(
         )
 
     lines.append(
-        "<i>Open-Meteo daily max (+ optional OpenWeather). "
+        "<i>Open-Meteo daily max; OpenWeather blend only if enabled in runtime. "
         "Informative unless forecast_gate_buy is on.</i>"
     )
     return "\n".join(lines)

@@ -162,6 +162,16 @@ def run_backfill_main(argv: Optional[List[str]] = None) -> int:
         help="skip writing data/research/city_tables/*.csv at end",
     )
     args = parser.parse_args(argv)
+    if args.refresh_outcomes:
+        block = os.getenv("RESEARCH_BLOCK_REFRESH_OUTCOMES", "").strip().lower()
+        if block in ("1", "true", "yes", "on"):
+            print(
+                "[research] ERROR: --refresh-outcomes blocked because "
+                "RESEARCH_BLOCK_REFRESH_OUTCOMES is set (e.g. CI safety). "
+                "Unset it to allow rewriting market_outcomes.jsonl.",
+                file=sys.stderr,
+            )
+            return 1
     if args.quick_test:
         args.search_pages = 4
         args.max_markets = min(args.max_markets, 40)
@@ -295,6 +305,11 @@ def run_backfill_main(argv: Optional[List[str]] = None) -> int:
             )
             if rm and args.verbose:
                 log(f"[research] refresh-outcomes: removed {rm} stale outcome rows")
+    else:
+        progress(
+            "[research] market_outcomes: append-only — existing rows kept "
+            "(only --refresh-outcomes rewrites overlapping market_ids)"
+        )
 
     from research.jsonl_util import load_idempotent_keys
 

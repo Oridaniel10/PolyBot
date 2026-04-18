@@ -75,12 +75,27 @@ def print_loop_positions_snapshot(
 
 
 def log_trade_buy_terminal(
-    title: str, usd: float, shares: float, probability: float, order_ref: str
+    title: str,
+    usd: float,
+    shares: float,
+    probability: float,
+    order_ref: str,
+    *,
+    tp_bar: float,
+    sl_bar: float,
 ) -> None:
     ref = order_ref or "(no ref)"
+    e = float(probability)
+    sh = float(shares)
+    pnl_tp = (float(tp_bar) - e) * sh
+    pnl_sl = (float(sl_bar) - e) * sh
+    pnl_yes = (1.0 - e) * sh
     msg = (
         f"BUY YES  notional=${usd:.2f}  est_shares~={shares:.4f}  "
-        f"yes~={probability:.4f}  ref={ref}\n  {title}"
+        f"yes~={probability:.4f}  ref={ref}\n"
+        f"  plan TP~{tp_bar:.2f} est_pnl~{pnl_tp:+.2f}  SL~{sl_bar:.2f} est_pnl~{pnl_sl:+.2f}  "
+        f"if_YES_$1~{pnl_yes:+.2f}\n"
+        f"  {title}"
     )
     print(term_wrap(TERM_CYAN, msg))
 

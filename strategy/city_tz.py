@@ -75,9 +75,8 @@ def _extract_city_from_title(title: str) -> str:
     return ""
 
 
-def city_local_hour(title: str) -> Optional[int]:
-    """Return the current local hour (0-23) for the city in the market title,
-    or None if city/timezone can't be determined."""
+def city_local_now(title: str) -> Optional[datetime]:
+    """Return current local datetime for the city in the title, or None if unknown."""
     if ZoneInfo is None:
         return None
     city = _extract_city_from_title(title)
@@ -87,22 +86,25 @@ def city_local_hour(title: str) -> Optional[int]:
     if not tz_name:
         return None
     try:
-        return datetime.now(ZoneInfo(tz_name)).hour
+        return datetime.now(ZoneInfo(tz_name))
     except Exception:
         return None
+
+
+def city_local_hour(title: str) -> Optional[int]:
+    """Return the current local hour (0-23) for the city in the market title,
+    or None if city/timezone can't be determined."""
+    dt = city_local_now(title)
+    return dt.hour if dt else None
 
 
 def city_local_time_str(title: str) -> str:
     """Return 'HH:MM' in the city's local timezone, or '' if unknown."""
-    if ZoneInfo is None:
-        return ""
-    city = _extract_city_from_title(title)
-    if not city:
-        return ""
-    tz_name = CITY_TZ.get(city.strip().lower())
-    if not tz_name:
-        return ""
-    try:
-        return datetime.now(ZoneInfo(tz_name)).strftime("%H:%M")
-    except Exception:
-        return ""
+    dt = city_local_now(title)
+    return dt.strftime("%H:%M") if dt else ""
+
+
+def city_local_datetime_now_str(title: str) -> str:
+    """Return 'YYYY-MM-DD HH:MM' (city local clock now), or '' if unknown."""
+    dt = city_local_now(title)
+    return dt.strftime("%Y-%m-%d %H:%M") if dt else ""

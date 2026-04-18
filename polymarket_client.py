@@ -1054,6 +1054,45 @@ class PolymarketClient:
                 continue
         return []
 
+    def get_position_for_market_id(self, market_id: str) -> Optional[Dict[str, Any]]:
+        mid = str(market_id or "").strip()
+        if not mid:
+            return None
+        for pos in self.get_open_positions():
+            pid = str(pos.get("market_id") or pos.get("marketId") or "").strip()
+            if pid == mid:
+                return pos
+        return None
+
+    def resolve_buy_fill_after_market_yes(
+        self,
+        market_id: str,
+        *,
+        quote_price: float,
+        usd_notional: float,
+        max_wait_sec: float = 3.0,
+    ) -> tuple[float, float]:
+        """
+        After a USD market buy, read avg entry and size from data-api positions.
+
+        Best-ask at quote time can be far below the VWAP when the book is thin;
+        returns (avg_price, shares) for logging and state.
+        """
+        self.invalidate_data_positions_cache()
+        qp = float(quote_price or 0.0)
+        fb_sh = (usd_notional / qp) if qp > 1e-12 else 0.0
+        fallback = (qp, fb_sh)
+        deadline = time.time() + max(0.5, float(max_wait_sec))
+        while time.time() < deadline:
+            pos = self.get_position_for_market_id(market_id)
+            if pos:
+                ap = float(pos.get("avg_price") or 0.0)
+                sz = float(pos.get("size") or 0.0)
+                if 1e-9 < ap <= 1.0 + 1e-9 and sz > 1e-9:
+                    return ap, sz
+            time.sleep(0.18)
+        return fallback
+
     def get_portfolio_balance(
         self, *, force_allowance_refresh: bool = False
     ) -> Dict[str, Any]:
@@ -1237,6 +1276,96 @@ class PolymarketClient:
             return mid
         return 0.0
 
+    def get_clob_yes_best_ask_from_book(self, market: Dict[str, Any]) -> float:
+        """
+        Lowest YES ask from the CLOB orderbook only (ignores Gamma bestAsk cache).
+
+        Gamma bestAsk can lag or disagree from the live book; market buys use the book.
+        """
+        try:
+            token_id = yes_token_id_from_market(market)
+        except (ValueError, KeyError):
+            return 0.0
+        try:
+            book = self.make_clob_client().get_order_book(token_id)
+        except Exception:
+            return 0.0
+        if not book or not getattr(book, "asks", None):
+            return 0.0
+        best = 0.0
+        for lvl in book.asks:
+            try:
+                p = float(getattr(lvl, "price", 0) or 0)
+            except (TypeError, ValueError):
+                continue
+            if not (0 < p <= 1.0):
+                continue
+            if best <= 0 or p < best:
+                best = p
+        return best
+
+    def estimate_yes_market_buy_usd_walk(
+        self,
+        market: Dict[str, Any],
+        usd_budget: float,
+    ) -> tuple[float, float, float, float]:
+        """
+        Simulate spending usd_budget against visible CLOB YES asks (ascending price).
+
+        returns:
+        - filled_usd: dollars absorbed from the visible book
+        - vwap: average price over the simulated fill (0 if none)
+        - max_ask_price: highest ask price used
+        - unfilled_usd: usd_budget - filled_usd
+        """
+        if usd_budget <= 1e-12:
+            return 0.0, 0.0, 0.0, 0.0
+        try:
+            token_id = yes_token_id_from_market(market)
+        except (ValueError, KeyError):
+            return 0.0, 0.0, 0.0, usd_budget
+        try:
+            book = self.make_clob_client().get_order_book(token_id)
+        except Exception:
+            return 0.0, 0.0, 0.0, usd_budget
+        if not book or not getattr(book, "asks", None):
+            return 0.0, 0.0, 0.0, usd_budget
+        levels: List[tuple[float, float]] = []
+        for lvl in book.asks:
+            try:
+                p = float(getattr(lvl, "price", 0) or 0)
+                sz = float(
+                    getattr(lvl, "size", 0)
+                    or getattr(lvl, "quantity", 0)
+                    or getattr(lvl, "amount", 0)
+                    or 0
+                )
+            except (TypeError, ValueError):
+                continue
+            if p > 0 and p <= 1.0 and sz > 0:
+                levels.append((p, sz))
+        if not levels:
+            return 0.0, 0.0, 0.0, usd_budget
+        levels.sort(key=lambda x: x[0])
+        remaining = float(usd_budget)
+        cost_sum = 0.0
+        share_sum = 0.0
+        max_px = 0.0
+        for p, sz in levels:
+            if remaining <= 1e-9:
+                break
+            level_cap_usd = p * sz
+            take_usd = min(remaining, level_cap_usd)
+            take_sh = take_usd / p
+            cost_sum += take_usd
+            share_sum += take_sh
+            remaining -= take_usd
+            max_px = max(max_px, p)
+        filled = float(usd_budget) - max(0.0, remaining)
+        vwap = (cost_sum / share_sum) if share_sum > 1e-12 else 0.0
+        unfilled = max(0.0, remaining)
+        return filled, vwap, max_px, unfilled
+
     def get_clob_min_order_size_yes(self, market: Dict[str, Any]) -> Optional[float]:
         try:
             token_id = yes_token_id_from_market(market)
@@ -1266,12 +1395,15 @@ class PolymarketClient:
         px = self.get_clob_yes_price(market)
         if px <= 0 or px >= 1.0:
             return exchange_yes
-        usd = extra * px * C.CLOB_SELL_TOPUP_SLIPPAGE_MULT
-        usd = min(max(usd, C.CLOB_SELL_TOPUP_MIN_USD), C.CLOB_SELL_TOPUP_MAX_USD)
+        needed = extra * px * C.CLOB_SELL_TOPUP_SLIPPAGE_MULT
+        usd = max(C.CLOB_SELL_TOPUP_MIN_USD, needed)
+        cap = max(float(C.CLOB_SELL_TOPUP_MAX_USD), needed * 1.06)
+        usd = min(usd, cap, float(C.CLOB_SELL_TOPUP_HARD_USD_CAP))
         try:
             self.place_market_buy_yes(market, usd)
         except Exception:
             return exchange_yes
+        time.sleep(0.25)
         return self.get_yes_shares_on_exchange_for_market_id(position_key)
 
     def place_market_buy_yes(

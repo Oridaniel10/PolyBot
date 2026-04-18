@@ -142,6 +142,16 @@ TRADE_CSV_FIELDS = [
     "cash_after",
     "positions_mtm",
     "total_value",
+    "consensus_c",
+    "implied_yes",
+    "edge",
+    "required_edge",
+    "fee_drag",
+    "tp_exit_bar",
+    "sl_mark_bar",
+    "buy_est_tp_pnl_usd",
+    "buy_est_sl_pnl_usd",
+    "buy_est_yes_resolve_pnl_usd",
 ]
 
 
