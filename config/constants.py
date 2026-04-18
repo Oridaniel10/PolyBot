@@ -53,7 +53,7 @@ STOP_LOSS_TIER_MARK_LOW = 0.30
 STOP_LOSS_TIER_MARK_HIGH = 0.40
 TAKE_PROFIT_THRESHOLD = 0.97
 # earliest local hour to place new buys (city local TZ from title; 0–23)
-BUY_EARLIEST_HOUR = 14
+BUY_EARLIEST_HOUR = 13
 # skip new buys when title event date is after today's date in Asia/Jerusalem (report TZ)
 BUY_BLOCK_EVENT_DATE_AFTER_ISRAEL_TODAY = True
 # max open positions at once — limits total portfolio risk
@@ -78,10 +78,10 @@ SELL_BYPASS_MIN_COOLDOWN_REASONS = frozenset(
 )
 DEFAULT_ORDER_SIZE = 10.0
 MAX_TRADE_FRACTION_OF_CASH = 0.90
-MAX_BUY_NOTIONAL_USD = 5.0
+MAX_BUY_NOTIONAL_USD = 3.0
 MIN_ORDER_NOTIONAL_USD = 2.0
 # never allocate buys from this portion of free cash (runtime + UI override)
-CASH_RESERVE_USD = 38.0
+CASH_RESERVE_USD = 25.0
 
 MIN_LEAD_OVER_RUNNER_UP = 0.15
 ENABLE_COMPETITION_FILTER = True
@@ -93,16 +93,10 @@ PORTFOLIO_TELEGRAM_MOMENTUM_LONG_SEC = 7200
 MOMENTUM_FAST_EXIT_DROP = 0.20
 MOMENTUM_COMPETITOR_SURGE = 0.15
 MOMENTUM_ENTRY_RISE = 0.15
-# momentum entry when we do not already hold this event: must be market-YES rank 1
-# AND pass competition filter (gap >= MIN_LEAD_OVER_RUNNER_UP)
+# momentum entry (no position in event): bucket must be market-YES rank 1 in the event
 MOMENTUM_ENTRY_MAX_RANK = 1
 # momentum switch / defensive exit: leader YES >= held_mark + this gap (probability points, 0.15 = +15pp)
 MOMENTUM_SWITCH_ABOVE_HELD_GAP = 0.15
-# when we already hold another bucket in the same gamma event, the surging / dominant
-# sibling must be this market-YES rank (1 = leader only). used by:
-#   strategy/decision_core.detect_momentum_switch
-#   strategy/decision_core.momentum_competitor_dominates_held_exit (leader is always rank 1)
-MOMENTUM_SWITCH_LEADER_YES_RANK = 1
 # print [momentum_eval] json per evaluate_entry (noisy; turn on when tuning)
 MOMENTUM_DECISION_DEBUG_LOG = False
 
@@ -115,7 +109,7 @@ TIME_DECAY_MAX_PRICE = 0.85
 ENABLE_MOMENTUM = False
 MOMENTUM_WINDOW_MIN = 10
 MOMENTUM_RISE = 0.25
-MOMENTUM_MIN_PRICE = 0.45
+MOMENTUM_MIN_PRICE = 0.17
 MOMENTUM_MAX_ENTRY = 0.75
 MOMENTUM_PEER_DROP = 0.10
 PRICE_SAMPLE_RETENTION_DAYS = 7

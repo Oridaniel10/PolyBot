@@ -179,11 +179,9 @@ def detect_momentum_switch(
     settings: RuntimeSettings,
 ) -> Optional[Tuple[Dict[str, Any], str]]:
     """
-    if we hold another bucket in the same event and this bucket is market-yes rank
-    MOMENTUM_SWITCH_LEADER_YES_RANK, rose >= MOMENTUM_ENTRY_RISE in MOMENTUM_WINDOW_SECONDS,
-    is in momentum_min..momentum_max (defaults MOMENTUM_MIN_PRICE / MOMENTUM_MAX_ENTRY),
-    and YES >= held_yes + MOMENTUM_SWITCH_ABOVE_HELD_GAP, return (held_market_dict, held_state_key)
-    so the runner can sell held then BUY here.
+    if we hold another bucket in the same event and this bucket is #1 by market YES,
+    rose >= entry-rise in 15m, is in the momentum price band, and YES >= held_yes + gap,
+    return (held_market_dict, held_state_key) so the runner can sell held then BUY here.
 
     returns:
     - None when no rotation applies.
@@ -231,7 +229,7 @@ def detect_momentum_switch(
         return None
 
     rank = yes_rank_by_market_prob(target_mid, siblings)
-    if rank != int(C.MOMENTUM_SWITCH_LEADER_YES_RANK):
+    if rank != 1:
         return None
 
     held_yes = float(held_row.get("last_price") or held_row.get("entry_price") or 0.0)
@@ -259,11 +257,8 @@ def momentum_competitor_dominates_held_exit(
     client: PolymarketClient,
 ) -> Tuple[Optional[str], Optional[float]]:
     """
-    sell held when the event leader (market-yes rank MOMENTUM_SWITCH_LEADER_YES_RANK) is not us,
-    that leader has momentum_entry_signal(MOMENTUM_ENTRY_RISE, MOMENTUM_WINDOW_SECONDS),
-    leader_yes is in momentum_min_price..momentum_max_entry (defaults MOMENTUM_MIN_PRICE,
-    MOMENTUM_MAX_ENTRY), and leader_yes >= held_mark_yes + MOMENTUM_SWITCH_ABOVE_HELD_GAP.
-    all knobs live in config/constants.py except runtime momentum_min_price / momentum_max_entry.
+    sell held when another bucket is #1 by market YES, has entry-style momentum,
+    is inside the momentum price band, and leads us by at least MOMENTUM_SWITCH_ABOVE_HELD_GAP.
 
     returns:
     - (reason, ref_gamma_yes) or (None, None).
@@ -484,7 +479,7 @@ def evaluate_entry(
         if model_p + 1e-9 < peak_min:
             return finish("SKIP", f"model_flat {model_p:.4f} < peak_min {peak_min:.4f}")
 
-    # 7. competition filter — required for ALL entries (normal + momentum)
+    # 7. competition filter — 15% lead required (skipped for momentum entries)
     comp = evaluate_competition(
         client,
         market,
@@ -494,7 +489,7 @@ def evaluate_entry(
         consensus_c=consensus_c,
         sigma_c_setting=float(settings.research_sigma_c),
     )
-    if settings.enable_competition_filter and not comp.passes:
+    if settings.enable_competition_filter and not comp.passes and not is_momentum_entry:
         return finish(
             "SKIP",
             f"competition_fail gap={comp.gap:.4f} < min_lead={settings.min_lead_over_runner_up:.4f}",
