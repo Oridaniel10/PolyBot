@@ -21,9 +21,17 @@ run_bot → sync_state_with_portfolio → run_once → process_single_market
                                     └──────────┘  │time_filter│
                                                   │edge gate  │
                                                   └───────────┘
+
+   ┌────────────────────────────────────────────┐
+   │  FAST EXIT WATCHER (daemon thread)         │
+   │  polls CLOB /price every 2 seconds         │
+   │  checks: per-type SL + momentum fast exit  │
+   │  strategy/fast_exit_watcher.py             │
+   └────────────────────────────────────────────┘
 ```
 
 **Decision engine**: `strategy/decision_core.py` — single source of truth for entry/exit decisions.
+**Fast exit watcher**: `strategy/fast_exit_watcher.py` — daemon thread, 2-second polling for emergency exits.
 
 ---
 
@@ -32,10 +40,65 @@ run_bot → sync_state_with_portfolio → run_once → process_single_market
 1. We invest **only** in maximum temperature markets — cities and locations.
 2. Event date must be **today or yesterday** (Israel time) — never future dates.
 3. **City local calendar day** must equal the market **event_date** (the day the max is for), and local clock **14:00–23:59** — no buys on the prior calendar day even if the hour is past 14:00.
-4. Market price must be within price band: `BUY_MIN_THRESHOLD` ≤ price ≤ `BUY_MAX_THRESHOLD`.
+4. Market price must be within price band (depends on entry type — see below).
 5. Max **1 position per event** (gamma event).
 6. Max **7 total open positions**.
 7. After a stop-loss exit → market is **blacklisted for 20 minutes** (churn cooldown).
+8. After **2 losses on the same event** → entire event is **blocked for 30 minutes** (event-level churn).
+
+---
+
+## ENTRY TYPES — Price Bands & Stop-Loss (grouped)
+
+Each entry type defines its own price band and stop-loss threshold. Constants are grouped in `config/constants.py` under **ENTRY BANDS & STOP-LOSS**.
+
+### Normal Entry (model/edge-based)
+
+| Variable | Default | Where |
+|----------|---------|-------|
+| `BUY_MIN_THRESHOLD` | **0.78** | `config/constants.py` |
+| `BUY_MAX_THRESHOLD` | **0.88** | `config/constants.py` |
+| `STOP_LOSS_NORMAL` | **0.45** | `config/constants.py` |
+
+Entry when the model has edge and price is in the 0.78–0.88 band. If market mark drops below **0.45** → exit.
+
+### Momentum Entry (≥15% rise in 15 min) ⚡
+
+| Variable | Default | Where |
+|----------|---------|-------|
+| `MOMENTUM_ENTRY_RISE` | **0.15** | `config/constants.py` |
+| `MOMENTUM_MIN_PRICE` | **0.65** | `config/constants.py` |
+| `MOMENTUM_MAX_ENTRY` | **0.80** | `config/constants.py` |
+| `STOP_LOSS_MOMENTUM` | **0.45** | `config/constants.py` |
+
+Entry when YES rose ≥15% in 15 minutes, price is in 0.65–0.80, bucket is #1 by market YES with ≥15pp lead over runner-up. Bypasses model/edge gates. If mark drops below **0.45** → exit.
+
+### Double Momentum Entry (≥30% rise in 15 min) 🚀
+
+| Variable | Default | Where |
+|----------|---------|-------|
+| `DOUBLE_MOMENTUM_ENTRY_RISE` | **0.30** | `config/constants.py` |
+| `DOUBLE_MOMENTUM_MIN_PRICE` | **0.40** | `config/constants.py` |
+| `DOUBLE_MOMENTUM_MAX_PRICE` | **0.80** | `config/constants.py` |
+| `STOP_LOSS_DOUBLE_MOMENTUM` | **0.30** | `config/constants.py` |
+
+Entry when YES rose ≥30% in 15 minutes (extreme surge). **Wider band** than standard momentum: 0.40–0.80. **Lower stop-loss** at 0.30 to accommodate the wider entry range.
+
+### How entry_type is determined
+
+At buy time, `evaluate_entry()` in `decision_core.py` sets `TradeDecision.entry_type`:
+- `"double_momentum"` → rise ≥30%, price in 0.40–0.80, rank=1, lead≥0.15
+- `"momentum"` → rise ≥15%, price in 0.65–0.80, rank=1, lead≥0.15
+- `"normal"` → everything else (model/edge based)
+
+The `entry_type` is stored in `state.json → active_trades[market_id]["entry_type"]` and preserved through `sync_state_with_portfolio`. The per-type stop-loss is computed from `entry_type` via `stop_loss_bar_for_entry_type()` in `decision_core.py`.
+
+### Legacy tiered SL (backward compat)
+
+For positions opened before `entry_type` was introduced, the legacy tiered system is used as fallback:
+- `STOP_LOSS_USE_ENTRY_TIERS`, `STOP_LOSS_TIER_ENTRY_SPLIT`, `STOP_LOSS_TIER_MARK_LOW`, `STOP_LOSS_TIER_MARK_HIGH`
+
+All runtime-overridable via `runtime_config.json`.
 
 ---
 
@@ -45,70 +108,113 @@ A buy is executed only when **ALL** conditions pass, checked in order:
 
 | # | Condition | Rule | Variable | Defined in |
 |---|-----------|------|----------|------------|
-| 1 | **Date gate** | event_date ≤ today (Israel TZ) | `BUY_BLOCK_EVENT_DATE_AFTER_ISRAEL_TODAY` | `config/constants.py:55` |
-| 2 | **Time + event day** | city_local `date == event_date` **and** 14:00 ≤ hour ≤ 23:59 | `BUY_EARLIEST_HOUR = 14`, `buy_earliest_local_hour` / `buy_latest_local_hour` in `runtime_config.json`, `BUY_LATEST_LOCAL_HOUR = 24`; `entry_time_allowed(..., event_date=…)` | `config/constants.py`, `config/settings.py`, `strategy/time_filter.py`, `strategy/trades.py` |
-| 3 | **Price band** | normal: `buy_min ≤ gamma_yes ≤ buy_max`; **or** momentum surge path: `momentum_min_price ≤ gamma ≤ momentum_max_entry` **and** ≥15% rise in 15m | `BUY_MIN_THRESHOLD` / `BUY_MAX_THRESHOLD`, `MOMENTUM_MIN_PRICE`, `MOMENTUM_MAX_ENTRY` | `config/constants.py`, `strategy/trades.py` |
-| 4 | **Position limit** | total open < 7 | `MAX_CONCURRENT_POSITIONS = 7` | `config/constants.py:57` |
+| 1 | **Date gate** | event_date ≤ today (Israel TZ) | `BUY_BLOCK_EVENT_DATE_AFTER_ISRAEL_TODAY` | `config/constants.py` |
+| 2 | **Time + event day** | city_local `date == event_date` **and** 14:00 ≤ hour ≤ 23:59 | `BUY_EARLIEST_HOUR`, `BUY_LATEST_LOCAL_HOUR` | `config/constants.py`, `strategy/time_filter.py` |
+| 3 | **Price band** | depends on entry type (see table above) | see entry type tables | `config/constants.py` |
+| 4 | **Position limit** | total open < 7 | `MAX_CONCURRENT_POSITIONS = 7` | `config/constants.py` |
 | 5 | **Forecast available** | consensus °C from Open-Meteo exists | — | `forecast/forecast_service.py` |
-| 6 | **Event cooldown** | `event_buy_cooldown` in state (rare; competitor-surge no longer arms a 20m event-wide buy block) | — | `strategy/decision_core.py` |
-| 7 | **No duplicate** | not already holding this market_id | — | `strategy/decision_core.py` |
-| 8 | **Max per event** | max 1 position per gamma event — **unless** `momentum_switch` sells the held sibling first (`momentum-switch-out`) | `MAX_POSITIONS_PER_EVENT = 1` | `config/constants.py`, `strategy/trades.py` |
-| 9 | **Market prob ceiling** | market_yes ≤ max (skipped when momentum path qualifies) | `MAX_MARKET_PROB_FOR_BUY = 0.75` | `config/constants.py:148` |
-| 10 | **Model prob floor** | model_prob ≥ min (skipped when momentum path qualifies) | `MIN_MODEL_PROB_FOR_BUY = 0.10` | `config/constants.py:149` |
-| 11 | **Not flat distribution** | model peak gate (skipped when momentum path qualifies) | `DECISION_MIN_MODEL_PEAK_PROB = 0.12` | `config/constants.py:152` |
-| 12 | **Momentum entry** ⚡ | YES up ≥15% in 15m **and** `momentum_min_price ≤ price ≤ momentum_max_entry` **and** market-YES **rank = 1** **and** `YES − runner_up_YES ≥ min_lead_over_runner_up` (market race, same as row 13) → bypass model rows 9–11 + model-based competition check, **forecast contradict** at `place_buy`, momentum CLOB band | `MOMENTUM_ENTRY_RISE`, `min_lead_over_runner_up`, `market_yes_lead_gap_vs_runner_up` | `config/constants.py`, `strategy/competition_filter.py`, `strategy/decision_core.py` |
-| 12b | **Momentum switch** 🔁 | hold A; bucket B is **#1** by market YES, momentum rise + band, and `B_yes ≥ A_yes + MOMENTUM_SWITCH_ABOVE_HELD_GAP` → sell A (`momentum-switch-out`), then BUY B (if buy fails, exit-only / defensive) | `MOMENTUM_SWITCH_ABOVE_HELD_GAP = 0.15` | `strategy/decision_core.py` (`detect_momentum_switch`), `strategy/trades.py` |
-| 12c | **Dominant competitor exit** | while holding A: if **#1** sibling (not A) has momentum + band and `leader_yes ≥ mark_A + gap` → SELL A (`momentum-competitor-dominant`) even before the leader market is scanned for a switch-in | same gap constant | `strategy/decision_core.py` (`check_exits`) |
-| 13 | **Competition** | model or market gap vs runner-up ≥ `min_lead` (skipped if **momentum entry** — momentum already enforces **market** gap in row 12) | `MIN_LEAD_OVER_RUNNER_UP = 0.15`, `min_lead_over_runner_up` in `runtime_config.json` | `config/constants.py`, `strategy/competition_filter.py` |
-| 14 | **No negative momentum** | 15-min change > -10% (skipped if momentum entry) | — | `strategy/decision_core.py` |
-| 15 | **Edge gate** | `edge ≥ required_edge` … (skipped if momentum entry) | `RESEARCH_MIN_EDGE`, … | `config/constants.py`, `strategy/research_signal.py` |
-| 16 | **Forecast gate** | EXACT bracket contradict (skipped for momentum BUY at execution) | `FORECAST_CONTRADICT_MARGIN_C = 2.5` | `config/constants.py`, `strategy/trades.py` |
-| 16b | **Forecast “supports YES” (weak sizing)** | EXACT slack (still applies for sizing when not momentum-relaxed path) | `FORECAST_EXACT_BUCKET_SUPPORT_SLACK_C = 2.5` | `config/constants.py` |
-| 17 | **CLOB price verify** | normal buy band **or** momentum band when `TradeDecision.momentum_relaxed_gates` | — | `strategy/trades.py` |
-| 18 | **Churn / blacklist** | no cooldown from repeated stop-losses, not blacklisted | `CHURN_COOLDOWN_SEC = 1200` (20 min) | `config/constants.py:103` |
-| 19 | **Debug** | optional `[momentum_eval] {json}` per `evaluate_entry` when `MOMENTUM_DECISION_DEBUG_LOG = True` | `MOMENTUM_DECISION_DEBUG_LOG` | `config/constants.py`, `strategy/decision_core.py` |
-
-### Momentum Entry (Ride the Wave) 🌊
-
-If a bucket’s YES price rose **≥15%** in the last **15 minutes** (`MOMENTUM_ENTRY_RISE`, `MOMENTUM_WINDOW_SECONDS`) **and** the current YES is in **`momentum_min_price` … `momentum_max_entry`** **and** this bucket is **#1 by market YES** among siblings **and** `our_YES − second_best_YES ≥ min_lead_over_runner_up` (default **0.15**, same knob as competition; see `market_yes_lead_gap_vs_runner_up`):
-
-- **Model / flat / market ceiling rows** in `evaluate_entry` are **skipped** (momentum is the signal).
-- **Model-based competition** (`evaluate_competition` with forecast σ) is **bypassed** — but the **market** lead vs runner-up is **required** as above.
-- **Research edge** is **bypassed**.
-- **Negative 15m momentum** check is **bypassed**.
-- **Forecast “contradicts bracket”** at `place_buy` and **CLOB band** use the **momentum** bounds when `TradeDecision.momentum_relaxed_gates` is set.
-- **Still required:** time + event day, max positions, forecast **exists** (for sizing / city), churn, blacklist, `max_positions_per_event` unless **momentum switch** (row 12b) sold the sibling first.
-
-**Why fast stop-loss sometimes missed a −99% mark:** `momentum-stop-loss` uses **peak-to-trough drawdown over samples in the 15m window**. Sparse samples or a cliff with no high inside the window can keep measured drawdown **below 20%** even when the UI looks catastrophic — see `strategy/momentum_engine.py` (`should_fast_exit`).
-
-### Where 15m momentum is recorded
-
-Price samples (for 15m windows) are appended for **every market returned in the bot’s temperature scan** for the target day(s), plus **held positions** fetched on the extra exit pass — see `strategy/loop.py` (`sample_markets` → `record_samples_for_market_dicts`). That is **all scanned city-day markets in that run**, not every Polymarket market globally.
+| 6 | **Event churn** 🆕 | no event-level cooldown from 2 losses on same event | `CHURN_EVENT_MAX_LOSSES = 2`, `CHURN_EVENT_COOLDOWN_SEC = 1800` | `config/constants.py`, `strategy/churn.py` |
+| 7 | **Event cooldown** | `event_buy_cooldown` in state | — | `strategy/decision_core.py` |
+| 8 | **No duplicate** | not already holding this market_id | — | `strategy/decision_core.py` |
+| 9 | **Max per event** | max 1 position per gamma event | `MAX_POSITIONS_PER_EVENT = 1` | `config/constants.py` |
+| 10 | **Market prob ceiling** | market_yes ≤ max (skipped for momentum) | `MAX_MARKET_PROB_FOR_BUY = 0.75` | `config/constants.py` |
+| 11 | **Model prob floor** | model_prob ≥ min (skipped for momentum) | `MIN_MODEL_PROB_FOR_BUY = 0.10` | `config/constants.py` |
+| 12 | **Not flat distribution** | model peak gate (skipped for momentum) | `DECISION_MIN_MODEL_PEAK_PROB = 0.12` | `config/constants.py` |
+| 13 | **Momentum entry** ⚡ | Standard (≥15%) or Double (≥30%) — see entry type tables above | `MOMENTUM_ENTRY_RISE`, `DOUBLE_MOMENTUM_ENTRY_RISE` | `strategy/decision_core.py` |
+| 13b | **Momentum switch** 🔁 | hold A; B is #1 with momentum + gap → sell A, buy B | `MOMENTUM_SWITCH_ABOVE_HELD_GAP = 0.15` | `strategy/decision_core.py` |
+| 14 | **Competition** | gap vs runner-up ≥ `min_lead` (skipped for momentum entry) | `MIN_LEAD_OVER_RUNNER_UP = 0.15` | `strategy/competition_filter.py` |
+| 15 | **No negative momentum** | 15-min change > -10% (skipped for momentum) | — | `strategy/decision_core.py` |
+| 16 | **Edge gate** | `edge ≥ required_edge` (skipped for momentum) | `RESEARCH_MIN_EDGE` | `strategy/research_signal.py` |
+| 17 | **Forecast gate** | bracket contradict check | `FORECAST_CONTRADICT_MARGIN_C = 2.5` | `strategy/trades.py` |
+| 18 | **CLOB price verify** | normal or momentum band at execution time | — | `strategy/trades.py` |
+| 19 | **Market churn** | no cooldown from prior stop-loss on this market | `CHURN_COOLDOWN_SEC = 1200` | `strategy/churn.py` |
 
 ---
 
 ## EXIT CONDITIONS (SELL)
 
-Exits are checked in this priority order (first match wins):
+Exits are checked in priority order (first match wins). There are **two loops** checking exits:
 
-| # | Condition | Rule | Variable | Defined in |
-|---|-----------|------|----------|------------|
-| 1 | **Market resolved** | status = closed/claimable/resolved → CLAIM | `STATUS_CLOSED` | `config/constants.py:175` |
-| 2 | **Fast stop-loss** 🚨 (`momentum-stop-loss`) | In the last **15 min** (local `price_samples`), YES had a **≥20%** peak-to-trough drawdown **and** current mark **< entry** → EXIT immediately | `MOMENTUM_FAST_EXIT_DROP = 0.20`, `MOMENTUM_WINDOW_SECONDS = 900` | `strategy/momentum_engine.py` (`max_drawdown_in_window`), `strategy/decision_core.py` (`check_exits`), `config/constants.py` |
-| 3 | **Dominant competitor** (`momentum-competitor-dominant`) | sibling that is **#1** by market YES has momentum rise + momentum band **and** `leader_yes ≥ our_mark + MOMENTUM_SWITCH_ABOVE_HELD_GAP` → EXIT (defensive; same intent as strict switch) | `MOMENTUM_SWITCH_ABOVE_HELD_GAP`, `MOMENTUM_ENTRY_RISE`, `MOMENTUM_MIN_PRICE` / `MOMENTUM_MAX_ENTRY` | `strategy/decision_core.py` (`check_exits`) |
-| 4 | **Competitor surge** 🔥 | any sibling rose ≥**15%** in 15 min → EXIT (broader than row 3) | `MOMENTUM_COMPETITOR_SURGE = 0.15` | `config/constants.py:84` |
-| 5 | **Time-decay** ⏰ | held >2 hours AND gain <2% AND price <0.85 → EXIT (stale position) | `TIME_DECAY_HOURS = 2.0`, `TIME_DECAY_MIN_GAIN = 0.02`, `TIME_DECAY_MAX_PRICE = 0.85` | `config/constants.py:88-90` |
-| 6 | **Research model flip** | same contradict rule as buy gate (optional, default off) | `RESEARCH_EXIT_ON_MODEL_FLIP`, `forecast_contradict_margin_c` | `config/constants.py`, `data/runtime_config.json` |
-| 7 | **Regular stop-loss** | tiered: if entry < 0.60 → exit when mark < 0.30; if entry ≥ 0.60 → exit when mark < 0.40 | `STOP_LOSS_USE_ENTRY_TIERS = True`, `STOP_LOSS_TIER_ENTRY_SPLIT = 0.60`, `STOP_LOSS_TIER_MARK_LOW = 0.30`, `STOP_LOSS_TIER_MARK_HIGH = 0.40` | `config/constants.py:47-50` |
-| 8 | **Take-profit** | mark ≥ 0.96 → EXIT | `TAKE_PROFIT_THRESHOLD = 0.96` | `config/constants.py:51` |
+1. **Fast exit watcher** (daemon thread, every **2 seconds**) — checks per-type SL + momentum fast exit only
+2. **Main loop** (every **30 seconds**) — checks all exit conditions
 
-### Important: Competition does NOT trigger exits
+### Exit Priority Table
 
-If after we buy, a competitor gets closer (gap shrinks below 15%), we do **NOT** sell. The competition filter applies **only to new buys**, never to existing positions.
+| # | Condition | Rule | Speed | Variable | Defined in |
+|---|-----------|------|-------|----------|------------|
+| 1 | **Market resolved** | status = closed/claimable/resolved → CLAIM | 30s | `STATUS_CLOSED` | `config/constants.py` |
+| 2 | **Momentum fast exit** 🚨 | ABSOLUTE price drop ≥ **0.15** from peak in 15-min window **and** mark < entry | **2s** (watcher) + 30s (main) | `MOMENTUM_FAST_EXIT_DROP = 0.15` | `config/constants.py`, `strategy/momentum_engine.py` |
+| 3 | **Dominant competitor** | sibling #1 by YES has momentum + gap ≥ held + 0.15 → EXIT | 30s | `MOMENTUM_SWITCH_ABOVE_HELD_GAP` | `strategy/decision_core.py` |
+| 4 | **Competitor surge** 🔥 | any sibling rose ≥15% in 15 min | 30s | `MOMENTUM_COMPETITOR_SURGE = 0.15` | `config/constants.py` |
+| 5 | **Time-decay** ⏰ | held >2h AND gain <2% AND price <0.85 | 30s | `TIME_DECAY_HOURS`, `TIME_DECAY_MIN_GAIN`, `TIME_DECAY_MAX_PRICE` | `config/constants.py` |
+| 6 | **Research model flip** | forecast contradict (optional, default off) | 30s | `RESEARCH_EXIT_ON_MODEL_FLIP` | `config/constants.py` |
+| 7 | **Per-type stop-loss** 🆕 | mark < SL bar (depends on entry_type) | **2s** (watcher) + 30s (main) | `STOP_LOSS_NORMAL=0.45`, `STOP_LOSS_MOMENTUM=0.45`, `STOP_LOSS_DOUBLE_MOMENTUM=0.30` | `config/constants.py`, `strategy/decision_core.py` |
+| 8 | **Take-profit** | mark ≥ 0.97 | 30s | `TAKE_PROFIT_THRESHOLD = 0.97` | `config/constants.py` |
 
-### After Exit: Churn Blacklist
+### Momentum Fast Exit — Absolute Drop 🆕
 
-After any stop-loss-type exit (`stop-loss`, `momentum-stop-loss`, `competitor-surge`, `momentum-competitor-dominant`, `time-decay`), the specific market is blacklisted for **20 minutes** (`CHURN_COOLDOWN_SEC = 1200`). This prevents re-entering a losing position immediately.
+The momentum fast exit now uses **absolute price points**, not percentage:
+- Old: peak-to-trough ≥ 20% → exit (e.g., 0.75 → 0.60 = 20%)
+- New: peak-to-trough ≥ **0.15 absolute** → exit (e.g., 0.75 → 0.59 = 0.16 > 0.15 → exit)
+
+Example: entered at 0.60, price spiked to 0.75, then dropped to 0.59.
+- Peak = 0.75, current = 0.59, drop = 0.16 > 0.15 → **exit**
+- Also: 0.59 < 0.60 entry → mark < entry check passes → **momentum-stop-loss** triggered
+
+### Per-Type Stop-Loss 🆕
+
+The stop-loss bar depends on how the position was entered:
+
+| Entry Type | SL Bar | Example |
+|------------|--------|---------|
+| `normal` | **0.45** | Entered at 0.80, exits if mark < 0.45 |
+| `momentum` | **0.45** | Entered at 0.70, exits if mark < 0.45 |
+| `double_momentum` | **0.30** | Entered at 0.50, exits if mark < 0.30 |
+
+The `entry_type` is stored in `state.json` at buy time and used by both the main loop and the fast exit watcher.
+
+### Fast Exit Watcher 🆕
+
+A **daemon thread** running every **2 seconds** that checks ONLY open positions for emergency exits:
+
+- Uses CLOB `/price` endpoint (~35 requests/10s for 7 positions, well within 1,500/10s limit)
+- Checks per-type stop-loss and momentum fast exit
+- Uses `threading.Lock` to prevent double-sells with the main loop
+- Does NOT scan for new buys or call Gamma list APIs
+- Module: `strategy/fast_exit_watcher.py`
+- Started in `strategy/bot_runner.py` at startup
+- Interval configurable: `FAST_EXIT_WATCHER_INTERVAL_SEC = 2` (runtime override via `runtime_config.json`)
+
+---
+
+## Anti-Churn System
+
+### Per-Market Churn
+
+After a stop-loss exit, the specific `market_id` is blocked for **20 minutes**:
+
+| Variable | Default | Where |
+|----------|---------|-------|
+| `CHURN_MAX_STOP_CYCLES` | 1 | `config/constants.py` |
+| `CHURN_COOLDOWN_SEC` | 1200 (20 min) | `config/constants.py` |
+
+### Event-Level Churn 🆕
+
+After **2 losses** on ANY market in the same gamma event, the **entire event** is blocked for **30 minutes**. This prevents the bot from losing on "Paris 22°C", switching to "Paris 23°C", and losing again.
+
+| Variable | Default | Where |
+|----------|---------|-------|
+| `CHURN_EVENT_MAX_LOSSES` | 2 | `config/constants.py` |
+| `CHURN_EVENT_COOLDOWN_SEC` | 1800 (30 min) | `config/constants.py` |
+
+State tracked in `state["churn_by_event"][event_id]`. Module: `strategy/churn.py`.
+
+### After Exit: What Gets Tracked
+
+On any loss exit (`stop-loss`, `momentum-stop-loss`, `competitor-surge`, `momentum-competitor-dominant`, `time-decay`):
+1. **Market-level** churn counter incremented → may block re-buy of same market
+2. **Event-level** churn counter incremented → may block ALL buys in that gamma event
+3. Take-profit resets the market-level counter
 
 ---
 
@@ -118,7 +224,7 @@ After any stop-loss-type exit (`stop-loss`, `momentum-stop-loss`, `competitor-su
 - **Model**: Gaussian `N(mean=forecast, sigma=f(MAE))`
 - **Calibration**: per-city bias correction from `data/research/calibration_latest.json`
 - **Output**: `model_prob` = P(YES) for each temperature bucket
-- **Edge gate (research)**: same P(YES) idea as `model_prob` but from `implied_yes` vs CLOB; compare **`edge`** to **`required_edge`** (includes **fee_drag** in the hurdle, not subtracted from `edge`). High-implied path adds a **soft boost** to `edge` when `P_implied` is above `RESEARCH_EDGE_IMPLIED_SOFT_FLOOR` — see row 15 in the entry table.
+- **Edge gate (research)**: same P(YES) idea as `model_prob` but from `implied_yes` vs CLOB; compare **`edge`** to **`required_edge`** (includes **fee_drag** in the hurdle). High-implied path adds a **soft boost** to `edge` when `P_implied` is above `RESEARCH_EDGE_IMPLIED_SOFT_FLOOR`.
 - **Module**: `strategy/probability_engine.py`, `research/calibration_apply.py`
 
 ---
@@ -133,10 +239,10 @@ if planned < min_order_notional_usd → skip
 
 | Variable | Default | Defined in |
 |----------|---------|------------|
-| `CASH_RESERVE_USD` | 5.0 | `config/constants.py:76` |
-| `MAX_BUY_NOTIONAL_USD` | 4.0 | `config/constants.py:73` |
-| `MIN_ORDER_NOTIONAL_USD` | 2.0 | `config/constants.py:74` |
-| `MAX_TRADE_FRACTION_OF_CASH` | 0.90 | `config/constants.py:72` |
+| `CASH_RESERVE_USD` | 20.0 | `config/constants.py` |
+| `MAX_BUY_NOTIONAL_USD` | 4.0 | `config/constants.py` |
+| `MIN_ORDER_NOTIONAL_USD` | 2.0 | `config/constants.py` |
+| `MAX_TRADE_FRACTION_OF_CASH` | 0.90 | `config/constants.py` |
 
 Optional: edge-scaled sizing when `RESEARCH_EDGE_SCALE_SIZE = true` (default off).
 
@@ -144,7 +250,7 @@ Optional: edge-scaled sizing when `RESEARCH_EDGE_SCALE_SIZE = true` (default off
 
 ## Telegram Portfolio Message
 
-On **bot startup**, Telegram sends the **STATUS** HTML (portfolio + per-row context), then **one follow-up**: the strategy digest as a **single plain-text message** if it fits under Telegram’s 4096 limit; if longer, as **one `.txt` document`** with a short caption (avoids splitting HTML into multiple bubbles). The same digest text is appended to the **terminal echo** of that startup send.
+On **bot startup**, Telegram sends the **STATUS** HTML (portfolio + per-row context), then **one follow-up**: the strategy digest as a **single plain-text message** if it fits under Telegram's 4096 limit; if longer, as **one `.txt` document`** with a short caption. The same digest text is appended to the **terminal echo** of that startup send.
 
 Every trade (buy/sell/claim) and every scheduled report sends a rich portfolio message including:
 
@@ -154,11 +260,11 @@ Every trade (buy/sell/claim) and every scheduled report sends a rich portfolio m
    - 🌡 Live Open-Meteo forecast + calibrated temperature
    - 📊 Research edge (model P(YES), edge, required edge, fee drag)
    - ⚡ Momentum: **15-minute** and **rolling 2-hour** YES change from `price_samples` (display)
-   - ⏰ **Time decay preview**: same gates as exit (`held`, `gain vs entry`, `mark`) — uses `active_trades` + `should_time_decay_exit`
-   - 📌 **YES Δ (since entry, ≤2h)**: first→last sample in `[max(entry, now−2h), now]` (path context; exit rule is still the time-decay row above)
+   - ⏰ **Time decay preview**: same gates as exit (`held`, `gain vs entry`, `mark`)
+   - 📌 **YES Δ (since entry, ≤2h)**: first→last sample in `[max(entry, now−2h), now]`
    - 🏆 Competition — all sibling buckets with their probabilities
 
-**Optional advisor (OpenRouter):** same Telegram chat; `/ask …` or messages containing **`bot`** / **`BOT`** spawn a **separate OS process** that bundles `STRATEGY_LOGIC.md`, **`MODEL_PROBABILITY_AND_CALIBRATION.md`** (forecast → calibrated μ → σ → P(YES), with worked numbers), `config/constants.py`, `config/settings.py`, `data/runtime_config.json`, `state.json`, recent `pnl_ledger.jsonl`, and today’s trade CSV into a prompt; **free models** are tried in order until one returns a reply (override with `OPENROUTER_MODEL` for a single id). See `OPENROUTER_FREE_MODELS` in `notifications/openrouter_advisor.py`. Requires `OPENROUTER_API_KEY` (or `OPENROUTER` / `openrouter` in env). **Before relying on Telegram**, run `python -m notifications.openrouter_advisor ping` (one tiny API call, no repo context) or `test` (ping + file report) and `context` (merged size). OpenRouter **429** is not retried (single attempt); free models can still rate-limit—wait or switch model. In-process decision history is **not** in files; paste logs into the chat. See `notifications/openrouter_advisor.py`.
+**Optional advisor (OpenRouter):** same Telegram chat; `/ask …` or messages containing **`bot`** / **`BOT`** spawn a **separate OS process**. See `notifications/openrouter_advisor.py`.
 
 ---
 
@@ -166,19 +272,50 @@ Every trade (buy/sell/claim) and every scheduled report sends a rich portfolio m
 
 | Area | File |
 |------|------|
-| Decision engine | `strategy/decision_core.py` |
-| Probability model | `strategy/probability_engine.py`, `research/probability_from_forecast.py`, `MODEL_PROBABILITY_AND_CALIBRATION.md` (human doc) |
-| Momentum engine | `strategy/momentum_engine.py` |
-| Competition filter | `strategy/competition_filter.py` |
-| Time filter | `strategy/time_filter.py` |
-| Trade execution | `strategy/trades.py` |
-| Main loop | `strategy/loop.py` |
-| Price samples (infra) | `strategy/momentum.py` |
-| Churn / blacklist | `strategy/churn.py` |
-| Portfolio Telegram | `notifications/portfolio.py` |
-| Forecast cache format | `notifications/forecast_cache_fmt.py` |
-| Dashboard API | `app/dashboard.py` |
-| Dashboard UI | `ui/src/App.tsx` |
-| Constants | `config/constants.py` |
-| Runtime settings | `config/settings.py`, `data/runtime_config.json` |
-| Calibration data | `data/research/calibration_latest.json` |
+| **Decision engine** | `strategy/decision_core.py` — entry/exit orchestrator, `stop_loss_bar_for_entry_type()` |
+| **Probability model** | `strategy/probability_engine.py`, `research/probability_from_forecast.py` |
+| **Momentum engine** | `strategy/momentum_engine.py` — absolute fast exit, competitor surge, entry signal |
+| **Competition filter** | `strategy/competition_filter.py` |
+| **Time filter** | `strategy/time_filter.py` |
+| **Trade execution** | `strategy/trades.py` — stores `entry_type` at buy, uses per-type SL at exit |
+| **Main loop** | `strategy/loop.py` |
+| **Fast exit watcher** 🆕 | `strategy/fast_exit_watcher.py` — daemon thread, 2s CLOB polling |
+| **Price samples (infra)** | `strategy/momentum.py` |
+| **Anti-churn** | `strategy/churn.py` — per-market + per-event churn |
+| **Portfolio sync** | `strategy/sync_portfolio.py` — preserves `entry_type` through sync |
+| **Bot runner** | `strategy/bot_runner.py` — starts fast exit watcher at boot |
+| **Portfolio Telegram** | `notifications/portfolio.py` |
+| **Dashboard API** | `app/dashboard.py` |
+| **Dashboard UI** | `ui/src/App.tsx` |
+| **Constants** | `config/constants.py` — grouped by entry type |
+| **Runtime settings** | `config/settings.py`, `data/runtime_config.json` |
+| **Calibration data** | `data/research/calibration_latest.json` |
+
+---
+
+## All Runtime-Configurable Variables (via `runtime_config.json`)
+
+### Per-Type Stop-Loss 🆕
+| Key | Default | Description |
+|-----|---------|-------------|
+| `stop_loss_normal` | 0.45 | SL for normal entries |
+| `stop_loss_momentum` | 0.45 | SL for momentum entries |
+| `stop_loss_double_momentum` | 0.30 | SL for double momentum entries |
+
+### Double Momentum Entry 🆕
+| Key | Default | Description |
+|-----|---------|-------------|
+| `double_momentum_entry_rise` | 0.30 | Min rise to qualify as double momentum |
+| `double_momentum_min_price` | 0.40 | Min YES price for double momentum entry |
+| `double_momentum_max_price` | 0.80 | Max YES price for double momentum entry |
+
+### Event Churn 🆕
+| Key | Default | Description |
+|-----|---------|-------------|
+| `churn_event_max_losses` | 2 | Losses on event before blocking |
+| `churn_event_cooldown_sec` | 1800 | Block duration (30 min) |
+
+### Fast Exit Watcher 🆕
+| Key | Default | Description |
+|-----|---------|-------------|
+| `fast_exit_watcher_interval_sec` | 2 | Polling interval (seconds) |

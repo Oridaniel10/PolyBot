@@ -58,6 +58,8 @@ from strategy.churn import (
     churn_on_stop_loss_exit,
     churn_on_take_profit,
     churn_allows_buy,
+    churn_on_event_loss,
+    churn_event_allows_buy,
 )
 from strategy.gates import market_can_post_clob_orders, market_status
 from strategy.market_match import (
@@ -70,6 +72,7 @@ from strategy.decision_core import (
     check_exits,
     detect_momentum_switch,
     evaluate_entry,
+    stop_loss_bar_for_entry_type,
 )
 from strategy.probability import (
     parse_market_probability,
@@ -179,16 +182,6 @@ _TRADE_CSV_PLAN_PAD = {
     "buy_est_yes_resolve_pnl_usd": "",
 }
 
-
-def effective_stop_loss_mark_bar(settings: RuntimeSettings, entry: float) -> float:
-    return stop_loss_mark_bar_for_entry(
-        float(entry),
-        use_tiers=bool(settings.stop_loss_use_entry_tiers),
-        tier_split=float(settings.stop_loss_tier_entry_split),
-        mark_if_entry_below_split=float(settings.stop_loss_tier_mark_low),
-        mark_if_entry_at_or_above_split=float(settings.stop_loss_tier_mark_high),
-        legacy_flat=float(settings.stop_loss),
-    )
 
 
 def place_buy(
@@ -349,7 +342,11 @@ def place_buy(
         0.0,
         min(1.0, float(settings.take_profit) - TAKE_PROFIT_COMPARE_SLACK),
     )
-    sl_bar = effective_stop_loss_mark_bar(settings, float(probability))
+    # per-type SL: use entry_type from decision engine
+    entry_type = "normal"
+    if trade_decision:
+        entry_type = getattr(trade_decision, "entry_type", "normal") or "normal"
+    sl_bar = stop_loss_bar_for_entry_type(entry_type, settings)
     est_tp_pnl = (tp_bar - float(probability)) * float(shares)
     est_sl_pnl = (sl_bar - float(probability)) * float(shares)
     est_yes_pnl = (1.0 - float(probability)) * float(shares)
@@ -365,6 +362,7 @@ def place_buy(
         "tp_exit_bar": tp_bar,
         "sl_mark_bar": sl_bar,
         "entry_time_utc": now_in_report_timezone().isoformat(),
+        "entry_type": entry_type,
     }
     frac, cap_hard, cap_usd, reserve_usd, tradable = planned_buy_cap_lines(
         cash, settings
@@ -875,6 +873,19 @@ def close_position(
             settings.churn_max_stop_cycles,
             settings.churn_cooldown_sec,
         )
+        # event-level churn: track losses across sibling markets in same event
+        try:
+            from polymarket_client import gamma_event_ids_for_market
+            eids = gamma_event_ids_for_market(market)
+            if eids:
+                churn_on_event_loss(
+                    state,
+                    str(eids[0]).strip(),
+                    settings.churn_event_max_losses,
+                    settings.churn_event_cooldown_sec,
+                )
+        except Exception:
+            pass
     elif reason == "take-profit":
         churn_on_take_profit(state, market_id)
 
@@ -1077,10 +1088,9 @@ def process_single_market(
                     )
                     return
 
-    # regular stop-loss
-    sl_bar_live = effective_stop_loss_mark_bar(
-        settings, float(trade_row.get("entry_price") or 0) if trade_row else 0.0
-    )
+    # regular stop-loss — use per-type SL (from entry_type stored at buy time)
+    entry_type = str((trade_row or {}).get("entry_type") or "normal").strip()
+    sl_bar_live = stop_loss_bar_for_entry_type(entry_type, settings)
     prob_stop = stop_loss_reference_if_triggered(market, trade_row, sl_bar_live)
     if prob_stop is not None:
         close_position(

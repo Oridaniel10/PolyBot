@@ -93,27 +93,9 @@ def _digest_rows(
     )
 
     sec("Stop-loss & take-profit")
-    row(
-        "stop_loss_use_entry_tiers",
-        settings.stop_loss_use_entry_tiers,
-        "tiered SL bars vs single stop_loss_threshold",
-    )
-    row("stop_loss_threshold", settings.stop_loss, "flat SL mark when tiers off")
-    row(
-        "stop_loss_tier_entry_split",
-        settings.stop_loss_tier_entry_split,
-        "entry below split → mark_low bar",
-    )
-    row(
-        "stop_loss_tier_mark_low",
-        settings.stop_loss_tier_mark_low,
-        "exit mark when entry was low tier",
-    )
-    row(
-        "stop_loss_tier_mark_high",
-        settings.stop_loss_tier_mark_high,
-        "exit mark when entry was high tier",
-    )
+    row("stop_loss_normal", settings.stop_loss_normal, "flat SL mark for normal entry")
+    row("stop_loss_momentum", settings.stop_loss_momentum, "flat SL mark for momentum entry")
+    row("stop_loss_double_momentum", settings.stop_loss_double_momentum, "flat SL mark for double momentum entry")
     row(
         "take_profit_threshold",
         settings.take_profit,

@@ -45,7 +45,10 @@ def max_drawdown_in_window(
     window_sec: float = 900.0,
     now_ts: Optional[float] = None,
 ) -> float:
-    """max peak-to-trough decline in window as a fraction (0..1)."""
+    """Max peak-to-trough decline in window as ABSOLUTE price points.
+
+    e.g. peak 0.75, trough 0.59 → drawdown = 0.16.
+    """
     now_ts = now_ts or time.time()
     series = load_samples_for_market(market_id, window_sec, now_ts)
     if len(series) < 2:
@@ -55,10 +58,9 @@ def max_drawdown_in_window(
     for _, price in series:
         if price > peak:
             peak = price
-        if peak > 1e-9:
-            dd = (peak - price) / peak
-            if dd > max_dd:
-                max_dd = dd
+        dd = peak - price
+        if dd > max_dd:
+            max_dd = dd
     return max_dd
 
 

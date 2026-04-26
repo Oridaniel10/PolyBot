@@ -80,6 +80,10 @@ class TradeDecision:
     # true when this BUY used momentum path (wide price band; bypass model/edge/competition)
     momentum_relaxed_gates: bool = False
     event_yes_rank: int = 0
+    # entry type determines which stop-loss bar applies:
+    # "normal" → stop_loss_normal, "momentum" → stop_loss_momentum,
+    # "double_momentum" → stop_loss_double_momentum
+    entry_type: str = "normal"
 
 
 def collect_event_id_and_market_ids(
@@ -399,8 +403,20 @@ def evaluate_entry(
     )
     mom_min = float(getattr(settings, "momentum_min_price", C.MOMENTUM_MIN_PRICE))
     mom_max = float(getattr(settings, "momentum_max_entry", C.MOMENTUM_MAX_ENTRY))
-    # cold momentum: must be #1 by market YES and lead runner-up by min_lead (same 0.15 as competition)
-    is_momentum_entry = (
+
+    # double momentum: ≥30% rise → wider price band (0.40-0.80)
+    dbl_rise_thr = float(getattr(settings, "double_momentum_entry_rise", C.DOUBLE_MOMENTUM_ENTRY_RISE))
+    dbl_min = float(getattr(settings, "double_momentum_min_price", C.DOUBLE_MOMENTUM_MIN_PRICE))
+    dbl_max = float(getattr(settings, "double_momentum_max_price", C.DOUBLE_MOMENTUM_MAX_PRICE))
+    is_double_momentum = (
+        mom_rise >= dbl_rise_thr
+        and dbl_min - 1e-12 <= mkt <= dbl_max + 1e-12
+        and rank == 1
+        # User requested: Double momentum doesn't need to lead by min_lead_mkt (X%)
+    )
+
+    # standard momentum: ≥15% rise → normal band (0.65-0.80)
+    is_momentum_entry = is_double_momentum or (
         mom_signal
         and mom_min - 1e-12 <= mkt <= mom_max + 1e-12
         and rank == 1
@@ -408,6 +424,13 @@ def evaluate_entry(
     )
 
     _, _, momentum_15m = price_change_in_window(market_id, C.MOMENTUM_WINDOW_SECONDS)
+
+    def _resolve_entry_type() -> str:
+        if is_double_momentum:
+            return "double_momentum"
+        if is_momentum_entry:
+            return "momentum"
+        return "normal"
 
     def finish(
         decision: str,
@@ -418,6 +441,7 @@ def evaluate_entry(
         momentum_relaxed: bool = False,
     ) -> TradeDecision:
         relaxed = bool(momentum_relaxed and decision == "BUY")
+        etype = _resolve_entry_type() if decision == "BUY" else "normal"
         td = TradeDecision(
             city=city,
             date_iso=date_iso,
@@ -434,6 +458,7 @@ def evaluate_entry(
             research=research,
             momentum_relaxed_gates=relaxed,
             event_yes_rank=int(rank),
+            entry_type=etype,
         )
         _log_decision(td)
         _momentum_eval_debug_line(
@@ -453,9 +478,16 @@ def evaluate_entry(
                 "decision": decision,
                 "reason": reason[:160],
                 "momentum_relaxed_buy": relaxed,
+                "entry_type": etype,
+                "is_double_momentum": is_double_momentum,
             }
         )
         return td
+
+    # 0. event-level churn — block after repeated losses on same event
+    from strategy.churn import churn_event_allows_buy
+    if ev_id and not churn_event_allows_buy(state, ev_id):
+        return finish("SKIP", f"event_churn_cooldown active for {ev_id}")
 
     # 1. event cooldown
     if ev_id and event_buy_cooldown_active(state, ev_id):
@@ -560,6 +592,19 @@ def evaluate_entry(
     )
 
 
+def stop_loss_bar_for_entry_type(
+    entry_type: str,
+    settings: RuntimeSettings,
+) -> float:
+    """Return the stop-loss mark bar based on the entry type stored at buy time."""
+    et = str(entry_type or "normal").strip()
+    if et == "double_momentum":
+        return float(getattr(settings, "stop_loss_double_momentum", C.STOP_LOSS_DOUBLE_MOMENTUM))
+    if et == "momentum":
+        return float(getattr(settings, "stop_loss_momentum", C.STOP_LOSS_MOMENTUM))
+    return float(getattr(settings, "stop_loss_normal", C.STOP_LOSS_NORMAL))
+
+
 def check_exits(
     market: Dict[str, Any],
     trade: Dict[str, Any],
@@ -569,16 +614,20 @@ def check_exits(
     client: PolymarketClient,
 ) -> Tuple[Optional[str], Optional[float]]:
     """
-    check all exit conditions for an open position.
+    Check all exit conditions for an open position.
 
-    returns:
-    - (exit_reason, reference_price) or (None, None) if HOLD.
+    Returns (exit_reason, reference_price) or (None, None) if HOLD.
+
+    Exit priority:
+    1. Momentum fast exit — absolute 0.15 price drop from peak in 15 min window
+    2. Competitor dominance / surge
+    3. Time-decay exit
     """
     gamma_prob = parse_market_probability(market)
     mark = float(trade.get("last_price") or gamma_prob)
     entry = float(trade.get("entry_price") or 0)
 
-    # 1. fast stop-loss: ≥20% peak-to-trough in 15m (samples) and mark below entry
+    # 1. fast stop-loss: absolute price drop from peak in 15m window, mark below entry
     fast_exit, dd = should_fast_exit(
         market_id,
         drop_threshold=C.MOMENTUM_FAST_EXIT_DROP,

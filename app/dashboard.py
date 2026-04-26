@@ -40,11 +40,6 @@ class RuntimeConfigUpdate(BaseModel):
     buy_min_threshold: Optional[float] = Field(None, ge=0.0, le=0.99)
     buy_max_threshold: Optional[float] = Field(None, ge=0.01, le=0.99)
     buy_disable_price_band: Optional[bool] = None
-    stop_loss_threshold: Optional[float] = Field(None, ge=0.01, le=0.99)
-    stop_loss_use_entry_tiers: Optional[bool] = None
-    stop_loss_tier_entry_split: Optional[float] = Field(None, ge=0.05, le=0.95)
-    stop_loss_tier_mark_low: Optional[float] = Field(None, ge=0.01, le=0.99)
-    stop_loss_tier_mark_high: Optional[float] = Field(None, ge=0.01, le=0.99)
     take_profit_threshold: Optional[float] = Field(None, ge=0.01, le=0.99)
     min_lead_over_runner_up: Optional[float] = Field(None, ge=0.0, le=0.95)
     enable_competition_filter: Optional[bool] = None

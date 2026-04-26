@@ -90,6 +90,15 @@ def sync_state_with_portfolio(
             row["pending_limit_sell_order_id"] = pend
             if prev.get("pending_limit_sell_price") is not None:
                 row["pending_limit_sell_price"] = prev.get("pending_limit_sell_price")
+        # preserve entry metadata through sync
+        if prev.get("entry_type"):
+            row["entry_type"] = prev["entry_type"]
+        if prev.get("entry_time_utc"):
+            row["entry_time_utc"] = prev["entry_time_utc"]
+        if prev.get("tp_exit_bar"):
+            row["tp_exit_bar"] = prev["tp_exit_bar"]
+        if prev.get("sl_mark_bar"):
+            row["sl_mark_bar"] = prev["sl_mark_bar"]
         active_trades[state_key] = row
 
     state["active_trades"] = active_trades

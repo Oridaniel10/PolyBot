@@ -26,11 +26,12 @@ OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 # free-tier cascade: first successful HTTP 200 + non-empty assistant text wins.
 # override with OPENROUTER_MODEL (single model id) to skip the list.
 OPENROUTER_FREE_MODELS: List[str] = [
+    "openrouter/free",
+    "nousresearch/hermes-3-llama-3.1-405b:free",
     "google/gemma-3-12b-it:free",
-    "google/gemma-3-4b-it:free",
     "meta-llama/llama-3.2-3b-instruct:free",
+    "google/gemma-3-4b-it:free",
     "google/gemma-3n-4b-it:free",
-    "google/gemma-3n-2b-it:free",
 ]
 DEFAULT_MODEL = OPENROUTER_FREE_MODELS[0]
 
@@ -60,9 +61,9 @@ _MAX_CONSTANTS_CHARS = 25_000
 _MAX_SETTINGS_PY_CHARS = 35_000
 _MAX_STATE_CHARS = 120_000
 _MAX_RUNTIME_JSON_CHARS = 25_000
-_MAX_LEDGER_TAIL_BYTES = 120_000
+_MAX_LEDGER_TAIL_BYTES = 15_000
 _MAX_TRADE_CSV_CHARS = 45_000
-_MAX_TOTAL_CONTEXT_CHARS = 72_000
+_MAX_TOTAL_CONTEXT_CHARS = 110_000
 
 
 def openrouter_api_key() -> str:
@@ -203,6 +204,9 @@ def build_context_load_report() -> str:
 def gather_advisor_context() -> str:
     parts: List[str] = []
 
+    parts.append("\n=== trades CSV today (if any) ===\n")
+    parts.append(_trade_csv_today_text())
+
     for label, path, cap, mode in _context_specs():
         parts.append(f"=== {label} ===\n")
         if label == "runtime_config.json" and not path.is_file():
@@ -212,9 +216,6 @@ def gather_advisor_context() -> str:
             parts.append(_read_tail_bytes(path, cap))
         else:
             parts.append(_read_head(path, cap))
-
-    parts.append("\n=== trades CSV today (if any) ===\n")
-    parts.append(_trade_csv_today_text())
 
     parts.append("\n=== effective settings digest (plain) ===\n")
     try:

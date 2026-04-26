@@ -266,6 +266,17 @@ def run_bot() -> None:
         except Exception as err:
             print(term_wrap(TERM_RED, f"[forecast digest thread failed] {err!r}"))
 
+    # fast exit watcher: daemon thread polling CLOB price every ~5 seconds
+    from strategy.fast_exit_watcher import FastExitWatcher
+    _fast_watcher = FastExitWatcher(
+        client=client,
+        state_ref=state,
+        telegram=telegram,
+        get_settings_fn=get_effective_settings,
+        save_state_fn=lambda: write_state(state),
+    )
+    _fast_watcher.start()
+
     while True:
         dispatch_telegram_commands(telegram, client, state)
         now = now_in_report_timezone()

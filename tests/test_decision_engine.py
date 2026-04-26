@@ -13,11 +13,8 @@ def _minimal_settings(**overrides) -> RuntimeSettings:
         "buy_min_threshold": 0.05,
         "buy_max_threshold": 0.75,
         "buy_disable_price_band": False,
-        "stop_loss_threshold": 0.5,
-        "stop_loss_use_entry_tiers": True,
-        "stop_loss_tier_entry_split": 0.6,
-        "stop_loss_tier_mark_low": 0.3,
-        "stop_loss_tier_mark_high": 0.4,
+        "stop_loss_normal": 0.45,
+
         "take_profit_threshold": 0.96,
         "min_lead_over_runner_up": 0.1,
         "enable_competition_filter": True,

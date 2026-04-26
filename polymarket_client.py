@@ -1231,6 +1231,18 @@ class PolymarketClient:
             return mid
         return 0.0
 
+    def get_clob_yes_price_by_id(self, market_id: str) -> float:
+        """Lightweight CLOB price check using only market_id.
+
+        Fetches the Gamma market dict (cached by caller or cheap GET),
+        then delegates to get_clob_yes_price.
+        Used by fast_exit_watcher for high-frequency polling.
+        """
+        market = self.get_market_by_id(market_id)
+        if not market:
+            return 0.0
+        return self.get_clob_yes_price(market)
+
     def get_clob_min_order_size_yes(self, market: Dict[str, Any]) -> Optional[float]:
         try:
             token_id = yes_token_id_from_market(market)

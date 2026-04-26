@@ -96,6 +96,6 @@ def test_openrouter_model_candidates_env_override(monkeypatch):
 def test_openrouter_model_candidates_default_order(monkeypatch):
     monkeypatch.delenv("OPENROUTER_MODEL", raising=False)
     got = ora.openrouter_model_candidates()
-    assert got[0] == "google/gemma-3-12b-it:free"
+    assert got[0] == "openrouter/free"
     assert "meta-llama/llama-3.2-3b-instruct:free" in got
     assert len(got) == len(ora.OPENROUTER_FREE_MODELS)

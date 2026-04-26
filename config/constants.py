@@ -8,7 +8,6 @@ RUNTIME_CONFIG_FILE = DATA_DIR / "runtime_config.json"
 PNL_LEDGER_FILE = DATA_DIR / "pnl_ledger.jsonl"
 BLACKLIST_FILE = DATA_DIR / "blacklist_day.json"
 PRICE_SAMPLES_DIR = DATA_DIR / "price_samples"
-FLOW_SAMPLES_FILE = DATA_DIR / "flow_samples.jsonl"
 FORECAST_CACHE_FILE = DATA_DIR / "forecast_cache.json"
 RESEARCH_DIR = DATA_DIR / "research"
 RESEARCH_CITIES_FILE = RESEARCH_DIR / "cities.json"
@@ -40,26 +39,90 @@ SELL_BELOW_MIN_COOLDOWN_SEC = 86400
 # repeat Telegram for same market stuck on below_min_order_size at most this often
 SELL_BELOW_MIN_TELEGRAM_COOLDOWN_SEC = 7200
 
-BUY_MIN_THRESHOLD = 0.55
-BUY_MAX_THRESHOLD = 0.70
-# when true, skip buy_min/buy_max band in process_single_market and CLOB band checks in place_buy
+# ═══════════════════════════════════════════════════════════════════════
+# ENTRY BANDS & STOP-LOSS — grouped by entry type
+# each entry type defines: price band (min/max) + stop-loss threshold.
+# ═══════════════════════════════════════════════════════════════════════
+
+# ─── Normal entry (model/edge-based) ─────────────────────────────────
+BUY_MIN_THRESHOLD = 0.78
+BUY_MAX_THRESHOLD = 0.88
 BUY_DISABLE_PRICE_BAND = False
-# flat weak-price bar when stop_loss_use_entry_tiers is false
-STOP_LOSS_THRESHOLD = 0.39
-# tiered SL: if entry < split → exit when mark/gamma below mark_low; else below mark_high
-STOP_LOSS_USE_ENTRY_TIERS = True
-STOP_LOSS_TIER_ENTRY_SPLIT = 0.60
-STOP_LOSS_TIER_MARK_LOW = 0.30
-STOP_LOSS_TIER_MARK_HIGH = 0.40
+STOP_LOSS_NORMAL = 0.55
+
+# ─── Momentum entry (≥15% rise in 15 min) ────────────────────────────
+MOMENTUM_ENTRY_RISE = 0.15       # min fractional rise to qualify as momentum
+MOMENTUM_MIN_PRICE = 0.61        # min YES price to enter
+MOMENTUM_MAX_ENTRY = 0.80        # max YES price to enter
+STOP_LOSS_MOMENTUM = 0.45
+
+# ─── Double momentum entry (≥30% rise in 15 min, wider band) ─────────
+DOUBLE_MOMENTUM_ENTRY_RISE = 0.30
+DOUBLE_MOMENTUM_MIN_PRICE = 0.10
+DOUBLE_MOMENTUM_MAX_PRICE = 0.75
+STOP_LOSS_DOUBLE_MOMENTUM = 0.30
+
+# ═══════════════════════════════════════════════════════════════════════
+# EXIT THRESHOLDS
+# ═══════════════════════════════════════════════════════════════════════
+
 TAKE_PROFIT_THRESHOLD = 0.97
+# float slack vs gamma/mark rounding; also helps when take_profit is 0.99 and mark is 0.988
+TAKE_PROFIT_COMPARE_SLACK = 0.002
+
+# ─── Momentum fast exit: ABSOLUTE price drop from peak in 15-min window ──
+# e.g. peak was 0.75, now 0.59 → drop = 0.16 > 0.15 → exit.
+# this is absolute price points, NOT percentage.
+MOMENTUM_FAST_EXIT_DROP = 0.15
+MOMENTUM_WINDOW_SECONDS = 900
+MOMENTUM_COMPETITOR_SURGE = 0.15
+
+# ─── Time-decay exit ─────────────────────────────────────────────────
+TIME_DECAY_HOURS = 2.0
+TIME_DECAY_MIN_GAIN = 0.02
+TIME_DECAY_MAX_PRICE = 0.85
+
+# ═══════════════════════════════════════════════════════════════════════
+# ANTI-CHURN
+# ═══════════════════════════════════════════════════════════════════════
+
+# per-market churn control
+CHURN_MAX_STOP_CYCLES = 1
+CHURN_COOLDOWN_SEC = 1200
+
+# event-level churn: block entire event after repeated losses
+CHURN_EVENT_MAX_LOSSES = 2        # losses on same gamma event before blocking
+CHURN_EVENT_COOLDOWN_SEC = 1800   # block event for 30 minutes
+
+# ═══════════════════════════════════════════════════════════════════════
+# FAST EXIT WATCHER — background thread polling CLOB every N seconds
+# ═══════════════════════════════════════════════════════════════════════
+FAST_EXIT_WATCHER_INTERVAL_SEC = 2
+
+# ═══════════════════════════════════════════════════════════════════════
+# ENTRY GATES & FILTERS
+# ═══════════════════════════════════════════════════════════════════════
+
 # earliest local hour to place new buys (city local TZ from title; 0–23)
 BUY_EARLIEST_HOUR = 14
 # skip new buys when title event date is after today's date in Asia/Jerusalem (report TZ)
 BUY_BLOCK_EVENT_DATE_AFTER_ISRAEL_TODAY = True
 # max open positions at once — limits total portfolio risk
 MAX_CONCURRENT_POSITIONS = 7
-# float slack vs gamma/mark rounding; also helps when take_profit is 0.99 and mark is 0.988
-TAKE_PROFIT_COMPARE_SLACK = 0.002
+
+MIN_LEAD_OVER_RUNNER_UP = 0.15
+ENABLE_COMPETITION_FILTER = True
+
+# cold momentum: rank 1 by market YES + lead vs runner-up ≥ min_lead_over_runner_up
+MOMENTUM_ENTRY_MAX_RANK = 1
+# momentum switch / defensive exit: leader YES >= held_mark + this gap (0.15 = +15pp)
+MOMENTUM_SWITCH_ABOVE_HELD_GAP = 0.15
+# print [momentum_eval] json per evaluate_entry (noisy; turn on when tuning)
+MOMENTUM_DECISION_DEBUG_LOG = False
+
+# portfolio Telegram only: second momentum line vs same price_samples (not used for exits)
+PORTFOLIO_TELEGRAM_MOMENTUM_LONG_SEC = 7200
+
 # after a "below CLOB min" sell skip we set a long cooldown — must not block risk exits
 SELL_BYPASS_MIN_COOLDOWN_REASONS = frozenset(
     {
@@ -76,48 +139,32 @@ SELL_BYPASS_MIN_COOLDOWN_REASONS = frozenset(
         "momentum-competitor-dominant",
     }
 )
+
+# ═══════════════════════════════════════════════════════════════════════
+# SIZING
+# ═══════════════════════════════════════════════════════════════════════
+
 DEFAULT_ORDER_SIZE = 10.0
 MAX_TRADE_FRACTION_OF_CASH = 0.90
-MAX_BUY_NOTIONAL_USD = 4.0
+MAX_BUY_NOTIONAL_USD = 3.0
 MIN_ORDER_NOTIONAL_USD = 2.0
 # never allocate buys from this portion of free cash (runtime + UI override)
-CASH_RESERVE_USD = 20.0
+CASH_RESERVE_USD = 3.0
 
-MIN_LEAD_OVER_RUNNER_UP = 0.15
-ENABLE_COMPETITION_FILTER = True
+# ═══════════════════════════════════════════════════════════════════════
+# LEGACY MOMENTUM (kept for backward compat with price sample infra)
+# ═══════════════════════════════════════════════════════════════════════
 
-# smart engine: momentum windows and thresholds
-MOMENTUM_WINDOW_SECONDS = 900
-# portfolio Telegram only: second momentum line vs same price_samples (not used for exits)
-PORTFOLIO_TELEGRAM_MOMENTUM_LONG_SEC = 7200
-MOMENTUM_FAST_EXIT_DROP = 0.20
-MOMENTUM_COMPETITOR_SURGE = 0.15
-MOMENTUM_ENTRY_RISE = 0.15
-# cold momentum (no position): rank 1 by market YES + lead vs runner-up ≥ min_lead_over_runner_up
-# (see evaluate_entry + market_yes_lead_gap_vs_runner_up; runtime overrides min_lead)
-MOMENTUM_ENTRY_MAX_RANK = 1
-# momentum switch / defensive exit: leader YES >= held_mark + this gap (probability points, 0.15 = +15pp)
-MOMENTUM_SWITCH_ABOVE_HELD_GAP = 0.15
-# print [momentum_eval] json per evaluate_entry (noisy; turn on when tuning)
-MOMENTUM_DECISION_DEBUG_LOG = False
-
-# smart engine: time-decay exit
-TIME_DECAY_HOURS = 2.0
-TIME_DECAY_MIN_GAIN = 0.02
-TIME_DECAY_MAX_PRICE = 0.85
-
-# legacy momentum (kept for backward compat with price sample infra)
 ENABLE_MOMENTUM = False
 MOMENTUM_WINDOW_MIN = 10
 MOMENTUM_RISE = 0.25
-MOMENTUM_MIN_PRICE = 0.45
-MOMENTUM_MAX_ENTRY = 0.75
 MOMENTUM_PEER_DROP = 0.10
 PRICE_SAMPLE_RETENTION_DAYS = 7
 PRICE_SAMPLE_MAX_ENTRIES_PER_MARKET = 30
 
-CHURN_MAX_STOP_CYCLES = 1
-CHURN_COOLDOWN_SEC = 1200
+# ═══════════════════════════════════════════════════════════════════════
+# FORECAST & RESEARCH
+# ═══════════════════════════════════════════════════════════════════════
 
 FORECAST_DIGEST_ENABLED = False
 # how often to rescan Gamma + Open-Meteo and rewrite data/forecast_cache.json
@@ -196,6 +243,10 @@ RESEARCH_SKIP_TELEGRAM_COOLDOWN_SEC = 600
 # when false, no Telegram for decision-engine BUY skips (still logged to console)
 DECISION_SKIP_TELEGRAM_NOTIFY = False
 
+# ═══════════════════════════════════════════════════════════════════════
+# EXCHANGE / CLOB
+# ═══════════════════════════════════════════════════════════════════════
+
 YES_LABEL = "YES"
 STATUS_CLOSED = frozenset({"closed", "claimable", "resolved"})
 DUST_SHARES_EPS = 1e-6
@@ -207,6 +258,10 @@ CLOB_SELL_TOPUP_MAX_USD = 15.0
 CLOB_SELL_TOPUP_HARD_USD_CAP = 28.0
 # extra topup rounds in close_position when exchange size still under CLOB min
 CLOB_SELL_TOPUP_MAX_ROUNDS = 6
+
+# ═══════════════════════════════════════════════════════════════════════
+# TERMINAL FORMATTING
+# ═══════════════════════════════════════════════════════════════════════
 
 TERM_RESET = "\033[0m"
 TERM_BOLD = "\033[1m"

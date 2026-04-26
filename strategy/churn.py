@@ -1,6 +1,16 @@
+"""Anti-churn guards — per-market and per-event cooldowns after stop-loss exits.
+
+Per-market: block re-buying the same market_id after N stop-losses.
+Per-event: block buying ANY market in the same gamma event after N losses
+across any sibling markets (prevents switching from Paris 22°C to Paris 23°C
+and losing again).
+"""
+
 import time
 from typing import Any, Dict
 
+
+# ─── Per-market churn ─────────────────────────────────────────────────
 
 def churn_allows_buy(state: Dict[str, Any], market_id: str) -> bool:
     ch = state.setdefault("churn_by_market", {})
@@ -30,3 +40,40 @@ def churn_on_stop_loss_exit(
 def churn_on_take_profit(state: Dict[str, Any], market_id: str) -> None:
     ch = state.setdefault("churn_by_market", {})
     ch[market_id] = {"stop_cycles": 0, "cooldown_until": 0.0}
+
+
+# ─── Per-event churn ──────────────────────────────────────────────────
+
+def churn_event_allows_buy(state: Dict[str, Any], event_id: str) -> bool:
+    """Check if event-level churn cooldown allows a new buy for this event."""
+    if not event_id:
+        return True
+    ch = state.setdefault("churn_by_event", {})
+    c = ch.get(event_id) or {}
+    now = time.time()
+    until = float(c.get("cooldown_until") or 0)
+    if until > 0 and now >= until:
+        # cooldown expired — reset
+        c["loss_count"] = 0
+        c["cooldown_until"] = 0.0
+        ch[event_id] = c
+    if now < float(c.get("cooldown_until") or 0):
+        return False
+    return True
+
+
+def churn_on_event_loss(
+    state: Dict[str, Any],
+    event_id: str,
+    max_losses: int,
+    cooldown_sec: int,
+) -> None:
+    """Increment event-level loss counter; set cooldown if threshold reached."""
+    if not event_id or cooldown_sec <= 0:
+        return
+    ch = state.setdefault("churn_by_event", {})
+    c = dict(ch.get(event_id) or {"loss_count": 0, "cooldown_until": 0.0})
+    c["loss_count"] = int(c.get("loss_count") or 0) + 1
+    if c["loss_count"] >= max_losses:
+        c["cooldown_until"] = time.time() + float(cooldown_sec)
+    ch[event_id] = c
