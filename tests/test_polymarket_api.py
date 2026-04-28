@@ -14,7 +14,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from polymarket_client import PolymarketClient, PolymarketConfig  # noqa: E402
-from py_clob_client.clob_types import AssetType, BalanceAllowanceParams  # noqa: E402
+from py_clob_client_v2 import AssetType, BalanceAllowanceParams  # noqa: E402
 
 
 TEST_TIMEZONE = "Asia/Jerusalem"

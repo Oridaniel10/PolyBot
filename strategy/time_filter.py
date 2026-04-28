@@ -1,7 +1,8 @@
 """Time-based entry and exit filters.
 
 - Entry: city local calendar date must match the market event_date, and hour 14:00-24:00
-- Exit: time-decay rule — if held >2h, <5% gain, price <85% → exit
+- Exit: time-decay — if held >N h, gain vs entry < min_gain (absolute price points),
+  and mark < max_price → exit
 """
 
 import time
@@ -48,7 +49,7 @@ def should_time_decay_exit(
     trade: Dict[str, Any],
     current_price: float,
     decay_hours: float = 2.0,
-    min_gain_pct: float = 0.02,
+    min_gain_points: float = 0.02,
     max_price_for_decay: float = 0.85,
     now_ts: Optional[float] = None,
 ) -> Tuple[bool, str]:
@@ -57,7 +58,7 @@ def should_time_decay_exit(
 
     conditions (ALL must be true):
     - held > decay_hours
-    - price hasn't risen by min_gain_pct from entry
+    - (current_price - entry_price) < min_gain_points (absolute YES points)
     - current price < max_price_for_decay
 
     returns:
@@ -86,15 +87,16 @@ def should_time_decay_exit(
     if entry_price <= 1e-9:
         return False, ""
 
-    gain_pct = (current_price - entry_price) / entry_price
-    if gain_pct >= min_gain_pct:
+    gain_pts = float(current_price) - float(entry_price)
+    if gain_pts + 1e-12 >= float(min_gain_points):
         return False, ""
 
     if current_price >= max_price_for_decay:
         return False, ""
 
     reason = (
-        f"time_decay held={hours_held:.1f}h gain={gain_pct:+.1%} "
+        f"time_decay held={hours_held:.1f}h gain_pts={gain_pts:+.4f} "
+        f"< min_pts={float(min_gain_points):.4f} "
         f"price={current_price:.4f} < {max_price_for_decay}"
     )
     return True, reason

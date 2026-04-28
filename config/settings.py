@@ -220,6 +220,13 @@ class RuntimeSettings:
     peer_surge_event_cooldown_sec: int
     peer_surge_skip_buy_enabled: bool
     peer_surge_skip_buy_rise_threshold: float
+    momentum_window_seconds: float
+    momentum_fast_exit_drop: float
+    momentum_competitor_surge: float
+    momentum_entry_rise: float
+    time_decay_hours: float
+    time_decay_min_gain: float
+    time_decay_max_price: float
     blacklist_market_ids: Set[str] = field(default_factory=set)
 
     @classmethod
@@ -299,7 +306,8 @@ class RuntimeSettings:
         d_peak = float(
             d.get("decision_min_model_peak_prob", C.DECISION_MIN_MODEL_PEAK_PROB)
         )
-        d_peak = max(0.02, min(0.5, d_peak))
+        # 0.0 disables the gate entirely (price-driven mode without forecast).
+        d_peak = max(0.0, min(0.5, d_peak))
         psw = int(d.get("peer_surge_window_min", C.PEER_SURGE_WINDOW_MIN))
         psw = max(1, min(180, psw))
         psr = float(d.get("peer_surge_rise_threshold", C.PEER_SURGE_RISE_THRESHOLD))
@@ -315,6 +323,20 @@ class RuntimeSettings:
             )
         )
         ps_skip_thr = max(0.01, min(2.0, ps_skip_thr))
+        mom_wsec = float(d.get("momentum_window_seconds", C.MOMENTUM_WINDOW_SECONDS))
+        mom_wsec = max(120.0, min(7200.0, mom_wsec))
+        mom_drop = float(d.get("momentum_fast_exit_drop", C.MOMENTUM_FAST_EXIT_DROP))
+        mom_drop = max(0.01, min(0.95, mom_drop))
+        mom_surge = float(d.get("momentum_competitor_surge", C.MOMENTUM_COMPETITOR_SURGE))
+        mom_surge = max(0.01, min(0.95, mom_surge))
+        mom_entry_rise = float(d.get("momentum_entry_rise", C.MOMENTUM_ENTRY_RISE))
+        mom_entry_rise = max(0.01, min(0.95, mom_entry_rise))
+        td_hours = float(d.get("time_decay_hours", C.TIME_DECAY_HOURS))
+        td_hours = max(0.25, min(48.0, td_hours))
+        td_min_gain = float(d.get("time_decay_min_gain", C.TIME_DECAY_MIN_GAIN))
+        td_min_gain = max(0.0, min(0.5, td_min_gain))
+        td_max_px = float(d.get("time_decay_max_price", C.TIME_DECAY_MAX_PRICE))
+        td_max_px = max(0.05, min(0.99, td_max_px))
         return cls(
             buy_min=float(d.get("buy_min_threshold", C.BUY_MIN_THRESHOLD)),
             buy_max=float(d.get("buy_max_threshold", C.BUY_MAX_THRESHOLD)),
@@ -478,6 +500,13 @@ class RuntimeSettings:
                 d.get("peer_surge_skip_buy_enabled", C.PEER_SURGE_SKIP_BUY_ENABLED)
             ),
             peer_surge_skip_buy_rise_threshold=ps_skip_thr,
+            momentum_window_seconds=mom_wsec,
+            momentum_fast_exit_drop=mom_drop,
+            momentum_competitor_surge=mom_surge,
+            momentum_entry_rise=mom_entry_rise,
+            time_decay_hours=td_hours,
+            time_decay_min_gain=td_min_gain,
+            time_decay_max_price=td_max_px,
             blacklist_market_ids=ids,
             # per-type stop-loss
             stop_loss_normal=max(0.01, min(0.99, float(

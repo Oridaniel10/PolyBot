@@ -17,7 +17,7 @@ def test_yes_rank_by_market_prob_orders_descending():
 
 
 def test_top_price_change_peers_sorts_by_change():
-    with patch("strategy.momentum_engine.price_change_in_window") as pcw:
+    with patch("strategy.momentum_engine.absolute_price_change_in_window") as pcw:
         pcw.side_effect = [
             (0.0, 0.0, 0.05),
             (0.0, 0.0, 0.20),

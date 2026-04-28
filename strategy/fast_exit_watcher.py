@@ -1,13 +1,12 @@
-"""Fast exit watcher — daemon thread polling CLOB price every ~5 seconds.
+"""Fast exit watcher — daemon thread polling CLOB price every ~2 seconds.
 
 Monitors open positions for:
 1. Stop-loss (per-type SL bar: mark < SL threshold)
 2. Momentum fast exit (absolute price drop from peak in 15m window)
 
-Uses CLOB /price endpoint (1,500 req/10s limit) — well within budget
-at ~7 positions × 2 calls per 5-second tick = ~28 req/10s.
-
-Does NOT scan for new buys or call Gamma API.
+Uses CLOB /book endpoint directly (live best-ask / midpoint, NOT Gamma bestAsk
+which can be stale). At default 2s interval and ~7 positions, this is
+~35 req/10s — well within CLOB rate limits.
 """
 
 import json
@@ -27,7 +26,11 @@ if not __package__:
 import config.constants as C
 from config.settings import RuntimeSettings
 from polymarket_client import PolymarketClient
-from strategy.decision_core import check_exits, stop_loss_bar_for_entry_type
+from strategy.decision_core import (
+    momentum_fast_exit_drop,
+    momentum_window_sec,
+    stop_loss_bar_for_entry_type,
+)
 from strategy.probability import stop_loss_reference_if_triggered
 from telegram_bot import TelegramBot
 
@@ -128,25 +131,38 @@ class FastExitWatcher:
         if entry <= 1e-9:
             return
 
-        # get CLOB price — lightweight, single API call
+        # always-fresh CLOB price (best ask / midpoint) — bypasses Gamma bestAsk
+        # which can be stale by tens of seconds and miss real price drops.
         try:
-            clob_price = self._client.get_clob_yes_price_by_id(market_id)
+            clob_price = self._client.get_clob_yes_price_live_by_id(market_id)
         except Exception:
             return
         if clob_price <= 0:
             return
 
+        # update trade row mark so the slow main loop sees fresh price too
+        trade_row["last_price"] = clob_price
+
         # --- check 1: per-type stop-loss ---
         entry_type = str(trade_row.get("entry_type") or "normal").strip()
         sl_bar = stop_loss_bar_for_entry_type(entry_type, settings)
         if clob_price < sl_bar and clob_price < entry - 1e-9:
+            _log(
+                f"SL trigger market={market_id} clob={clob_price:.4f} "
+                f"sl_bar={sl_bar:.4f} entry={entry:.4f} type={entry_type}"
+            )
             self._trigger_exit(market_id, trade_row, clob_price, "stop-loss", settings)
             return
 
         # --- check 2: momentum fast exit (absolute drop in 15m window) ---
         from strategy.momentum_engine import max_drawdown_in_window
-        dd = max_drawdown_in_window(market_id, C.MOMENTUM_WINDOW_SECONDS)
-        if dd >= C.MOMENTUM_FAST_EXIT_DROP and clob_price < entry:
+        wsec = momentum_window_sec(settings)
+        dd = max_drawdown_in_window(market_id, wsec)
+        if dd >= momentum_fast_exit_drop(settings) and clob_price < entry:
+            _log(
+                f"momentum-SL trigger market={market_id} dd={dd:.4f} "
+                f"clob={clob_price:.4f} entry={entry:.4f}"
+            )
             self._trigger_exit(
                 market_id, trade_row, clob_price, "momentum-stop-loss", settings
             )
@@ -211,8 +227,11 @@ if __name__ == "__main__":
     print("  Fast Exit Watcher — module health check")
     print("═" * 60)
     print(f"  interval:                {s.fast_exit_watcher_interval_sec}s")
-    print(f"  momentum_fast_exit_drop: {C.MOMENTUM_FAST_EXIT_DROP} (absolute)")
-    print(f"  momentum_window:         {C.MOMENTUM_WINDOW_SECONDS}s")
+    print(
+        "  momentum_fast_exit_drop: "
+        f"{momentum_fast_exit_drop(s)} (absolute, from runtime)"
+    )
+    print(f"  momentum_window:         {momentum_window_sec(s)}s (from runtime)")
     print(f"  SL normal:               {s.stop_loss_normal}")
     print(f"  SL momentum:             {s.stop_loss_momentum}")
     print(f"  SL double_momentum:      {s.stop_loss_double_momentum}")

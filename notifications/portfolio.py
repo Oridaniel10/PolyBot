@@ -143,28 +143,32 @@ def _time_decay_status_html(
         return ""
     try:
         from strategy.time_filter import should_time_decay_exit
+        from config.settings import get_effective_settings
 
         row = _trade_row_for_time_decay(trade, avg_entry)
+        rs = get_effective_settings()
         would, _reason = should_time_decay_exit(
             row,
             float(mark),
-            decay_hours=float(C.TIME_DECAY_HOURS),
-            min_gain_pct=float(C.TIME_DECAY_MIN_GAIN),
-            max_price_for_decay=float(C.TIME_DECAY_MAX_PRICE),
+            decay_hours=float(getattr(rs, "time_decay_hours", C.TIME_DECAY_HOURS)),
+            min_gain_points=float(getattr(rs, "time_decay_min_gain", C.TIME_DECAY_MIN_GAIN)),
+            max_price_for_decay=float(
+                getattr(rs, "time_decay_max_price", C.TIME_DECAY_MAX_PRICE)
+            ),
         )
     except Exception:
         return ""
     hours = (time.time() - et) / 3600.0
     ep = float(row.get("entry_price") or 0)
-    gain = ((mark - ep) / ep) if ep > 1e-9 else 0.0
+    gain_pts = float(mark) - float(ep)
     if would:
         tag = "<b>WOULD EXIT</b> <i>(time_decay)</i>"
     else:
         tag = "<i>no time_decay</i>"
     return (
         f"   ⏰ <b>Time decay</b> held <code>{hours:.2f}h</code> "
-        f"(need ≥{C.TIME_DECAY_HOURS:g}h) · gain vs entry {_momentum_label(gain)} "
-        f"(need &lt;{C.TIME_DECAY_MIN_GAIN:.0%}) · mark <code>{mark:.3f}</code> "
+        f"(need ≥{C.TIME_DECAY_HOURS:g}h) · gain_pts <code>{gain_pts:+.3f}</code> "
+        f"(need &lt;{float(C.TIME_DECAY_MIN_GAIN):.3f} pts) · mark <code>{mark:.3f}</code> "
         f"(need mark &lt;{C.TIME_DECAY_MAX_PRICE:.2f}) → {tag}"
     )
 

@@ -101,7 +101,7 @@ class RuntimeConfigUpdate(BaseModel):
     max_market_prob_for_buy: Optional[float] = Field(None, ge=0.05, le=0.99)
     min_model_prob_for_buy: Optional[float] = Field(None, ge=0.0, le=0.95)
     max_positions_per_event: Optional[int] = Field(None, ge=1, le=20)
-    decision_min_model_peak_prob: Optional[float] = Field(None, ge=0.02, le=0.5)
+    decision_min_model_peak_prob: Optional[float] = Field(None, ge=0.0, le=0.5)
     enable_peer_surge_exit: Optional[bool] = None
     peer_surge_window_min: Optional[int] = Field(None, ge=1, le=180)
     peer_surge_rise_threshold: Optional[float] = Field(None, ge=0.01, le=2.0)

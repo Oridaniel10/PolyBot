@@ -168,7 +168,7 @@ def yes_token_id_from_market(market: Dict[str, Any]) -> str:
 
 
 def clob_retry_transient(operation: Any) -> Any:
-    from py_clob_client.exceptions import PolyApiException
+    from py_clob_client_v2.exceptions import PolyApiException
 
     last_exc: Optional[BaseException] = None
     for attempt in range(CLOB_RETRY_ATTEMPTS):
@@ -181,8 +181,17 @@ def clob_retry_transient(operation: Any) -> Any:
                 if exc.status_code in (408, 425, 429, 502, 503, 504):
                     retryable = True
                 msg = exc.error_msg
-                if isinstance(msg, str) and "not ready" in msg.lower():
-                    retryable = True
+                if isinstance(msg, str):
+                    msg_low = msg.lower()
+                    if "not ready" in msg_low:
+                        retryable = True
+                    # CLOB v2 transient: order schema version drift between sign+post
+                    if "order_version_mismatch" in msg_low or "version_mismatch" in msg_low:
+                        retryable = True
+                elif isinstance(msg, dict):
+                    err = str(msg.get("error") or "").lower()
+                    if "order_version_mismatch" in err or "version_mismatch" in err:
+                        retryable = True
             if retryable and attempt < CLOB_RETRY_ATTEMPTS - 1:
                 delay = CLOB_RETRY_BASE_SEC * (2**attempt) + random.uniform(0, 0.4)
                 time.sleep(delay)
@@ -383,8 +392,7 @@ class PolymarketClient:
         return 1
 
     def make_clob_client(self) -> Any:
-        from py_clob_client.client import ClobClient
-        from py_clob_client.clob_types import ApiCreds
+        from py_clob_client_v2 import ClobClient, ApiCreds
 
         funder = (self.config.proxy_address or "").strip() or None
         sig_type = self.resolve_clob_signature_type()
@@ -1075,7 +1083,7 @@ class PolymarketClient:
             out["balance_allowance_cached"] = True
             return out
         try:
-            from py_clob_client.clob_types import AssetType, BalanceAllowanceParams
+            from py_clob_client_v2 import AssetType, BalanceAllowanceParams
 
             clob = self.make_clob_client()
             payload = clob.get_balance_allowance(
@@ -1089,7 +1097,7 @@ class PolymarketClient:
                 self._balance_allowance_extras = {
                     "raw_balance": str(raw_balance),
                     "allowances": payload.get("allowances"),
-                    "source": "py_clob_client",
+                    "source": "py_clob_client_v2",
                 }
                 total = cash_usd + positions_value
                 return {
@@ -1098,7 +1106,7 @@ class PolymarketClient:
                     "total_value": total,
                     "raw_balance": str(raw_balance),
                     "allowances": payload.get("allowances"),
-                    "source": "py_clob_client",
+                    "source": "py_clob_client_v2",
                 }
         except Exception:
             pass
@@ -1171,7 +1179,7 @@ class PolymarketClient:
         return total
 
     def flush_pending_limit_sells(self, active_trades: Dict[str, Any]) -> None:
-        from py_clob_client.exceptions import PolyApiException
+        from py_clob_client_v2.exceptions import PolyApiException
 
         if not active_trades:
             return
@@ -1243,6 +1251,35 @@ class PolymarketClient:
             return 0.0
         return self.get_clob_yes_price(market)
 
+    def get_clob_yes_price_live(self, market: Dict[str, Any]) -> float:
+        """Always-fresh YES price from CLOB orderbook (skip Gamma bestAsk cache).
+
+        used by stop-loss paths where stale Gamma price could miss real drops.
+        prefers best ask, then midpoint, then 0.0 on failure.
+        """
+        try:
+            token_id = yes_token_id_from_market(market)
+        except (ValueError, KeyError):
+            return 0.0
+        clob = self.make_clob_client()
+        try:
+            book = clob.get_order_book(token_id)
+            if book and getattr(book, "asks", None):
+                return float(book.asks[0].price)
+        except Exception:
+            pass
+        mid = midpoint_price_from_clob(clob, token_id)
+        if mid > 0:
+            return mid
+        return 0.0
+
+    def get_clob_yes_price_live_by_id(self, market_id: str) -> float:
+        """always-fresh CLOB price by market_id; resolves market then queries CLOB."""
+        market = self.get_market_by_id(market_id)
+        if not market:
+            return 0.0
+        return self.get_clob_yes_price_live(market)
+
     def get_clob_min_order_size_yes(self, market: Dict[str, Any]) -> Optional[float]:
         try:
             token_id = yes_token_id_from_market(market)
@@ -1286,8 +1323,8 @@ class PolymarketClient:
     def place_market_buy_yes(
         self, market: Dict[str, Any], usd_amount: float
     ) -> Dict[str, Any]:
-        from py_clob_client.clob_types import MarketOrderArgs, OrderType
-        from py_clob_client.exceptions import PolyApiException
+        from py_clob_client_v2 import MarketOrderArgs, OrderType
+        from py_clob_client_v2.exceptions import PolyApiException
 
         if usd_amount <= 0:
             raise ValueError("usd_amount must be positive")
@@ -1305,8 +1342,10 @@ class PolymarketClient:
                             side=CLOB_ORDER_SIDE_BUY,
                             order_type=ot,
                         )
-                        signed = clob.create_market_order(mo)
-                        return clob.post_order(signed, orderType=ot)
+                        # v2: combined create+post with built-in version-mismatch retry
+                        return clob.create_and_post_market_order(
+                            mo, order_type=ot
+                        )
 
                     return exec_buy
 
@@ -1327,8 +1366,8 @@ class PolymarketClient:
         *,
         reference_price: Optional[float] = None,
     ) -> Dict[str, Any]:
-        from py_clob_client.clob_types import MarketOrderArgs, OrderArgs, OrderType
-        from py_clob_client.exceptions import PolyApiException
+        from py_clob_client_v2 import MarketOrderArgs, OrderArgs, OrderType
+        from py_clob_client_v2.exceptions import PolyApiException
 
         ref = float(reference_price or 0) or 0.0
         if share_size <= 0:
@@ -1365,8 +1404,8 @@ class PolymarketClient:
 
         def post_market_sell(mo: Any, post_ot: Any) -> Any:
             def inner() -> Any:
-                signed = clob.create_market_order(mo)
-                return clob.post_order(signed, orderType=post_ot)
+                # v2: combined create+post with built-in version-mismatch retry
+                return clob.create_and_post_market_order(mo, order_type=post_ot)
 
             return clob_retry_transient(inner)
 
@@ -1438,8 +1477,8 @@ class PolymarketClient:
                     size=share_size,
                     side=CLOB_ORDER_SIDE_SELL,
                 )
-                signed = clob.create_order(oa)
-                return clob.post_order(signed, orderType=OrderType.GTC)
+                # v2: combined create+post with built-in version-mismatch retry
+                return clob.create_and_post_order(oa, order_type=OrderType.GTC)
 
             posted = clob_retry_transient(exec_limit)
             out = posted if isinstance(posted, dict) else {"raw": posted}

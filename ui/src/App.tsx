@@ -13,7 +13,8 @@ type PositionRow = {
 type PortfolioResp = { cash_usd: number; positions_mtm_usd: number; total_usd: number; rows: PositionRow[]; error: string | null };
 
 type TradeRow = {
-  timestamp: string; local_hhmm?: string; action: string; market_id: string; market_title?: string;
+  timestamp: string; local_hhmm?: string; city_local_hhmm?: string; entry_type?: string;
+  decision_reason?: string; action: string; market_id: string; market_title?: string;
   city: string; price: string; shares: string; usd: string; reason: string;
   entry_price: string; pnl_usd: string; cash_after: string; positions_mtm: string; total_value: string;
   consensus_c?: string; implied_yes?: string; edge?: string; required_edge?: string;
@@ -354,7 +355,7 @@ export default function App() {
                   <div className="table-wrap">
                     <table>
                       <thead><tr>
-                        <th>Time</th><th>Local</th><th>Action</th><th>City</th><th>Price</th><th>Shares</th><th>USD</th><th>Reason</th><th>Entry</th><th>PnL</th><th>Total</th>
+                        <th>Time</th><th>Local</th><th>City local</th><th>Entry type</th><th>Action</th><th>City</th><th>Price</th><th>Shares</th><th>USD</th><th>Reason</th><th>Entry</th><th>PnL</th><th>Total</th>
                       </tr></thead>
                       <tbody>
                         {histTrades.map((t, i) => {
@@ -364,6 +365,8 @@ export default function App() {
                             <tr key={i}>
                               <td className="mono">{time}</td>
                               <td className="mono">{t.local_hhmm ?? "-"}</td>
+                              <td className="mono">{t.city_local_hhmm ?? "-"}</td>
+                              <td className="mono muted">{t.entry_type || "-"}</td>
                               <td><span className={`badge badge-${t.action.toLowerCase() === "buy" ? "buy" : "sell"}`}>{t.action}</span></td>
                               <td>{t.city}</td>
                               <td className="mono">{Number(t.price).toFixed(3)}</td>
@@ -397,7 +400,7 @@ export default function App() {
                 <div className="table-wrap">
                   <table>
                     <thead><tr>
-                      <th>Time</th><th>Decision</th><th>City</th><th>Bucket</th><th>Model P</th><th>Market P</th><th>Edge</th><th>Mom 15m</th><th>Reason</th>
+                      <th>Time</th><th>Decision</th><th>City</th><th>Bucket</th><th>Model P</th><th>Market P</th><th>Edge</th><th>Mom 15m Δ</th><th>Reason</th>
                     </tr></thead>
                     <tbody>
                       {decisions.map((d, i) => {
@@ -416,7 +419,7 @@ export default function App() {
                               {d.edge >= 0 ? "+" : ""}{(d.edge * 100).toFixed(1)}%
                             </td>
                             <td className={`mono ${d.momentum_15m > 0.05 ? "pnl-pos" : d.momentum_15m < -0.05 ? "pnl-neg" : ""}`}>
-                              {d.momentum_15m >= 0 ? "+" : ""}{(d.momentum_15m * 100).toFixed(1)}%
+                              {d.momentum_15m >= 0 ? "+" : ""}{d.momentum_15m.toFixed(3)}
                             </td>
                             <td className="muted" style={{ maxWidth: 200, fontSize: "0.72rem" }}>{d.reason}</td>
                           </tr>

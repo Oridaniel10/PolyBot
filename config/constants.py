@@ -35,9 +35,11 @@ UI_DIST_DIR = PROJECT_ROOT / "ui" / "dist"
 TIMEZONE = "Asia/Jerusalem"
 REPORT_HOURS = (10, 13, 16, 19)
 SCAN_INTERVAL_SECONDS = 30
-SELL_BELOW_MIN_COOLDOWN_SEC = 86400
+# short cooldown — we want to retry topup soon, not block exits for a full day.
+# critical exits (stop-loss/take-profit/etc.) bypass via SELL_BYPASS_MIN_COOLDOWN_REASONS.
+SELL_BELOW_MIN_COOLDOWN_SEC = 300
 # repeat Telegram for same market stuck on below_min_order_size at most this often
-SELL_BELOW_MIN_TELEGRAM_COOLDOWN_SEC = 7200
+SELL_BELOW_MIN_TELEGRAM_COOLDOWN_SEC = 1800
 
 # ═══════════════════════════════════════════════════════════════════════
 # ENTRY BANDS & STOP-LOSS — grouped by entry type
@@ -45,21 +47,22 @@ SELL_BELOW_MIN_TELEGRAM_COOLDOWN_SEC = 7200
 # ═══════════════════════════════════════════════════════════════════════
 
 # ─── Normal entry (model/edge-based) ─────────────────────────────────
-BUY_MIN_THRESHOLD = 0.78
-BUY_MAX_THRESHOLD = 0.88
+BUY_MIN_THRESHOLD = 0.65
+BUY_MAX_THRESHOLD = 0.85
 BUY_DISABLE_PRICE_BAND = False
 STOP_LOSS_NORMAL = 0.55
 
-# ─── Momentum entry (≥15% rise in 15 min) ────────────────────────────
-MOMENTUM_ENTRY_RISE = 0.15       # min fractional rise to qualify as momentum
-MOMENTUM_MIN_PRICE = 0.61        # min YES price to enter
-MOMENTUM_MAX_ENTRY = 0.80        # max YES price to enter
+# ─── Momentum entry (+0.15 price points in 15 min) ───────────────────
+MOMENTUM_ENTRY_RISE = 0.15  # min absolute YES-price rise to qualify
+MOMENTUM_MIN_PRICE = 0.61  # min YES price to enter
+MOMENTUM_MAX_ENTRY = 0.80  # max YES price to enter
 STOP_LOSS_MOMENTUM = 0.45
 
-# ─── Double momentum entry (≥30% rise in 15 min, wider band) ─────────
+# ─── Double momentum entry (+0.30 price points in 15 min, wider band) ─
 DOUBLE_MOMENTUM_ENTRY_RISE = 0.30
-DOUBLE_MOMENTUM_MIN_PRICE = 0.10
-DOUBLE_MOMENTUM_MAX_PRICE = 0.75
+DOUBLE_MOMENTUM_MIN_PRICE = 0.20
+# wider top so a 0.10 → 0.85 wave still qualifies (was 0.75 → missed late jumps).
+DOUBLE_MOMENTUM_MAX_PRICE = 0.88
 STOP_LOSS_DOUBLE_MOMENTUM = 0.30
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -76,9 +79,13 @@ TAKE_PROFIT_COMPARE_SLACK = 0.002
 MOMENTUM_FAST_EXIT_DROP = 0.15
 MOMENTUM_WINDOW_SECONDS = 900
 MOMENTUM_COMPETITOR_SURGE = 0.15
+# kept low so a fresh market that just jumped 0.1 → 0.7 in 2 ticks still
+# qualifies for double-momentum entry (was 3 → blocked late entries on big moves).
+MOMENTUM_MIN_SAMPLE_POINTS = 2
 
 # ─── Time-decay exit ─────────────────────────────────────────────────
 TIME_DECAY_HOURS = 2.0
+# min gain vs entry as absolute YES price points (not % of entry)
 TIME_DECAY_MIN_GAIN = 0.02
 TIME_DECAY_MAX_PRICE = 0.85
 
@@ -91,8 +98,8 @@ CHURN_MAX_STOP_CYCLES = 1
 CHURN_COOLDOWN_SEC = 1200
 
 # event-level churn: block entire event after repeated losses
-CHURN_EVENT_MAX_LOSSES = 2        # losses on same gamma event before blocking
-CHURN_EVENT_COOLDOWN_SEC = 1800   # block event for 30 minutes
+CHURN_EVENT_MAX_LOSSES = 2  # losses on same gamma event before blocking
+CHURN_EVENT_COOLDOWN_SEC = 1800  # block event for 30 minutes
 
 # ═══════════════════════════════════════════════════════════════════════
 # FAST EXIT WATCHER — background thread polling CLOB every N seconds
@@ -155,12 +162,15 @@ CASH_RESERVE_USD = 3.0
 # LEGACY MOMENTUM (kept for backward compat with price sample infra)
 # ═══════════════════════════════════════════════════════════════════════
 
-ENABLE_MOMENTUM = False
+ENABLE_MOMENTUM = True
 MOMENTUM_WINDOW_MIN = 10
 MOMENTUM_RISE = 0.25
 MOMENTUM_PEER_DROP = 0.10
 PRICE_SAMPLE_RETENTION_DAYS = 7
-PRICE_SAMPLE_MAX_ENTRIES_PER_MARKET = 30
+PRICE_SAMPLE_MAX_ENTRIES_PER_MARKET = 240
+TRADE_BUY_LOCK_TTL_SEC = 120
+TRADE_SELL_LOCK_TTL_SEC = 120
+TRADE_RECENT_SELL_TTL_SEC = 180
 
 # ═══════════════════════════════════════════════════════════════════════
 # FORECAST & RESEARCH
@@ -217,7 +227,7 @@ RESEARCH_EDGE_IMPLIED_SOFT_BOOST = 1.0
 BUY_LATEST_LOCAL_HOUR = 24
 
 # decision engine: do not buy dominant-crowd buckets or ultra-weak model buckets
-MAX_MARKET_PROB_FOR_BUY = 0.75
+MAX_MARKET_PROB_FOR_BUY = 0.99
 MIN_MODEL_PROB_FOR_BUY = 0.10
 MAX_POSITIONS_PER_EVENT = 1
 # skip BUY if implied P(YES) for this strike is below this (flat tail / low conviction)

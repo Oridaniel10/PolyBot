@@ -4,7 +4,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 import requests
-from py_clob_client.exceptions import PolyApiException
+from py_clob_client_v2.exceptions import PolyApiException
 
 from config.constants import (
     BUY_BLOCK_EVENT_DATE_AFTER_ISRAEL_TODAY,
@@ -14,10 +14,11 @@ from config.constants import (
     FORECAST_CONTRADICT_MARGIN_C,
     FORECAST_EXACT_BUCKET_SUPPORT_SLACK_C,
     MAX_CONCURRENT_POSITIONS,
-    MOMENTUM_ENTRY_RISE,
+    DOUBLE_MOMENTUM_ENTRY_RISE,
+    DOUBLE_MOMENTUM_MAX_PRICE,
+    DOUBLE_MOMENTUM_MIN_PRICE,
     MOMENTUM_MAX_ENTRY,
     MOMENTUM_MIN_PRICE,
-    MOMENTUM_WINDOW_SECONDS,
     SELL_BELOW_MIN_COOLDOWN_SEC,
     SELL_BELOW_MIN_TELEGRAM_COOLDOWN_SEC,
     SELL_BYPASS_MIN_COOLDOWN_REASONS,
@@ -26,6 +27,9 @@ from config.constants import (
     TERM_DIM,
     TERM_RED,
     TERM_YELLOW,
+    TRADE_BUY_LOCK_TTL_SEC,
+    TRADE_RECENT_SELL_TTL_SEC,
+    TRADE_SELL_LOCK_TTL_SEC,
 )
 from config.settings import RuntimeSettings, get_effective_settings
 from notifications.portfolio import send_portfolio_telegram
@@ -51,15 +55,15 @@ from polymarket_client import (
     PolymarketClient,
     SELL_EXECUTION_LIMIT_GTC,
     SELL_EXECUTION_SKIPPED,
+    gamma_event_ids_for_market,
 )
 from state.pnl_ledger import append_ledger_row, append_trade_csv_row
-from strategy.city_tz import _extract_city_from_title
+from strategy.city_tz import _extract_city_from_title, city_local_time_str
 from strategy.churn import (
     churn_on_stop_loss_exit,
     churn_on_take_profit,
     churn_allows_buy,
     churn_on_event_loss,
-    churn_event_allows_buy,
 )
 from strategy.gates import market_can_post_clob_orders, market_status
 from strategy.market_match import (
@@ -72,11 +76,11 @@ from strategy.decision_core import (
     check_exits,
     detect_momentum_switch,
     evaluate_entry,
+    momentum_window_sec,
     stop_loss_bar_for_entry_type,
 )
 from strategy.probability import (
     parse_market_probability,
-    stop_loss_mark_bar_for_entry,
     stop_loss_reference_if_triggered,
     take_profit_decision_probability,
 )
@@ -96,6 +100,13 @@ from telegram_bot import TelegramBot, tg_escape
 
 def _telegram_local_clock_html() -> str:
     return f"🕐 <code>{tg_escape(format_report_local_hhmm())}</code>\n"
+
+
+def _city_local_clock_html(title: str) -> str:
+    lt = city_local_time_str(str(title))
+    if not lt:
+        return ""
+    return f"📍 <b>city local</b> <code>{tg_escape(lt)}</code>\n"
 
 
 def _status_portfolio_headline_html(inner_html: str, action_label: str) -> str:
@@ -137,10 +148,14 @@ def _trade_headline_with_forecast_html(
 
 def _trade_csv_base(title: str) -> Dict[str, Any]:
     ts = now_in_report_timezone()
+    st = str(title)
     return {
         "timestamp": ts.isoformat(),
         "local_hhmm": format_report_local_hhmm(ts),
-        "market_title": str(title)[:220],
+        "city_local_hhmm": city_local_time_str(st),
+        "entry_type": "",
+        "decision_reason": "",
+        "market_title": st[:220],
     }
 
 
@@ -183,6 +198,91 @@ _TRADE_CSV_PLAN_PAD = {
 }
 
 
+def market_event_id(market: Dict[str, Any]) -> str:
+    eids = gamma_event_ids_for_market(market)
+    if not eids:
+        return ""
+    return str(eids[0]).strip()
+
+
+def prune_trade_locks(state: Dict[str, Any]) -> None:
+    now = time.time()
+    for root_key in ("trade_locks", "recent_sells"):
+        root = state.get(root_key) or {}
+        if not isinstance(root, dict):
+            state[root_key] = {}
+            continue
+        for bucket_key, bucket in list(root.items()):
+            if not isinstance(bucket, dict):
+                root.pop(bucket_key, None)
+                continue
+            for key, until in list(bucket.items()):
+                if now >= float(until or 0.0):
+                    bucket.pop(key, None)
+            if not bucket:
+                root.pop(bucket_key, None)
+
+
+def trade_lock_active(state: Dict[str, Any], bucket: str, key: str) -> bool:
+    if not key:
+        return False
+    prune_trade_locks(state)
+    locks = state.setdefault("trade_locks", {})
+    group = locks.get(bucket) if isinstance(locks, dict) else {}
+    if not isinstance(group, dict):
+        return False
+    return time.time() < float(group.get(key) or 0.0)
+
+
+def set_trade_lock(
+    state: Dict[str, Any], bucket: str, key: str, ttl_sec: float
+) -> None:
+    if not key or ttl_sec <= 0:
+        return
+    locks = state.setdefault("trade_locks", {})
+    if not isinstance(locks, dict):
+        locks = {}
+        state["trade_locks"] = locks
+    group = locks.setdefault(bucket, {})
+    if not isinstance(group, dict):
+        group = {}
+        locks[bucket] = group
+    group[key] = time.time() + float(ttl_sec)
+
+
+def clear_trade_lock(state: Dict[str, Any], bucket: str, key: str) -> None:
+    locks = state.get("trade_locks") or {}
+    if not isinstance(locks, dict):
+        return
+    group = locks.get(bucket)
+    if isinstance(group, dict):
+        group.pop(key, None)
+
+
+def mark_recent_sell(state: Dict[str, Any], market_id: str) -> None:
+    if not market_id:
+        return
+    recent = state.setdefault("recent_sells", {})
+    if not isinstance(recent, dict):
+        recent = {}
+        state["recent_sells"] = recent
+    bucket = recent.setdefault("market", {})
+    if not isinstance(bucket, dict):
+        bucket = {}
+        recent["market"] = bucket
+    bucket[market_id] = time.time() + float(TRADE_RECENT_SELL_TTL_SEC)
+
+
+def market_recently_sold(state: Dict[str, Any], market_id: str) -> bool:
+    if not market_id:
+        return False
+    prune_trade_locks(state)
+    recent = state.get("recent_sells") or {}
+    bucket = recent.get("market") if isinstance(recent, dict) else {}
+    if not isinstance(bucket, dict):
+        return False
+    return time.time() < float(bucket.get(market_id) or 0.0)
+
 
 def place_buy(
     client: PolymarketClient,
@@ -196,6 +296,14 @@ def place_buy(
 ) -> None:
     market_id = str(market.get("id") or "")
     if not market_id:
+        return
+    event_id = market_event_id(market)
+    active_trades = state.setdefault("active_trades", {})
+    if active_trade_key_and_row(active_trades, market)[1] is not None:
+        return
+    if trade_lock_active(state, "buy_market", market_id):
+        return
+    if event_id and trade_lock_active(state, "buy_event", event_id):
         return
     if market_id in settings.blacklist_market_ids:
         return
@@ -215,6 +323,16 @@ def place_buy(
     )
     mom_lo_pb = float(getattr(settings, "momentum_min_price", MOMENTUM_MIN_PRICE))
     mom_hi_pb = float(getattr(settings, "momentum_max_entry", MOMENTUM_MAX_ENTRY))
+    entry_type = "normal"
+    if trade_decision:
+        entry_type = getattr(trade_decision, "entry_type", "normal") or "normal"
+    if entry_type == "double_momentum":
+        mom_lo_pb = float(
+            getattr(settings, "double_momentum_min_price", DOUBLE_MOMENTUM_MIN_PRICE)
+        )
+        mom_hi_pb = float(
+            getattr(settings, "double_momentum_max_price", DOUBLE_MOMENTUM_MAX_PRICE)
+        )
     if not getattr(settings, "buy_disable_price_band", False):
         hi = mom_hi_pb if mom_relax else float(settings.buy_max)
         lo = mom_lo_pb if mom_relax else float(settings.buy_min)
@@ -313,9 +431,15 @@ def place_buy(
             )
         )
         return
+    set_trade_lock(state, "buy_market", market_id, TRADE_BUY_LOCK_TTL_SEC)
+    if event_id:
+        set_trade_lock(state, "buy_event", event_id, TRADE_BUY_LOCK_TTL_SEC)
     try:
         order = client.place_market_buy_yes(market, usd)
     except PolyApiException as err:
+        clear_trade_lock(state, "buy_market", market_id)
+        if event_id:
+            clear_trade_lock(state, "buy_event", event_id)
         print(term_wrap(TERM_RED, f"BUY FAILED: {err}\n  {title}"))
         try:
             if telegram.is_configured():
@@ -327,6 +451,9 @@ def place_buy(
             pass
         return
     except Exception as err:
+        clear_trade_lock(state, "buy_market", market_id)
+        if event_id:
+            clear_trade_lock(state, "buy_event", event_id)
         print(term_wrap(TERM_RED, f"BUY FAILED: {err!r}\n  {title}"))
         try:
             if telegram.is_configured():
@@ -343,9 +470,6 @@ def place_buy(
         min(1.0, float(settings.take_profit) - TAKE_PROFIT_COMPARE_SLACK),
     )
     # per-type SL: use entry_type from decision engine
-    entry_type = "normal"
-    if trade_decision:
-        entry_type = getattr(trade_decision, "entry_type", "normal") or "normal"
     sl_bar = stop_loss_bar_for_entry_type(entry_type, settings)
     est_tp_pnl = (tp_bar - float(probability)) * float(shares)
     est_sl_pnl = (sl_bar - float(probability)) * float(shares)
@@ -364,6 +488,9 @@ def place_buy(
         "entry_time_utc": now_in_report_timezone().isoformat(),
         "entry_type": entry_type,
     }
+    clear_trade_lock(state, "buy_market", market_id)
+    if event_id:
+        clear_trade_lock(state, "buy_event", event_id)
     frac, cap_hard, cap_usd, reserve_usd, tradable = planned_buy_cap_lines(
         cash, settings
     )
@@ -382,6 +509,7 @@ def place_buy(
     oref = order_ref_from_response(order) or str(order)
     headline_html = _status_portfolio_headline_html(
         (
+            f"{_city_local_clock_html(str(title))}"
             f"🟢 <b>BUY YES</b> <i>(bot)</i>\n"
             f"{tg_escape(title)}\n"
             f"💰 cash <code>${cash:.2f}</code>  ·  reserve <code>${reserve_usd:.2f}</code>"
@@ -460,7 +588,13 @@ def place_buy(
         "price": round(probability, 4),
         "shares": round(shares, 4),
         "usd": round(usd, 2),
-        "reason": "",
+        "reason": (
+            str(trade_decision.reason)[:160] if trade_decision is not None else "buy"
+        ),
+        "entry_type": str(entry_type),
+        "decision_reason": (
+            str(trade_decision.reason)[:200] if trade_decision is not None else ""
+        ),
         "entry_price": round(probability, 4),
         "pnl_usd": 0.0,
         "cash_after": round(cash_after, 2),
@@ -483,7 +617,6 @@ def place_buy(
     if trade_decision is not None:
         csv_buy["decision_sigma_c"] = round(trade_decision.sigma_used, 4)
         csv_buy["decision_model_prob"] = round(trade_decision.model_prob, 6)
-        csv_buy["decision_reason"] = str(trade_decision.reason)[:120]
     append_trade_csv_row(csv_buy)
     try:
         send_portfolio_telegram(
@@ -521,6 +654,10 @@ def close_position(
         return
     if trade.get("pending_limit_sell_order_id"):
         return
+    if market_recently_sold(state, market_id):
+        return
+    if trade_lock_active(state, "sell_market", market_id):
+        return
 
     cool_until = float(trade.get("_skip_sell_below_min_until") or 0)
     if cool_until and time.time() < cool_until:
@@ -538,6 +675,7 @@ def close_position(
 
     if not trade_row_matches_gamma_market(trade, market):
         return
+    set_trade_lock(state, "sell_market", market_id, TRADE_SELL_LOCK_TTL_SEC)
 
     shares_state = float(trade.get("shares", DEFAULT_ORDER_SIZE) or DEFAULT_ORDER_SIZE)
     title = (
@@ -545,10 +683,12 @@ def close_position(
         or market.get("title")
         or market.get("id", "unknown-market")
     )
+    held_entry_type = str(trade.get("entry_type") or "").strip()
     entry = float(trade.get("entry_price", trade.get("last_price", 0)) or 0)
     exchange_yes = client.get_yes_shares_on_exchange_for_market_id(key)
     if exchange_yes < DUST_SHARES_EPS:
         active_trades.pop(key, None)
+        clear_trade_lock(state, "sell_market", market_id)
         msg = (
             "SELL N/A: no YES size on exchange (flat / resolved / not in data-api)\n"
             f"tracked_state_shares={shares_state:.6f}\n"
@@ -612,6 +752,7 @@ def close_position(
             market, sell_shares, reference_price=probability
         )
     except PolyApiException as err:
+        clear_trade_lock(state, "sell_market", market_id)
         fp = hashlib.sha256(str(err).encode("utf-8", errors="replace")).hexdigest()
         if trade.get("_sell_err_fingerprint") == fp:
             print(
@@ -641,6 +782,7 @@ def close_position(
             pass
         return
     except Exception as err:
+        clear_trade_lock(state, "sell_market", market_id)
         fp = hashlib.sha256(str(err).encode("utf-8", errors="replace")).hexdigest()
         if trade.get("_sell_err_fingerprint") == fp:
             print(
@@ -689,6 +831,7 @@ def close_position(
             )
         else:
             active_trades.pop(key, None)
+            mark_recent_sell(state, market_id)
             msg = (
                 f"SELL SKIPPED: {result.get('skip_reason')}\n"
                 f"{title}\n"
@@ -720,11 +863,13 @@ def close_position(
                     )
         except requests.RequestException:
             pass
+        clear_trade_lock(state, "sell_market", market_id)
         return
     if result.get("sell_execution") == SELL_EXECUTION_LIMIT_GTC:
         limit_px = float(result.get("limit_price") or 0)
         oid = order_ref_from_response(result)
         if not oid:
+            clear_trade_lock(state, "sell_market", market_id)
             print(
                 term_wrap(
                     TERM_RED,
@@ -753,6 +898,7 @@ def close_position(
         est_line = format_est_pnl_line_html(sell_shares, entry, limit_px)
         headline_html = _status_portfolio_headline_html(
             (
+                f"{_city_local_clock_html(str(title))}"
                 f"🟠 <b>LIMIT SELL</b> <code>{tg_escape(reason)}</code>\n"
                 f"{tg_escape(title)}\n"
                 f"📦 <code>{sell_shares:.6f}</code>  ·  limit <code>{limit_px:.4f}</code>"
@@ -775,6 +921,8 @@ def close_position(
                 "action": "LIMIT_SELL",
                 "market_id": market_id,
                 "city": _extract_city_from_title(str(title)),
+                "entry_type": held_entry_type,
+                "decision_reason": "",
                 "price": round(limit_px, 4),
                 "shares": round(sell_shares, 4),
                 "usd": round(sell_shares * limit_px, 2),
@@ -801,9 +949,12 @@ def close_position(
             print(
                 term_wrap(TERM_RED, f"limit sell posted but telegram failed: {err!r}")
             )
+        clear_trade_lock(state, "sell_market", market_id)
         return
 
     active_trades.pop(key, None)
+    mark_recent_sell(state, market_id)
+    clear_trade_lock(state, "sell_market", market_id)
     summary = result.get("sell_attempt_summary") or ""
     headline = (
         f"TRADE: SELL ({reason})\n"
@@ -814,6 +965,7 @@ def close_position(
     est_pnl = (probability - entry) * sell_shares
     headline_html = _status_portfolio_headline_html(
         (
+            f"{_city_local_clock_html(str(title))}"
             f"🔴 <b>SELL</b> <code>{tg_escape(reason)}</code> <i>(bot)</i>\n"
             f"{tg_escape(title)}\n"
             f"📦 <code>{sell_shares:.6f}</code>  ·  entry <code>{entry:.4f}</code>"
@@ -848,6 +1000,8 @@ def close_position(
             "action": "SELL",
             "market_id": market_id,
             "city": _extract_city_from_title(str(title)),
+            "entry_type": held_entry_type,
+            "decision_reason": "",
             "price": round(probability, 4),
             "shares": round(sell_shares, 4),
             "usd": round(sell_shares * probability, 2),
@@ -876,6 +1030,7 @@ def close_position(
         # event-level churn: track losses across sibling markets in same event
         try:
             from polymarket_client import gamma_event_ids_for_market
+
             eids = gamma_event_ids_for_market(market)
             if eids:
                 churn_on_event_loss(
@@ -921,6 +1076,11 @@ def claim_position(
         or market.get("title")
         or market.get("id", "unknown-market")
     )
+    active_trades = state.get("active_trades") or {}
+    prev_row = active_trades.get(key) if isinstance(active_trades, dict) else None
+    held_entry_type = ""
+    if isinstance(prev_row, dict):
+        held_entry_type = str(prev_row.get("entry_type") or "").strip()
     try:
         client.claim_market(market_id)
     except Exception as err:
@@ -940,6 +1100,7 @@ def claim_position(
         client,
         market,
         _status_portfolio_headline_html(
+            f"{_city_local_clock_html(str(title))}"
             f"🟡 <b>CLAIM</b> <i>(bot)</i>\n{tg_escape(title)}",
             "CLAIM",
         ),
@@ -956,6 +1117,8 @@ def claim_position(
             "action": "CLAIM",
             "market_id": market_id,
             "city": _extract_city_from_title(str(title)),
+            "entry_type": held_entry_type,
+            "decision_reason": "",
             "price": 0.0,
             "shares": 0.0,
             "usd": 0.0,
@@ -1000,6 +1163,7 @@ def process_single_market(
     trade_key, trade_row = active_trade_key_and_row(active_trades, market)
     has_position = trade_row is not None
     sk = trade_key if trade_key else None
+    event_id = market_event_id(market)
 
     if has_position and not trade_row_matches_gamma_market(trade_row, market):
         warn_gamma_trade_mismatch_once(trade_row, market, telegram)
@@ -1150,9 +1314,22 @@ def process_single_market(
         active_trades[trade_key].pop("_warned_clob_disabled", None)
 
     # --- ENTRY LOGIC (new buys only) ---
-    if not (
-        allow_new_buys and not has_position and market_can_post_clob_orders(market)
-    ):
+    if not allow_new_buys or has_position:
+        return
+    if not market_can_post_clob_orders(market):
+        t = str(market.get("question") or market.get("title") or market_id)
+        print(
+            term_wrap(
+                TERM_DIM,
+                f"[decision] skip buy — market not tradable on CLOB "
+                f"(status={status!r}, acceptingOrders={market.get('acceptingOrders')}, "
+                f"enableOrderBook={market.get('enableOrderBook')}, active={market.get('active')})\n  {t}",
+            )
+        )
+        return
+    if trade_lock_active(state, "buy_market", market_id):
+        return
+    if event_id and trade_lock_active(state, "buy_event", event_id):
         return
 
     _title = str(market.get("question") or market.get("title") or "")
@@ -1186,16 +1363,31 @@ def process_single_market(
     if len(active_trades) >= MAX_CONCURRENT_POSITIONS:
         return
 
-    mom_sig, _mom_rise = momentum_entry_signal(
+    wsec = momentum_window_sec(settings)
+    rise_thr = float(getattr(settings, "momentum_entry_rise", 0.15))
+    mom_sig, mom_rise_pts = momentum_entry_signal(
         market_id,
-        rise_threshold=MOMENTUM_ENTRY_RISE,
-        window_sec=MOMENTUM_WINDOW_SECONDS,
+        rise_threshold=rise_thr,
+        window_sec=wsec,
     )
     mom_lo = float(getattr(settings, "momentum_min_price", MOMENTUM_MIN_PRICE))
     mom_hi = float(getattr(settings, "momentum_max_entry", MOMENTUM_MAX_ENTRY))
+    dbl_min = float(
+        getattr(settings, "double_momentum_min_price", DOUBLE_MOMENTUM_MIN_PRICE)
+    )
+    dbl_max = float(
+        getattr(settings, "double_momentum_max_price", DOUBLE_MOMENTUM_MAX_PRICE)
+    )
+    dbl_rise = float(
+        getattr(settings, "double_momentum_entry_rise", DOUBLE_MOMENTUM_ENTRY_RISE)
+    )
+    double_momentum_price_ok = (
+        mom_rise_pts + 1e-12 >= dbl_rise
+        and dbl_min - 1e-12 <= gamma_probability <= dbl_max + 1e-12
+    )
     momentum_price_ok = (
         mom_sig and mom_lo - 1e-12 <= gamma_probability <= mom_hi + 1e-12
-    )
+    ) or double_momentum_price_ok
 
     sw = detect_momentum_switch(
         market,
@@ -1264,18 +1456,22 @@ def process_single_market(
         openweather_api_key=ow_key,
         use_openweather=ow_blend,
     )
+    # forecast consensus is optional now (research/calibration removed from decisions).
+    # when missing, fall back to a neutral value so price-based gates (band, momentum,
+    # competition) still drive entries.
     if cons is None:
         print(
             term_wrap(
                 TERM_DIM,
-                f"[decision] skip buy — no forecast consensus for {parsed_fc.city_key}\n  {_title}",
+                f"[decision] no forecast consensus for {parsed_fc.city_key} — "
+                f"continuing on price-based gates only\n  {_title}",
             )
         )
-        return
+    cons_for_eval = float(cons) if cons is not None else 0.0
 
     td = evaluate_entry(
         parsed_fc,
-        float(cons),
+        cons_for_eval,
         float(gamma_probability),
         market,
         client,

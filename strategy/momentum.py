@@ -1,8 +1,8 @@
 import json
 import tempfile
-import threading
 import time
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Set, Tuple
@@ -15,12 +15,29 @@ from config.constants import (
 )
 from config.settings import RuntimeSettings
 from strategy.probability import parse_market_probability
-from strategy.time_utils import now_in_report_timezone
 
 try:
     from zoneinfo import ZoneInfo
 except ImportError:
     ZoneInfo = None  # type: ignore[assignment]
+
+PRICE_SAMPLE_WINDOW_SECONDS = 2 * 60 * 60
+PRICE_SAMPLE_TRIM_INTERVAL_SECONDS = 120
+PRICE_SAMPLE_ENOSPC_RETRY_SECONDS = 60
+
+_last_trim_ts = 0.0
+_writes_blocked_until_ts = 0.0
+
+
+@dataclass(frozen=True)
+class SampleWindow:
+    points: List[Tuple[float, float]]
+    count: int
+    oldest_ts: float
+    newest_ts: float
+    oldest_price: float
+    newest_price: float
+    span_sec: float
 
 
 def prune_old_price_sample_files() -> None:
@@ -51,13 +68,26 @@ def _sample_path_for_now() -> Path:
 def append_price_sample(
     market_id: str, yes_price: float, ts: float | None = None
 ) -> None:
+    global _writes_blocked_until_ts
     if not market_id:
         return
     t = ts if ts is not None else time.time()
+    if t < _writes_blocked_until_ts:
+        return
     row = {"market_id": market_id, "ts": t, "yes": float(yes_price)}
     path = _sample_path_for_now()
-    with path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(row, ensure_ascii=True, separators=(",", ":")) + "\n")
+    try:
+        with path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(row, ensure_ascii=True, separators=(",", ":")) + "\n")
+    except OSError as err:
+        if getattr(err, "errno", None) == 28:
+            _writes_blocked_until_ts = t + PRICE_SAMPLE_ENOSPC_RETRY_SECONDS
+            print(
+                "[momentum] sample write paused: no disk space "
+                f"(retry in {PRICE_SAMPLE_ENOSPC_RETRY_SECONDS}s)"
+            )
+        else:
+            raise
 
 
 def load_samples_for_market(
@@ -88,6 +118,25 @@ def load_samples_for_market(
             continue
     out.sort(key=lambda x: x[0])
     return out
+
+
+def load_sample_window_for_market(
+    market_id: str, window_sec: float, now_ts: float | None = None
+) -> SampleWindow:
+    points = load_samples_for_market(market_id, window_sec, now_ts)
+    if not points:
+        return SampleWindow([], 0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    oldest_ts, oldest_price = points[0]
+    newest_ts, newest_price = points[-1]
+    return SampleWindow(
+        points=points,
+        count=len(points),
+        oldest_ts=float(oldest_ts),
+        newest_ts=float(newest_ts),
+        oldest_price=float(oldest_price),
+        newest_price=float(newest_price),
+        span_sec=max(0.0, float(newest_ts) - float(oldest_ts)),
+    )
 
 
 def momentum_window_rise(
@@ -165,7 +214,8 @@ def trim_price_samples_file(
             lines = f.readlines()
     except OSError:
         return
-    by_market: Dict[str, List[str]] = defaultdict(list)
+    cutoff_ts = time.time() - float(PRICE_SAMPLE_WINDOW_SECONDS)
+    by_market: Dict[str, List[Tuple[float, str]]] = defaultdict(list)
     for line in lines:
         stripped = line.strip()
         if not stripped:
@@ -175,12 +225,15 @@ def trim_price_samples_file(
         except json.JSONDecodeError:
             continue
         mid = str(obj.get("market_id") or "")
+        ts = float(obj.get("ts") or 0.0)
         if mid:
-            by_market[mid].append(stripped)
+            if ts + 1e-9 < cutoff_ts:
+                continue
+            by_market[mid].append((ts, stripped))
     kept: List[str] = []
     for mid in sorted(by_market):
-        entries = by_market[mid]
-        kept.extend(entries[-max_per_market:])
+        entries = sorted(by_market[mid], key=lambda x: x[0])
+        kept.extend([row for _, row in entries[-max_per_market:]])
     try:
         fd, tmp = tempfile.mkstemp(
             dir=str(path.parent), suffix=".tmp", prefix=path.stem
@@ -196,12 +249,14 @@ def trim_price_samples_file(
             pass
 
 
-def trim_price_samples_async() -> None:
+def trim_price_samples_if_due(now_ts: float | None = None) -> None:
+    global _last_trim_ts
+    now_ts = now_ts if now_ts is not None else time.time()
+    if now_ts - _last_trim_ts < PRICE_SAMPLE_TRIM_INTERVAL_SECONDS:
+        return
+    _last_trim_ts = now_ts
     path = _sample_path_for_now()
-    t = threading.Thread(
-        target=trim_price_samples_file, args=(path,), daemon=True
-    )
-    t.start()
+    trim_price_samples_file(path)
 
 
 def record_samples_for_market_dicts(markets: List[Dict[str, Any]]) -> None:
@@ -214,7 +269,7 @@ def record_samples_for_market_dicts(markets: List[Dict[str, Any]]) -> None:
         seen.add(mid)
         p = parse_market_probability(m)
         append_price_sample(mid, p, now_ts)
-    trim_price_samples_async()
+    trim_price_samples_if_due(now_ts)
 
 
 def momentum_entry_allowed(

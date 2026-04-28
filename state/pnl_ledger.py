@@ -129,6 +129,8 @@ def pnl_summary_day_week() -> Dict[str, Any]:
 TRADE_CSV_FIELDS = [
     "timestamp",
     "local_hhmm",
+    "city_local_hhmm",
+    "entry_type",
     "action",
     "market_id",
     "market_title",
@@ -137,6 +139,7 @@ TRADE_CSV_FIELDS = [
     "shares",
     "usd",
     "reason",
+    "decision_reason",
     "entry_price",
     "pnl_usd",
     "cash_after",
@@ -169,15 +172,13 @@ def append_trade_csv_row(row: Dict[str, Any]) -> None:
         try:
             with path.open("r", encoding="utf-8") as f:
                 first = f.readline()
-            if (
-                first.strip()
-                and "local_hhmm" not in first
-                and "timestamp" in first
-            ):
-                legacy = path.with_name(f"{path.stem}_legacy{path.suffix}")
-                if not legacy.is_file():
-                    path.rename(legacy)
-                write_header = True
+            if first.strip() and "timestamp" in first:
+                need = ("local_hhmm", "city_local_hhmm", "entry_type", "decision_reason")
+                if any(n not in first for n in need):
+                    legacy = path.with_name(f"{path.stem}_legacy{path.suffix}")
+                    if not legacy.is_file():
+                        path.rename(legacy)
+                    write_header = True
         except OSError:
             pass
     try:

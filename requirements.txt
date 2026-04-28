@@ -3,4 +3,6 @@ web3>=7.0.0
 python-dotenv
 fastapi
 uvicorn[standard]
-git+https://github.com/Polymarket/py-clob-client.git
+# CLOB v2 SDK — Polymarket upgraded the exchange to CLOB v2 on 2026-04-28.
+# old py-clob-client v0.34.6 produces order_version_mismatch errors.
+py-clob-client-v2>=1.0.0

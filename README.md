@@ -1,6 +1,10 @@
 # Polymarket weather bot
 
-Automated Polymarket helper focused on **highest-temperature** style markets: scans Gamma, syncs open positions from the Data API, applies buy / stop-loss / take-profit rules, sends Telegram updates, and optional **momentum** + **competition (event sibling)** filters. **No database** — state lives in JSON / JSONL under `data/` and `state.json`.
+Automated Polymarket helper focused on **highest-temperature** style markets: scans Gamma, syncs open positions from the Data API, applies **price-band + momentum** entries, **per-type stop-loss**, take-profit, **time-decay**, and **competition (event sibling)** filters; sends Telegram updates. **No database** — state lives in JSON / JSONL under `data/` and `state.json`.
+
+> **CLOB v2 (since 2026-04-28).** Polymarket migrated the exchange to CLOB v2. The bot uses **`py-clob-client-v2`** (≥1.0.0), which has built-in retry on `order_version_mismatch` via `create_and_post_market_order` / `create_and_post_order`. The v1 SDK (`py-clob-client`) is no longer compatible.
+
+> **Decisions are price-driven.** The forecast/research/calibration model still computes `model_prob` for display, but research-edge gates default to **OFF** in `data/runtime_config.json` (`research_edge_gate_buy=false`, `min_model_prob_for_buy=0.0`, `decision_min_model_peak_prob=0.0`). A market with no forecast still trades through the price-based gates. To re-enable model-based filtering, flip those keys in runtime config.
 
 ## Docs and limits
 
@@ -10,11 +14,11 @@ Automated Polymarket helper focused on **highest-temperature** style markets: sc
 - **Polymarket API reference:** [https://docs.polymarket.com/](https://docs.polymarket.com/)
 - **Agent / architecture cheat sheet:** [AGENTS.md](AGENTS.md)
 
-### Trading + research (optional)
+### Trading + research (optional, OFF by default)
 
 - Offline pipeline writes `data/research/*.jsonl` and `calibration_latest.json` (see `research/WORKFLOW.md`).
 - The bot’s Open-Meteo consensus path applies city bias from `calibration_latest.json` (`forecast/forecast_service.py` → `research/calibration_apply.py`).
-- Optional **model vs CLOB edge gate** and sizing knobs live in `data/runtime_config.json` under `research_*` (default off). Regenerate calibration periodically, e.g. `python -m research analyze`, before tightening gates in production.
+- The **model vs CLOB edge gate** (`research_edge_gate_buy`) is disabled by default — entries are driven by price band, momentum, and competition. To enable it, set `research_edge_gate_buy: true` and tune `min_model_prob_for_buy` / `decision_min_model_peak_prob` in `data/runtime_config.json`. Regenerate calibration periodically (`python -m research analyze`) before tightening gates in production.
 
 ## Layout
 
@@ -27,6 +31,7 @@ Automated Polymarket helper focused on **highest-temperature** style markets: sc
 | `strategy/loop.py` | `run_once` (scan + exit pass + price samples) |
 | `config/` | Constants + `runtime_config.json` merge |
 | `state/` | `state.json` I/O, `pnl_ledger` append |
+| `data/trade_log_YYYY-MM-DD.csv` | daily CSV (`TRADE_CSV_FIELDS` in `state/pnl_ledger.py`) — includes bot-report `local_hhmm` plus **city-local** `city_local_hhmm`, `entry_type`, `decision_reason` on BUY rows |
 | `notifications/` | Terminal + Telegram HTML (incl. est PnL lines) |
 | `app/dashboard.py` | REST: PnL summary, weather list, runtime config, daily blacklist |
 | `ui/` | Vite React dashboard (build → `ui/dist`) |
@@ -97,12 +102,14 @@ python app/dashboard.py
 
 Merged **each tick** with env-backed sizing. Keys include:
 
-- `buy_min_threshold`, `buy_max_threshold`, `stop_loss_threshold`, `take_profit_threshold`
+- `buy_min_threshold`, `buy_max_threshold`, `stop_loss_normal`, `stop_loss_momentum`, `stop_loss_double_momentum`, `take_profit_threshold`
 - `min_lead_over_runner_up`, `enable_competition_filter` — require YES lead vs next-best sibling market in the same Gamma **event**
-- `enable_momentum`, `momentum_window_min`, `momentum_rise`, `momentum_min_price`, `momentum_max_entry`, `momentum_peer_drop`
-- `churn_max_stop_cycles`, `churn_cooldown_sec` — after N **stop-loss** exits, buy cooldown (default 2 cycles, 15 minutes); **take-profit resets** the counter
+- `momentum_window_seconds`, `momentum_fast_exit_drop`, `momentum_competitor_surge`, `momentum_entry_rise` — momentum window + absolute point thresholds (defaults in `config/constants.py`)
+- `time_decay_hours`, `time_decay_min_gain`, `time_decay_max_price` — time-decay uses **absolute YES points** gain vs entry, not percent of entry
+- `momentum_min_price`, `momentum_max_entry`, `double_momentum_entry_rise`, `double_momentum_min_price`, `double_momentum_max_price`
+- `churn_max_stop_cycles`, `churn_cooldown_sec` — after N **stop-loss** exits, buy cooldown (default 1 cycle, 20 minutes); **take-profit resets** the counter
 - `blacklist_market_ids` — extra IDs blocked for buys (merged with daily blacklist file)
-- `cash_reserve_usd` — dollars of free cash **excluded** from buy sizing; default **10** (`config/constants.py` `CASH_RESERVE_USD`). `max_trade_fraction_of_cash` applies to **tradable** cash only (`cash − reserve`).
+- `cash_reserve_usd` — dollars of free cash **excluded** from buy sizing; default **3** in `config/constants.py` and often overridden live in `data/runtime_config.json`. `max_trade_fraction_of_cash` applies to **tradable** cash only (`cash − reserve`).
 
 ## Anti-churn policy
 
@@ -119,19 +126,26 @@ Per `market_id`: count **bot stop-loss** exits; at **≥ churn_max_stop_cycles**
 
 Optional second model: set `OPENWEATHER_API_KEY` in `.env` and turn on `enable_openweather_forecast` in `data/runtime_config.json` (or the dashboard form).
 
-**Does it change buy/sell?** By **default, no** — digest and preview are informative. The bot only uses forecasts for **decisions** when you enable runtime flags (merged each tick):
+**Does it change buy/sell?** Yes, when the runtime flags are enabled (merged each tick):
 
 - **`forecast_gate_buy`** — can **block** a buy if the external model strongly contradicts the bracket.
 - **`forecast_reduce_usd_if_weak`** — can **shrink** buy notional when the model does not support YES (`forecast_weak_size_factor`).
 - **`enable_flow_peer_exit`** — can trigger a **sell** (`flow-peer-surge`) from sampled flow data, not from the digest HTML.
 
-Defaults for these are **off** in `config/constants.py` unless overridden in `runtime_config.json`. Details: [STRATEGY_LOGIC.md](STRATEGY_LOGIC.md).
+Current defaults are in `config/constants.py`, and live values can override them in `data/runtime_config.json`. Details: [STRATEGY_LOGIC.md](STRATEGY_LOGIC.md).
 
 **Smoke test (digest + optional live Gamma/Open-Meteo):** `python tests/test_forecast_digest.py`
 
 ## Momentum & samples
 
-Append-only `data/price_samples/YYYY-MM-DD.jsonl` (one line per market per tick for scanned + held markets). Files older than **7 days** are deleted on bot startup. Momentum **entry** can relax the buy ceiling toward `momentum_max_entry` when the window rise rule fires; **peer-drop sell** closes YES when another market in the same event drops enough in the window.
+Append-only `data/price_samples/YYYY-MM-DD.jsonl` (one line per market per tick for scanned + held markets). Files older than **7 days** are deleted on bot startup. Each market keeps the latest **240** samples per day, enough for roughly 2 hours at a 30-second scan. Momentum entry and competitor surge use **absolute YES-price points** (`+0.15`, not +15% relative), with at least **2** samples required in the window — low enough that a fresh market that just jumped from 0.10 to 0.70 in two ticks still qualifies for **double-momentum** entry (`+0.30` rise, price band 0.20–0.88).
+
+## Stop-loss (per-type) and the fast-exit watcher
+
+Stop-loss bar depends on `entry_type` stored at buy time (`normal` → 0.55, `momentum` → 0.45, `double_momentum` → 0.30). Two paths check it:
+
+1. **Main loop** (~30s): `stop_loss_reference_if_triggered` in `strategy/probability.py`.
+2. **Fast exit watcher** (`strategy/fast_exit_watcher.py`, default 2s): polls **live CLOB orderbook** via `get_clob_yes_price_live_by_id` (best ask / midpoint), bypassing the stale Gamma `bestAsk` cache that previously caused SL to miss real drops. The watcher writes the fresh price back into `trade_row["last_price"]` so the slow loop also sees current data.
 
 ## Docker
 

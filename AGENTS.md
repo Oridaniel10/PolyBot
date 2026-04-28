@@ -1,11 +1,20 @@
 # Agent notes (Cursor / automation)
 
+## CLOB v2 (current)
+
+Polymarket migrated the exchange to **CLOB v2** on **2026-04-28**. The bot uses **`py-clob-client-v2`** (≥1.0.0). All order placement goes through `clob.create_and_post_market_order(...)` / `clob.create_and_post_order(...)` which internally retries on `order_version_mismatch` (the v1 SDK errored hard). `clob_retry_transient` in `polymarket_client.py` also catches `order_version_mismatch` defensively. Do NOT reintroduce `from py_clob_client …` — only `from py_clob_client_v2 …`.
+
+## Strategy stance
+
+Decisions are **price-driven** (band, momentum, competition, SL, TP, time-decay). The forecast/research/calibration model still runs and is shown for context, but the runtime gates `research_edge_gate_buy`, `min_model_prob_for_buy`, and `decision_min_model_peak_prob` default to **off / 0.0** in `data/runtime_config.json`. A market with no forecast still trades through price-based gates.
+
 ## Architecture
 
 - **Anchor:** trading flow stays `run_bot` → `sync_state_with_portfolio` → `run_once` → `process_single_market` → `place_buy` / `close_position` / `claim_position` in `strategy/trades.py` and `strategy/loop.py`.
 - **Decision layer:** `strategy/decision_core.py` is the central orchestrator. It calls `probability_engine`, `momentum_engine`, `competition_filter`, and `time_filter` to produce BUY/SKIP decisions. All entry decisions flow through `evaluate_entry()`, all exit checks through `check_exits()`.
 - **Config:** defaults in `config/constants.py` (grouped by entry type); live overrides in `data/runtime_config.json` (merged each tick via `get_effective_settings()` in `config/settings.py`).
 - **State:** `state.json` at repo root (paths in `config/constants.py`); churn counters in `state["churn_by_market"]` and `state["churn_by_event"]`. Active trades include `entry_time_utc` for time-decay and `entry_type` (`normal`/`momentum`/`double_momentum`) for per-type stop-loss.
+- **Trade CSV:** `data/trade_log_YYYY-MM-DD.csv` via `state/pnl_ledger.py` — bot report clock `local_hhmm` plus `city_local_hhmm`, `entry_type`, `decision_reason` (BUY), `reason` (exit / claim).
 - **No database:** JSON / JSONL only under `data/` (`runtime_config.json`, `blacklist_day.json`, `pnl_ledger.jsonl`, `price_samples/*.jsonl`).
 - **API + UI:** FastAPI routes in `app/dashboard.py` (prefix `/api`). Static React build served at `/dashboard/` when `ui/dist` exists (`main_bot.py`).
 
@@ -22,7 +31,7 @@ Respect Polymarket limits; see **[POLY_RATE_LIMITS.MD](POLY_RATE_LIMITS.MD)** an
 | **Momentum engine** | `strategy/momentum_engine.py` — absolute 0.15 fast exit, competitor surge, entry signal |
 | **Competition filter** | `strategy/competition_filter.py` — 15% lead gap requirement |
 | **Time filter** | `strategy/time_filter.py` — entry window (14:00-24:00) + time-decay exit |
-| **Fast exit watcher** | `strategy/fast_exit_watcher.py` — daemon thread polling CLOB every 2s for per-type SL + momentum fast exit |
+| **Fast exit watcher** | `strategy/fast_exit_watcher.py` — daemon thread polling **live CLOB orderbook** (`get_clob_yes_price_live_by_id`) every 2s for per-type SL + momentum fast exit; bypasses Gamma `bestAsk` cache |
 | Thresholds | `config/settings.py`, `data/runtime_config.json` (incl. `cash_reserve_usd`, sizing) |
 | Gates / CLOB | `strategy/gates.py` |
 | Probabilities (parse/TP/SL) | `strategy/probability.py` |

@@ -2,7 +2,7 @@ import os
 from pathlib import Path
 
 from dotenv import load_dotenv
-from py_clob_client.client import ClobClient
+from py_clob_client_v2 import ClobClient
 
 
 def generate_keys():
@@ -12,18 +12,16 @@ def generate_keys():
         print("שגיאה: POLY_PRIVATE_KEY חסר במשתני הסביבה")
         return
 
-    # הגדרת הלקוח מול רשת Polygon
     host = "https://clob.polymarket.com"
-    chain_id = 137  # Polygon Mainnet
+    chain_id = 137  # polygon mainnet
 
     client = ClobClient(host, chain_id=chain_id, key=private_key)
 
-    print("--- מתחיל תהליך יצירת מפתחות CLOB ---")
+    print("--- מתחיל תהליך יצירת מפתחות CLOB (v2) ---")
     print(f"bot is using address: {client.get_address()}")
     print("tip: if you use magic wallet, set POLY_PROXY_ADDRESS to your app account address")
     try:
-        # פקודה זו יוצרת מפתחות חדשים במערכת של פולימרקט
-        api_creds = client.create_or_derive_api_creds()
+        api_creds = client.create_or_derive_api_key()
 
         print("\nשמור את הנתונים הבאים בקובץ ה-.env שלך:")
         print(f"API_KEY={api_creds.api_key}")

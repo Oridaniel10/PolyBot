@@ -12,9 +12,9 @@ historical misses (e.g. paris 22°c held while 21°c surged, milan 23 vs 24):
   competitor-surge exit blocked re-entry into the same gamma event for 20 minutes.
   rotation is handled by momentum_switch (sell held) plus relaxed momentum gates.
 
-rotation when holding: only the event market-yes **#1** may trigger a switch, and its
-YES must be **>= held_yes + MOMENTUM_SWITCH_ABOVE_HELD_GAP** plus momentum rise +
-momentum price band (see detect_momentum_switch / momentum_competitor_dominates_held_exit).
+rotation when holding: the event market-yes leader may trigger a switch when its
+YES is >= held_yes + MOMENTUM_SWITCH_ABOVE_HELD_GAP plus absolute momentum rise
+and momentum price band (see detect_momentum_switch / momentum_competitor_dominates_held_exit).
 """
 
 from __future__ import annotations
@@ -39,9 +39,9 @@ from strategy.competition_filter import (
     market_yes_lead_gap_vs_runner_up,
 )
 from strategy.momentum_engine import (
+    absolute_price_change_in_window,
     momentum_entry_signal,
     peer_surge_detected,
-    price_change_in_window,
     should_fast_exit,
     top_price_change_peers,
     yes_rank_by_market_prob,
@@ -56,6 +56,26 @@ from strategy.time_filter import should_time_decay_exit
 
 DECISION_LOG_MAX = 200
 _decision_log: Deque[Dict[str, Any]] = collections.deque(maxlen=DECISION_LOG_MAX)
+
+
+def momentum_window_sec(settings: RuntimeSettings) -> float:
+    w = float(getattr(settings, "momentum_window_seconds", C.MOMENTUM_WINDOW_SECONDS))
+    return max(120.0, min(7200.0, w))
+
+
+def momentum_fast_exit_drop(settings: RuntimeSettings) -> float:
+    d = float(getattr(settings, "momentum_fast_exit_drop", C.MOMENTUM_FAST_EXIT_DROP))
+    return max(0.01, min(0.95, d))
+
+
+def momentum_competitor_surge_thr(settings: RuntimeSettings) -> float:
+    s = float(getattr(settings, "momentum_competitor_surge", C.MOMENTUM_COMPETITOR_SURGE))
+    return max(0.01, min(0.95, s))
+
+
+def momentum_entry_rise_thr(settings: RuntimeSettings) -> float:
+    r = float(getattr(settings, "momentum_entry_rise", C.MOMENTUM_ENTRY_RISE))
+    return max(0.01, min(0.95, r))
 
 
 def get_recent_decisions(limit: int = 50) -> List[Dict[str, Any]]:
@@ -187,8 +207,8 @@ def detect_momentum_switch(
     settings: RuntimeSettings,
 ) -> Optional[Tuple[Dict[str, Any], str]]:
     """
-    if we hold another bucket in the same event and this bucket is #1 by market YES,
-    rose >= entry-rise in 15m, is in the momentum price band, and YES >= held_yes + gap,
+    if we hold another bucket in the same event and this scanned bucket shows entry-style
+    momentum, is in the momentum price band, and YES >= held_yes + gap,
     return (held_market_dict, held_state_key) so the runner can sell held then BUY here.
 
     returns:
@@ -223,10 +243,12 @@ def detect_momentum_switch(
     if not siblings:
         return None
 
+    wsec = momentum_window_sec(settings)
+    rise_thr = momentum_entry_rise_thr(settings)
     mom_signal, _ = momentum_entry_signal(
         target_mid,
-        rise_threshold=C.MOMENTUM_ENTRY_RISE,
-        window_sec=C.MOMENTUM_WINDOW_SECONDS,
+        rise_threshold=rise_thr,
+        window_sec=wsec,
     )
     if not mom_signal:
         return None
@@ -234,10 +256,6 @@ def detect_momentum_switch(
     mom_min = float(getattr(settings, "momentum_min_price", C.MOMENTUM_MIN_PRICE))
     mom_max = float(getattr(settings, "momentum_max_entry", C.MOMENTUM_MAX_ENTRY))
     if not (mom_min - 1e-12 <= target_yes <= mom_max + 1e-12):
-        return None
-
-    rank = yes_rank_by_market_prob(target_mid, siblings)
-    if rank != 1:
         return None
 
     held_yes = float(held_row.get("last_price") or held_row.get("entry_price") or 0.0)
@@ -265,8 +283,8 @@ def momentum_competitor_dominates_held_exit(
     client: PolymarketClient,
 ) -> Tuple[Optional[str], Optional[float]]:
     """
-    sell held when another bucket is #1 by market YES, has entry-style momentum,
-    is inside the momentum price band, and leads us by at least MOMENTUM_SWITCH_ABOVE_HELD_GAP.
+    sell held when another sibling bucket has entry-style momentum, is inside the momentum
+    price band, and leads us by at least MOMENTUM_SWITCH_ABOVE_HELD_GAP (best YES wins ties).
 
     returns:
     - (reason, ref_gamma_yes) or (None, None).
@@ -280,38 +298,37 @@ def momentum_competitor_dominates_held_exit(
     if len(siblings) < 2:
         return None, None
 
-    scored: List[Tuple[str, float, Dict[str, Any]]] = []
+    wsec = momentum_window_sec(settings)
+    rise_thr = momentum_entry_rise_thr(settings)
+    mom_min = float(getattr(settings, "momentum_min_price", C.MOMENTUM_MIN_PRICE))
+    mom_max = float(getattr(settings, "momentum_max_entry", C.MOMENTUM_MAX_ENTRY))
+    gap = float(C.MOMENTUM_SWITCH_ABOVE_HELD_GAP)
+
+    candidates: List[Tuple[float, str]] = []
     for m in siblings:
         if not isinstance(m, dict):
             continue
         mid = str(m.get("id") or "").strip()
-        if not mid:
+        if not mid or mid == market_id:
             continue
-        scored.append((mid, parse_market_probability(m), m))
-    if not scored:
-        return None, None
-    scored.sort(key=lambda x: -x[1])
-    leader_mid, leader_yes, _leader_m = scored[0]
-    if leader_mid == market_id:
+        yes = float(parse_market_probability(m))
+        if yes + 1e-12 < held_mark_yes + gap:
+            continue
+        if not (mom_min - 1e-12 <= yes <= mom_max + 1e-12):
+            continue
+        sig, _ = momentum_entry_signal(
+            mid,
+            rise_threshold=rise_thr,
+            window_sec=wsec,
+        )
+        if not sig:
+            continue
+        candidates.append((yes, mid))
+
+    if not candidates:
         return None, None
 
-    mom_signal, _ = momentum_entry_signal(
-        leader_mid,
-        rise_threshold=C.MOMENTUM_ENTRY_RISE,
-        window_sec=C.MOMENTUM_WINDOW_SECONDS,
-    )
-    if not mom_signal:
-        return None, None
-
-    mom_min = float(getattr(settings, "momentum_min_price", C.MOMENTUM_MIN_PRICE))
-    mom_max = float(getattr(settings, "momentum_max_entry", C.MOMENTUM_MAX_ENTRY))
-    if not (mom_min - 1e-12 <= leader_yes <= mom_max + 1e-12):
-        return None, None
-
-    gap = float(C.MOMENTUM_SWITCH_ABOVE_HELD_GAP)
-    if leader_yes + 1e-12 < held_mark_yes + gap:
-        return None, None
-
+    candidates.sort(key=lambda x: -x[0])
     gamma_prob = parse_market_probability(market)
     return "momentum-competitor-dominant", float(gamma_prob)
 
@@ -381,10 +398,11 @@ def evaluate_entry(
             event_cache[ev_id] = client.get_markets_for_event_id(ev_id)
         siblings = list(event_cache.get(ev_id) or [])
 
+    wsec = momentum_window_sec(settings)
     rank = yes_rank_by_market_prob(market_id, siblings) if siblings else 1
     peer_ids = sorted({str(x).strip() for x in ev_mids if str(x).strip()})
     top_changes = top_price_change_peers(
-        peer_ids, window_sec=C.MOMENTUM_WINDOW_SECONDS, top_n=3
+        peer_ids, window_sec=wsec, top_n=3
     )
 
     min_lead_mkt = float(
@@ -396,34 +414,41 @@ def evaluate_entry(
         else (1.0, 0.0)
     )
 
+    rise_thr = momentum_entry_rise_thr(settings)
     mom_signal, mom_rise = momentum_entry_signal(
         market_id,
-        rise_threshold=C.MOMENTUM_ENTRY_RISE,
-        window_sec=C.MOMENTUM_WINDOW_SECONDS,
+        rise_threshold=rise_thr,
+        window_sec=wsec,
     )
     mom_min = float(getattr(settings, "momentum_min_price", C.MOMENTUM_MIN_PRICE))
     mom_max = float(getattr(settings, "momentum_max_entry", C.MOMENTUM_MAX_ENTRY))
 
-    # double momentum: ≥30% rise → wider price band (0.40-0.80)
-    dbl_rise_thr = float(getattr(settings, "double_momentum_entry_rise", C.DOUBLE_MOMENTUM_ENTRY_RISE))
-    dbl_min = float(getattr(settings, "double_momentum_min_price", C.DOUBLE_MOMENTUM_MIN_PRICE))
-    dbl_max = float(getattr(settings, "double_momentum_max_price", C.DOUBLE_MOMENTUM_MAX_PRICE))
+    # double momentum: +0.30 points → wider price band.
+    dbl_rise_thr = float(
+        getattr(settings, "double_momentum_entry_rise", C.DOUBLE_MOMENTUM_ENTRY_RISE)
+    )
+    dbl_min = float(
+        getattr(settings, "double_momentum_min_price", C.DOUBLE_MOMENTUM_MIN_PRICE)
+    )
+    dbl_max = float(
+        getattr(settings, "double_momentum_max_price", C.DOUBLE_MOMENTUM_MAX_PRICE)
+    )
     is_double_momentum = (
         mom_rise >= dbl_rise_thr
         and dbl_min - 1e-12 <= mkt <= dbl_max + 1e-12
-        and rank == 1
-        # User requested: Double momentum doesn't need to lead by min_lead_mkt (X%)
     )
 
-    # standard momentum: ≥15% rise → normal band (0.65-0.80)
+    # standard momentum: +0.15 points → momentum band. rank/lead are logged only.
     is_momentum_entry = is_double_momentum or (
         mom_signal
         and mom_min - 1e-12 <= mkt <= mom_max + 1e-12
-        and rank == 1
-        and market_lead_gap + 1e-12 >= min_lead_mkt
     )
 
-    _, _, momentum_15m = price_change_in_window(market_id, C.MOMENTUM_WINDOW_SECONDS)
+    _, _, momentum_15m = absolute_price_change_in_window(
+        market_id,
+        wsec,
+        min_samples=C.MOMENTUM_MIN_SAMPLE_POINTS,
+    )
 
     def _resolve_entry_type() -> str:
         if is_double_momentum:
@@ -465,14 +490,14 @@ def evaluate_entry(
             {
                 "market_id": market_id,
                 "city": city,
-                "momentum_15m_pct": round(float(momentum_15m) * 100.0, 2),
-                "window_rise_pct": round(float(mom_rise) * 100.0, 2),
+                "momentum_15m_points": round(float(momentum_15m), 4),
+                "window_rise_points": round(float(mom_rise), 4),
                 "yes_rank": int(rank),
                 "market_lead_gap": round(float(market_lead_gap), 4),
                 "runner_up_yes": round(float(runner_up_yes), 4),
                 "min_lead_required": round(float(min_lead_mkt), 4),
-                "top_peers_15m_pct": [
-                    {"id": pid, "chg_pct": round(float(ch) * 100.0, 2)}
+                "top_peers_15m_points": [
+                    {"id": pid, "chg_points": round(float(ch), 4)}
                     for pid, ch in top_changes
                 ],
                 "decision": decision,
@@ -550,7 +575,7 @@ def evaluate_entry(
     if momentum_15m < -0.10 and not is_momentum_entry:
         return finish(
             "SKIP",
-            f"negative_momentum {momentum_15m:+.1%} in 15m",
+            f"negative_momentum {momentum_15m:+.3f} points in 15m",
             competition=comp,
         )
 
@@ -628,10 +653,11 @@ def check_exits(
     entry = float(trade.get("entry_price") or 0)
 
     # 1. fast stop-loss: absolute price drop from peak in 15m window, mark below entry
+    wsec = momentum_window_sec(settings)
     fast_exit, dd = should_fast_exit(
         market_id,
-        drop_threshold=C.MOMENTUM_FAST_EXIT_DROP,
-        window_sec=C.MOMENTUM_WINDOW_SECONDS,
+        drop_threshold=momentum_fast_exit_drop(settings),
+        window_sec=wsec,
     )
     if fast_exit and mark < entry:
         return "momentum-stop-loss", gamma_prob
@@ -647,13 +673,13 @@ def check_exits(
     if dom_reason:
         return dom_reason, dom_ref
 
-    # 2. competitor surge: sibling bucket +15% in 15 minutes
+    # 2. competitor surge: sibling bucket +0.15 price points in 15 minutes
     peers = peer_market_ids_excluding_self(client, market, event_cache)
     if peers:
         surged, surge_mid, surge_pct = peer_surge_detected(
             peers,
-            surge_threshold=C.MOMENTUM_COMPETITOR_SURGE,
-            window_sec=C.MOMENTUM_WINDOW_SECONDS,
+            surge_threshold=momentum_competitor_surge_thr(settings),
+            window_sec=wsec,
         )
         if surged:
             return "competitor-surge", gamma_prob
@@ -662,9 +688,11 @@ def check_exits(
     decay_exit, decay_reason = should_time_decay_exit(
         trade,
         current_price=mark,
-        decay_hours=C.TIME_DECAY_HOURS,
-        min_gain_pct=C.TIME_DECAY_MIN_GAIN,
-        max_price_for_decay=C.TIME_DECAY_MAX_PRICE,
+        decay_hours=float(getattr(settings, "time_decay_hours", C.TIME_DECAY_HOURS)),
+        min_gain_points=float(getattr(settings, "time_decay_min_gain", C.TIME_DECAY_MIN_GAIN)),
+        max_price_for_decay=float(
+            getattr(settings, "time_decay_max_price", C.TIME_DECAY_MAX_PRICE)
+        ),
     )
     if decay_exit:
         return "time-decay", gamma_prob

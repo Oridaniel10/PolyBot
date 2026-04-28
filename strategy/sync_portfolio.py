@@ -20,6 +20,32 @@ def normalize_positions(positions: List[Dict[str, Any]]) -> Dict[str, Dict[str, 
     return normalized
 
 
+def prune_recent_sells(state: Dict[str, Any]) -> Dict[str, Any]:
+    recent = state.get("recent_sells") or {}
+    if not isinstance(recent, dict):
+        state["recent_sells"] = {}
+        return {}
+    bucket = recent.get("market") or {}
+    if not isinstance(bucket, dict):
+        recent["market"] = {}
+        return recent
+    now = time.time()
+    for market_id, until in list(bucket.items()):
+        if now >= float(until or 0.0):
+            bucket.pop(market_id, None)
+    return recent
+
+
+def recent_sell_active(state: Dict[str, Any], market_id: str) -> bool:
+    if not market_id:
+        return False
+    recent = prune_recent_sells(state)
+    bucket = recent.get("market") if isinstance(recent, dict) else {}
+    if not isinstance(bucket, dict):
+        return False
+    return time.time() < float(bucket.get(market_id) or 0.0)
+
+
 def sync_state_with_portfolio(
     client: PolymarketClient, state: Dict[str, Any]
 ) -> Dict[str, Any]:
@@ -43,6 +69,8 @@ def sync_state_with_portfolio(
     for pos_key, position in normalized_positions.items():
         mid = str(position.get("market_id") or position.get("marketId") or "").strip()
         cid = str(position.get("condition_id") or "").strip()
+        if recent_sell_active(state, mid or pos_key):
+            continue
         state_key = mid or pos_key
 
         prev = active_trades.get(state_key, {})

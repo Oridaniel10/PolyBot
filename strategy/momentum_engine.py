@@ -7,13 +7,11 @@ computation instead of first/last approximation.
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
+from config import constants as C
 from strategy.probability import parse_market_probability
 from strategy.momentum import (
-    append_price_sample,
+    load_sample_window_for_market,
     load_samples_for_market,
-    prune_old_price_sample_files,
-    record_samples_for_market_dicts,
-    trim_price_samples_async,
 )
 
 
@@ -38,6 +36,29 @@ def price_change_in_window(
         return old_price, new_price, 0.0
     change = (new_price - old_price) / old_price
     return old_price, new_price, change
+
+
+def absolute_price_change_in_window(
+    market_id: str,
+    window_sec: float = 900.0,
+    now_ts: Optional[float] = None,
+    min_samples: int = 2,
+) -> Tuple[float, float, float]:
+    """
+    compute absolute YES-price change over window.
+
+    returns:
+    - (oldest_price, newest_price, change_points).
+    """
+    now_ts = now_ts or time.time()
+    window = load_sample_window_for_market(market_id, window_sec, now_ts)
+    if window.count < max(2, int(min_samples)):
+        return 0.0, 0.0, 0.0
+    return (
+        window.oldest_price,
+        window.newest_price,
+        window.newest_price - window.oldest_price,
+    )
 
 
 def max_drawdown_in_window(
@@ -92,7 +113,7 @@ def peer_surge_detected(
     check if any peer bucket surged above threshold.
 
     returns:
-    - (detected, surging_market_id, rise_pct).
+    - (detected, surging_market_id, rise_points).
     """
     now_ts = now_ts or time.time()
     best_rise = 0.0
@@ -101,7 +122,12 @@ def peer_surge_detected(
         pid = str(pid).strip()
         if not pid:
             continue
-        _, _, change = price_change_in_window(pid, window_sec, now_ts)
+        _, _, change = absolute_price_change_in_window(
+            pid,
+            window_sec,
+            now_ts,
+            min_samples=C.MOMENTUM_MIN_SAMPLE_POINTS,
+        )
         if change > best_rise:
             best_rise = change
             best_mid = pid
@@ -118,9 +144,14 @@ def momentum_entry_signal(
     check if this bucket has positive momentum for entry.
 
     returns:
-    - (signal_active, rise_pct).
+    - (signal_active, rise_points).
     """
-    _, _, change = price_change_in_window(market_id, window_sec, now_ts)
+    _, _, change = absolute_price_change_in_window(
+        market_id,
+        window_sec,
+        now_ts,
+        min_samples=C.MOMENTUM_MIN_SAMPLE_POINTS,
+    )
     return change >= rise_threshold, change
 
 
@@ -152,10 +183,10 @@ def top_price_change_peers(
     top_n: int = 3,
 ) -> List[Tuple[str, float]]:
     """
-    peers sorted by 15m fractional price change (best first).
+    peers sorted by 15m absolute price change (best first).
 
     returns:
-    - up to top_n (market_id, change_pct) pairs.
+    - up to top_n (market_id, change_points) pairs.
     """
     now_ts = now_ts or time.time()
     out: List[Tuple[str, float]] = []
@@ -163,7 +194,12 @@ def top_price_change_peers(
         mid = str(raw).strip()
         if not mid:
             continue
-        _, _, ch = price_change_in_window(mid, window_sec, now_ts)
+        _, _, ch = absolute_price_change_in_window(
+            mid,
+            window_sec,
+            now_ts,
+            min_samples=C.MOMENTUM_MIN_SAMPLE_POINTS,
+        )
         out.append((mid, ch))
     out.sort(key=lambda x: -x[1])
     return out[: max(0, int(top_n))]
