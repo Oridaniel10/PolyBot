@@ -575,6 +575,8 @@ def place_buy(
         led_buy["decision_market_prob"] = round(trade_decision.market_prob, 6)
         led_buy["decision_edge"] = round(trade_decision.edge, 6)
         led_buy["decision_reason"] = str(trade_decision.reason)[:200]
+    else:
+        led_buy["decision_reason"] = "bot_buy_without_decision_object"
     append_ledger_row(led_buy)
     balance_after = client.get_portfolio_balance(force_allowance_refresh=False)
     cash_after = float(balance_after.get("cash") or 0)
@@ -589,11 +591,15 @@ def place_buy(
         "shares": round(shares, 4),
         "usd": round(usd, 2),
         "reason": (
-            str(trade_decision.reason)[:160] if trade_decision is not None else "buy"
+            str(trade_decision.reason)[:160]
+            if trade_decision is not None
+            else "bot_buy_without_decision_object"
         ),
         "entry_type": str(entry_type),
         "decision_reason": (
-            str(trade_decision.reason)[:200] if trade_decision is not None else ""
+            str(trade_decision.reason)[:200]
+            if trade_decision is not None
+            else "bot_buy_without_decision_object"
         ),
         "entry_price": round(probability, 4),
         "pnl_usd": 0.0,

@@ -47,10 +47,10 @@ SELL_BELOW_MIN_TELEGRAM_COOLDOWN_SEC = 1800
 # ═══════════════════════════════════════════════════════════════════════
 
 # ─── Normal entry (model/edge-based) ─────────────────────────────────
-BUY_MIN_THRESHOLD = 0.65
-BUY_MAX_THRESHOLD = 0.85
+BUY_MIN_THRESHOLD = 0.78
+BUY_MAX_THRESHOLD = 0.88
 BUY_DISABLE_PRICE_BAND = False
-STOP_LOSS_NORMAL = 0.55
+STOP_LOSS_NORMAL = 0.50
 
 # ─── Momentum entry (+0.15 price points in 15 min) ───────────────────
 MOMENTUM_ENTRY_RISE = 0.15  # min absolute YES-price rise to qualify
@@ -210,7 +210,7 @@ FORECAST_WEAK_SIZE_FACTOR = 0.75
 RESEARCH_EXIT_ON_MODEL_FLIP = False
 
 # model-implied P(YES) vs CLOB gate (decision engine)
-RESEARCH_EDGE_GATE_BUY = True
+RESEARCH_EDGE_GATE_BUY = False
 RESEARCH_MIN_EDGE = 0.08
 # added on top of min_edge plus taker fee drag (probability-scale cushion)
 RESEARCH_MIN_EDGE_AFTER_FEES_ADD = 0.0
@@ -228,10 +228,10 @@ BUY_LATEST_LOCAL_HOUR = 24
 
 # decision engine: do not buy dominant-crowd buckets or ultra-weak model buckets
 MAX_MARKET_PROB_FOR_BUY = 0.99
-MIN_MODEL_PROB_FOR_BUY = 0.10
+MIN_MODEL_PROB_FOR_BUY = 0.0
 MAX_POSITIONS_PER_EVENT = 1
 # skip BUY if implied P(YES) for this strike is below this (flat tail / low conviction)
-DECISION_MIN_MODEL_PEAK_PROB = 0.12
+DECISION_MIN_MODEL_PEAK_PROB = 0.0
 
 # peer YES surge — sibling bucket momentum (same gamma event)
 ENABLE_PEER_SURGE_EXIT = True
