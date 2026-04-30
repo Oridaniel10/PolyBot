@@ -103,10 +103,12 @@ python app/dashboard.py
 Merged **each tick** with env-backed sizing. Keys include:
 
 - `buy_min_threshold`, `buy_max_threshold`, `stop_loss_normal`, `stop_loss_momentum`, `stop_loss_double_momentum`, `take_profit_threshold`
+- `stop_loss_normal_entry_drop_pct`, `stop_loss_momentum_entry_drop_pct`, `stop_loss_double_momentum_entry_drop_pct` (entry-relative SL extension)
 - `min_lead_over_runner_up`, `enable_competition_filter` — require YES lead vs next-best sibling market in the same Gamma **event**
-- `momentum_window_seconds`, `momentum_fast_exit_drop`, `momentum_competitor_surge`, `momentum_entry_rise` — momentum window + absolute point thresholds (defaults in `config/constants.py`)
+- `momentum_window_seconds`, `momentum_fast_exit_drop`, `momentum_competitor_surge`, `momentum_entry_rise`, `momentum_pct_rise`, `momentum_min_start_price`
+- `double_momentum_entry_rise`, `double_momentum_pct_rise`, `double_momentum_min_start_price`, `double_momentum_min_price`, `double_momentum_max_price`
 - `time_decay_hours`, `time_decay_min_gain`, `time_decay_max_price` — time-decay uses **absolute YES points** gain vs entry, not percent of entry
-- `momentum_min_price`, `momentum_max_entry`, `double_momentum_entry_rise`, `double_momentum_min_price`, `double_momentum_max_price`
+- `churn_event_loss_1_cooldown_sec`, `churn_event_loss_2_cooldown_sec`, `leader_switch_window_sec`, `leader_switch_max_count`, `unstable_event_cooldown_sec`
 - `churn_max_stop_cycles`, `churn_cooldown_sec` — after N **stop-loss** exits, buy cooldown (default 1 cycle, 20 minutes); **take-profit resets** the counter
 - `blacklist_market_ids` — extra IDs blocked for buys (merged with daily blacklist file)
 - `cash_reserve_usd` — dollars of free cash **excluded** from buy sizing; default **3** in `config/constants.py` and often overridden live in `data/runtime_config.json`. `max_trade_fraction_of_cash` applies to **tradable** cash only (`cash − reserve`).
@@ -142,7 +144,11 @@ Append-only `data/price_samples/YYYY-MM-DD.jsonl` (one line per market per tick 
 
 ## Stop-loss (per-type) and the fast-exit watcher
 
-Stop-loss bar depends on `entry_type` stored at buy time (`normal` → 0.55, `momentum` → 0.45, `double_momentum` → 0.30). Two paths check it:
+Stop-loss now uses **effective stop** from `entry_type` and entry price:
+
+`effective_stop = max(stop_loss_by_type, entry_price * (1 - entry_drop_pct_by_type))`
+
+Two paths check it:
 
 1. **Main loop** (~30s): `stop_loss_reference_if_triggered` in `strategy/probability.py`.
 2. **Fast exit watcher** (`strategy/fast_exit_watcher.py`, default 2s): polls **live CLOB orderbook** via `get_clob_yes_price_live_by_id` (best ask / midpoint), bypassing the stale Gamma `bestAsk` cache that previously caused SL to miss real drops. The watcher writes the fresh price back into `trade_row["last_price"]` so the slow loop also sees current data.

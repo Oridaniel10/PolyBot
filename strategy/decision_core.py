@@ -23,7 +23,7 @@ import collections
 import json
 import time
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from typing import Any, Deque, Dict, List, Optional, Set, Tuple
 
 from notifications.terminal import TERM_DIM, term_wrap
@@ -41,8 +41,9 @@ from strategy.competition_filter import (
 from strategy.momentum_engine import (
     absolute_price_change_in_window,
     momentum_entry_signal,
+    momentum_entry_signal_with_pct,
     peer_surge_detected,
-    should_fast_exit,
+    should_fast_exit_since_ts,
     top_price_change_peers,
     yes_rank_by_market_prob,
 )
@@ -76,6 +77,18 @@ def momentum_competitor_surge_thr(settings: RuntimeSettings) -> float:
 def momentum_entry_rise_thr(settings: RuntimeSettings) -> float:
     r = float(getattr(settings, "momentum_entry_rise", C.MOMENTUM_ENTRY_RISE))
     return max(0.01, min(0.95, r))
+
+
+def momentum_entry_pct_rise_thr(settings: RuntimeSettings) -> float:
+    r = float(getattr(settings, "momentum_pct_rise", C.MOMENTUM_PCT_RISE))
+    return max(0.01, min(10.0, r))
+
+
+def double_momentum_entry_pct_rise_thr(settings: RuntimeSettings) -> float:
+    r = float(
+        getattr(settings, "double_momentum_pct_rise", C.DOUBLE_MOMENTUM_PCT_RISE)
+    )
+    return max(0.01, min(10.0, r))
 
 
 def get_recent_decisions(limit: int = 50) -> List[Dict[str, Any]]:
@@ -415,17 +428,35 @@ def evaluate_entry(
     )
 
     rise_thr = momentum_entry_rise_thr(settings)
-    mom_signal, mom_rise = momentum_entry_signal(
-        market_id,
-        rise_threshold=rise_thr,
-        window_sec=wsec,
+    rise_pct_thr = momentum_entry_pct_rise_thr(settings)
+    mom_start_min = float(
+        getattr(settings, "momentum_min_start_price", C.MOMENTUM_MIN_START_PRICE)
     )
     mom_min = float(getattr(settings, "momentum_min_price", C.MOMENTUM_MIN_PRICE))
     mom_max = float(getattr(settings, "momentum_max_entry", C.MOMENTUM_MAX_ENTRY))
+    mom_signal, mom_old, mom_new, mom_rise, mom_rise_pct, mom_reason = (
+        momentum_entry_signal_with_pct(
+            market_id=market_id,
+            abs_rise_threshold=rise_thr,
+            pct_rise_threshold=rise_pct_thr,
+            window_sec=wsec,
+            min_start_price=mom_start_min,
+            min_current_price=mom_min,
+            max_current_price=mom_max,
+        )
+    )
 
-    # double momentum: +0.30 points → wider price band.
+    # double momentum: abs + pct with wider price band.
     dbl_rise_thr = float(
         getattr(settings, "double_momentum_entry_rise", C.DOUBLE_MOMENTUM_ENTRY_RISE)
+    )
+    dbl_rise_pct_thr = double_momentum_entry_pct_rise_thr(settings)
+    dbl_start_min = float(
+        getattr(
+            settings,
+            "double_momentum_min_start_price",
+            C.DOUBLE_MOMENTUM_MIN_START_PRICE,
+        )
     )
     dbl_min = float(
         getattr(settings, "double_momentum_min_price", C.DOUBLE_MOMENTUM_MIN_PRICE)
@@ -433,16 +464,21 @@ def evaluate_entry(
     dbl_max = float(
         getattr(settings, "double_momentum_max_price", C.DOUBLE_MOMENTUM_MAX_PRICE)
     )
-    is_double_momentum = (
-        mom_rise >= dbl_rise_thr
-        and dbl_min - 1e-12 <= mkt <= dbl_max + 1e-12
+    dbl_signal, dbl_old, dbl_new, dbl_abs_rise, dbl_pct_rise, dbl_reason = (
+        momentum_entry_signal_with_pct(
+            market_id=market_id,
+            abs_rise_threshold=dbl_rise_thr,
+            pct_rise_threshold=dbl_rise_pct_thr,
+            window_sec=wsec,
+            min_start_price=dbl_start_min,
+            min_current_price=dbl_min,
+            max_current_price=dbl_max,
+        )
     )
+    is_double_momentum = bool(dbl_signal)
 
-    # standard momentum: +0.15 points → momentum band. rank/lead are logged only.
-    is_momentum_entry = is_double_momentum or (
-        mom_signal
-        and mom_min - 1e-12 <= mkt <= mom_max + 1e-12
-    )
+    # standard momentum: abs + pct in tighter band.
+    is_momentum_entry = bool(is_double_momentum or mom_signal)
 
     _, _, momentum_15m = absolute_price_change_in_window(
         market_id,
@@ -492,6 +528,15 @@ def evaluate_entry(
                 "city": city,
                 "momentum_15m_points": round(float(momentum_15m), 4),
                 "window_rise_points": round(float(mom_rise), 4),
+                "window_rise_pct": round(float(mom_rise_pct), 4),
+                "momentum_reason": mom_reason,
+                "momentum_old_price": round(float(mom_old), 4),
+                "momentum_new_price": round(float(mom_new), 4),
+                "double_window_rise_points": round(float(dbl_abs_rise), 4),
+                "double_window_rise_pct": round(float(dbl_pct_rise), 4),
+                "double_momentum_reason": dbl_reason,
+                "double_old_price": round(float(dbl_old), 4),
+                "double_new_price": round(float(dbl_new), 4),
                 "yes_rank": int(rank),
                 "market_lead_gap": round(float(market_lead_gap), 4),
                 "runner_up_yes": round(float(runner_up_yes), 4),
@@ -510,9 +555,17 @@ def evaluate_entry(
         return td
 
     # 0. event-level churn — block after repeated losses on same event
-    from strategy.churn import churn_event_allows_buy
+    from strategy.churn import (
+        churn_event_allows_buy,
+        churn_event_recent_stoploss_active,
+        churn_event_unstable_active,
+    )
     if ev_id and not churn_event_allows_buy(state, ev_id):
         return finish("SKIP", f"event_churn_cooldown active for {ev_id}")
+    if ev_id and churn_event_recent_stoploss_active(state, ev_id):
+        return finish("SKIP", f"event_recent_stoploss cooldown active for {ev_id}")
+    if ev_id and churn_event_unstable_active(state, ev_id):
+        return finish("SKIP", f"event_unstable cooldown active for {ev_id}")
 
     # 1. event cooldown
     if ev_id and event_buy_cooldown_active(state, ev_id):
@@ -630,6 +683,47 @@ def stop_loss_bar_for_entry_type(
     return float(getattr(settings, "stop_loss_normal", C.STOP_LOSS_NORMAL))
 
 
+def stop_loss_entry_drop_pct_for_entry_type(
+    entry_type: str,
+    settings: RuntimeSettings,
+) -> float:
+    et = str(entry_type or "normal").strip()
+    if et == "double_momentum":
+        return float(
+            getattr(
+                settings,
+                "stop_loss_double_momentum_entry_drop_pct",
+                C.STOP_LOSS_DOUBLE_MOMENTUM_ENTRY_DROP_PCT,
+            )
+        )
+    if et == "momentum":
+        return float(
+            getattr(
+                settings,
+                "stop_loss_momentum_entry_drop_pct",
+                C.STOP_LOSS_MOMENTUM_ENTRY_DROP_PCT,
+            )
+        )
+    return float(
+        getattr(
+            settings,
+            "stop_loss_normal_entry_drop_pct",
+            C.STOP_LOSS_NORMAL_ENTRY_DROP_PCT,
+        )
+    )
+
+
+def effective_stop_price_for_trade(
+    entry_type: str,
+    entry_price: float,
+    settings: RuntimeSettings,
+) -> float:
+    hard_floor = stop_loss_bar_for_entry_type(entry_type, settings)
+    drop_pct = stop_loss_entry_drop_pct_for_entry_type(entry_type, settings)
+    entry_relative = max(0.0, float(entry_price) * (1.0 - float(drop_pct)))
+    return max(float(hard_floor), float(entry_relative))
+
+
 def check_exits(
     market: Dict[str, Any],
     trade: Dict[str, Any],
@@ -651,14 +745,24 @@ def check_exits(
     gamma_prob = parse_market_probability(market)
     mark = float(trade.get("last_price") or gamma_prob)
     entry = float(trade.get("entry_price") or 0)
+    entry_time_utc = str(trade.get("entry_time_utc") or "").strip()
 
-    # 1. fast stop-loss: absolute price drop from peak in 15m window, mark below entry
+    # 1. fast stop-loss: absolute price drop since entry, capped by the 15m window
     wsec = momentum_window_sec(settings)
-    fast_exit, dd = should_fast_exit(
-        market_id,
-        drop_threshold=momentum_fast_exit_drop(settings),
-        window_sec=wsec,
-    )
+    fast_exit = False
+    dd = 0.0
+    if entry_time_utc:
+        try:
+            entry_ts = datetime.fromisoformat(entry_time_utc).timestamp()
+        except ValueError:
+            entry_ts = 0.0
+        if entry_ts > 0:
+            fast_exit, dd = should_fast_exit_since_ts(
+                market_id,
+                since_ts=entry_ts,
+                drop_threshold=momentum_fast_exit_drop(settings),
+                window_sec=wsec,
+            )
     if fast_exit and mark < entry:
         return "momentum-stop-loss", gamma_prob
 

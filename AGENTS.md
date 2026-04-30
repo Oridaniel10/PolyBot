@@ -8,6 +8,20 @@ Polymarket migrated the exchange to **CLOB v2** on **2026-04-28**. The bot uses 
 
 Decisions are **price-driven** (band, momentum, competition, SL, TP, time-decay). The forecast/research/calibration model still runs and is shown for context, but the runtime gates `research_edge_gate_buy`, `min_model_prob_for_buy`, and `decision_min_model_peak_prob` default to **off / 0.0** in `data/runtime_config.json`. A market with no forecast still trades through price-based gates.
 
+Momentum now supports **absolute OR percentage rise** checks with start/current price guards:
+- `momentum_entry_rise` OR `momentum_pct_rise`
+- `double_momentum_entry_rise` OR `double_momentum_pct_rise`
+
+Stop-loss now uses an **effective stop**:
+- per-type hard floor (`stop_loss_*`)
+- plus entry-relative drop (`stop_loss_*_entry_drop_pct`)
+- effective stop = `max(hard_floor, entry_price * (1 - drop_pct))`
+
+Event churn is stricter:
+- tiered loss cooldowns (`churn_event_loss_1_cooldown_sec`, `churn_event_loss_2_cooldown_sec`)
+- short event block right after stop-loss to prevent sibling re-entry churn
+- unstable event detector from rapid leader switches (`leader_switch_*`, `unstable_event_cooldown_sec`)
+
 ## Architecture
 
 - **Anchor:** trading flow stays `run_bot` → `sync_state_with_portfolio` → `run_once` → `process_single_market` → `place_buy` / `close_position` / `claim_position` in `strategy/trades.py` and `strategy/loop.py`.

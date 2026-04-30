@@ -17,17 +17,41 @@ def _ensure_data_dir() -> None:
 
 def default_runtime_dict() -> Dict[str, Any]:
     return {
+        # normal: buy band + sell stop-loss
         "buy_min_threshold": C.BUY_MIN_THRESHOLD,
         "buy_max_threshold": C.BUY_MAX_THRESHOLD,
         "buy_disable_price_band": C.BUY_DISABLE_PRICE_BAND,
+        "stop_loss_normal": C.STOP_LOSS_NORMAL,
+        "stop_loss_normal_entry_drop_pct": C.STOP_LOSS_NORMAL_ENTRY_DROP_PCT,
+
+        # momentum: 15m entry + sell stop-loss
+        # abs example: 0.30 -> 0.50 = +0.20
+        # pct example: 0.03 -> 0.33 = +1000%
+        "momentum_entry_rise": C.MOMENTUM_ENTRY_RISE,
+        "momentum_pct_rise": C.MOMENTUM_PCT_RISE,
+        "momentum_min_start_price": C.MOMENTUM_MIN_START_PRICE,
+        "momentum_min_price": C.MOMENTUM_MIN_PRICE,
+        "momentum_max_entry": C.MOMENTUM_MAX_ENTRY,
+        "stop_loss_momentum": C.STOP_LOSS_MOMENTUM,
+        "stop_loss_momentum_entry_drop_pct": C.STOP_LOSS_MOMENTUM_ENTRY_DROP_PCT,
+
+        # double momentum: stronger 15m entry + sell stop-loss
+        # abs example: 0.30 -> 0.70 = +0.40
+        # pct example: 0.02 -> 0.22 = +1000%
+        "double_momentum_entry_rise": C.DOUBLE_MOMENTUM_ENTRY_RISE,
+        "double_momentum_pct_rise": C.DOUBLE_MOMENTUM_PCT_RISE,
+        "double_momentum_min_start_price": C.DOUBLE_MOMENTUM_MIN_START_PRICE,
+        "double_momentum_min_price": C.DOUBLE_MOMENTUM_MIN_PRICE,
+        "double_momentum_max_price": C.DOUBLE_MOMENTUM_MAX_PRICE,
+        "stop_loss_double_momentum": C.STOP_LOSS_DOUBLE_MOMENTUM,
+        "stop_loss_double_momentum_entry_drop_pct": C.STOP_LOSS_DOUBLE_MOMENTUM_ENTRY_DROP_PCT,
+
         "take_profit_threshold": C.TAKE_PROFIT_THRESHOLD,
         "min_lead_over_runner_up": C.MIN_LEAD_OVER_RUNNER_UP,
         "enable_competition_filter": C.ENABLE_COMPETITION_FILTER,
         "enable_momentum": C.ENABLE_MOMENTUM,
         "momentum_window_min": C.MOMENTUM_WINDOW_MIN,
         "momentum_rise": C.MOMENTUM_RISE,
-        "momentum_min_price": C.MOMENTUM_MIN_PRICE,
-        "momentum_max_entry": C.MOMENTUM_MAX_ENTRY,
         "momentum_peer_drop": C.MOMENTUM_PEER_DROP,
         "churn_max_stop_cycles": C.CHURN_MAX_STOP_CYCLES,
         "churn_cooldown_sec": C.CHURN_COOLDOWN_SEC,
@@ -89,21 +113,17 @@ def default_runtime_dict() -> Dict[str, Any]:
         "momentum_window_seconds": C.MOMENTUM_WINDOW_SECONDS,
         "momentum_fast_exit_drop": C.MOMENTUM_FAST_EXIT_DROP,
         "momentum_competitor_surge": C.MOMENTUM_COMPETITOR_SURGE,
-        "momentum_entry_rise": C.MOMENTUM_ENTRY_RISE,
         "time_decay_hours": C.TIME_DECAY_HOURS,
         "time_decay_min_gain": C.TIME_DECAY_MIN_GAIN,
         "time_decay_max_price": C.TIME_DECAY_MAX_PRICE,
-        # per-type stop-loss
-        "stop_loss_normal": C.STOP_LOSS_NORMAL,
-        "stop_loss_momentum": C.STOP_LOSS_MOMENTUM,
-        "stop_loss_double_momentum": C.STOP_LOSS_DOUBLE_MOMENTUM,
-        # double momentum entry
-        "double_momentum_entry_rise": C.DOUBLE_MOMENTUM_ENTRY_RISE,
-        "double_momentum_min_price": C.DOUBLE_MOMENTUM_MIN_PRICE,
-        "double_momentum_max_price": C.DOUBLE_MOMENTUM_MAX_PRICE,
         # event-level churn
         "churn_event_max_losses": C.CHURN_EVENT_MAX_LOSSES,
         "churn_event_cooldown_sec": C.CHURN_EVENT_COOLDOWN_SEC,
+        "churn_event_loss_1_cooldown_sec": C.CHURN_EVENT_LOSS_1_COOLDOWN_SEC,
+        "churn_event_loss_2_cooldown_sec": C.CHURN_EVENT_LOSS_2_COOLDOWN_SEC,
+        "leader_switch_window_sec": C.LEADER_SWITCH_WINDOW_SEC,
+        "leader_switch_max_count": C.LEADER_SWITCH_MAX_COUNT,
+        "unstable_event_cooldown_sec": C.UNSTABLE_EVENT_COOLDOWN_SEC,
         # fast exit watcher
         "fast_exit_watcher_interval_sec": C.FAST_EXIT_WATCHER_INTERVAL_SEC,
     }
@@ -147,6 +167,9 @@ class RuntimeSettings:
     stop_loss_normal: float
     stop_loss_momentum: float
     stop_loss_double_momentum: float
+    stop_loss_normal_entry_drop_pct: float
+    stop_loss_momentum_entry_drop_pct: float
+    stop_loss_double_momentum_entry_drop_pct: float
     take_profit: float
     min_lead_over_runner_up: float
     enable_competition_filter: bool
@@ -158,6 +181,8 @@ class RuntimeSettings:
     momentum_peer_drop: float
     # double momentum entry
     double_momentum_entry_rise: float
+    double_momentum_pct_rise: float
+    double_momentum_min_start_price: float
     double_momentum_min_price: float
     double_momentum_max_price: float
     churn_max_stop_cycles: int
@@ -165,6 +190,11 @@ class RuntimeSettings:
     # event-level churn
     churn_event_max_losses: int
     churn_event_cooldown_sec: int
+    churn_event_loss_1_cooldown_sec: int
+    churn_event_loss_2_cooldown_sec: int
+    leader_switch_window_sec: int
+    leader_switch_max_count: int
+    unstable_event_cooldown_sec: int
     scan_interval_seconds: int
     min_order_notional_usd: float
     max_buy_notional_usd: float
@@ -224,6 +254,8 @@ class RuntimeSettings:
     momentum_fast_exit_drop: float
     momentum_competitor_surge: float
     momentum_entry_rise: float
+    momentum_pct_rise: float
+    momentum_min_start_price: float
     time_decay_hours: float
     time_decay_min_gain: float
     time_decay_max_price: float
@@ -331,12 +363,38 @@ class RuntimeSettings:
         mom_surge = max(0.01, min(0.95, mom_surge))
         mom_entry_rise = float(d.get("momentum_entry_rise", C.MOMENTUM_ENTRY_RISE))
         mom_entry_rise = max(0.01, min(0.95, mom_entry_rise))
+        mom_pct_rise = float(d.get("momentum_pct_rise", C.MOMENTUM_PCT_RISE))
+        mom_pct_rise = max(0.01, min(10.0, mom_pct_rise))
+        mom_min_start = float(
+            d.get("momentum_min_start_price", C.MOMENTUM_MIN_START_PRICE)
+        )
+        mom_min_start = max(0.001, min(0.99, mom_min_start))
         td_hours = float(d.get("time_decay_hours", C.TIME_DECAY_HOURS))
         td_hours = max(0.25, min(48.0, td_hours))
         td_min_gain = float(d.get("time_decay_min_gain", C.TIME_DECAY_MIN_GAIN))
         td_min_gain = max(0.0, min(0.5, td_min_gain))
         td_max_px = float(d.get("time_decay_max_price", C.TIME_DECAY_MAX_PRICE))
         td_max_px = max(0.05, min(0.99, td_max_px))
+        churn_l1 = int(
+            d.get("churn_event_loss_1_cooldown_sec", C.CHURN_EVENT_LOSS_1_COOLDOWN_SEC)
+        )
+        churn_l1 = max(0, min(86400, churn_l1))
+        churn_l2 = int(
+            d.get("churn_event_loss_2_cooldown_sec", C.CHURN_EVENT_LOSS_2_COOLDOWN_SEC)
+        )
+        churn_l2 = max(0, min(86400, churn_l2))
+        leader_switch_window = int(
+            d.get("leader_switch_window_sec", C.LEADER_SWITCH_WINDOW_SEC)
+        )
+        leader_switch_window = max(60, min(86400, leader_switch_window))
+        leader_switch_max = int(
+            d.get("leader_switch_max_count", C.LEADER_SWITCH_MAX_COUNT)
+        )
+        leader_switch_max = max(1, min(100, leader_switch_max))
+        unstable_cd = int(
+            d.get("unstable_event_cooldown_sec", C.UNSTABLE_EVENT_COOLDOWN_SEC)
+        )
+        unstable_cd = max(0, min(86400, unstable_cd))
         return cls(
             buy_min=float(d.get("buy_min_threshold", C.BUY_MIN_THRESHOLD)),
             buy_max=float(d.get("buy_max_threshold", C.BUY_MAX_THRESHOLD)),
@@ -504,6 +562,8 @@ class RuntimeSettings:
             momentum_fast_exit_drop=mom_drop,
             momentum_competitor_surge=mom_surge,
             momentum_entry_rise=mom_entry_rise,
+            momentum_pct_rise=mom_pct_rise,
+            momentum_min_start_price=mom_min_start,
             time_decay_hours=td_hours,
             time_decay_min_gain=td_min_gain,
             time_decay_max_price=td_max_px,
@@ -518,9 +578,24 @@ class RuntimeSettings:
             stop_loss_double_momentum=max(0.01, min(0.99, float(
                 d.get("stop_loss_double_momentum", C.STOP_LOSS_DOUBLE_MOMENTUM)
             ))),
+            stop_loss_normal_entry_drop_pct=max(0.01, min(0.95, float(
+                d.get("stop_loss_normal_entry_drop_pct", C.STOP_LOSS_NORMAL_ENTRY_DROP_PCT)
+            ))),
+            stop_loss_momentum_entry_drop_pct=max(0.01, min(0.95, float(
+                d.get("stop_loss_momentum_entry_drop_pct", C.STOP_LOSS_MOMENTUM_ENTRY_DROP_PCT)
+            ))),
+            stop_loss_double_momentum_entry_drop_pct=max(0.01, min(0.95, float(
+                d.get("stop_loss_double_momentum_entry_drop_pct", C.STOP_LOSS_DOUBLE_MOMENTUM_ENTRY_DROP_PCT)
+            ))),
             # double momentum entry
             double_momentum_entry_rise=max(0.05, min(1.0, float(
                 d.get("double_momentum_entry_rise", C.DOUBLE_MOMENTUM_ENTRY_RISE)
+            ))),
+            double_momentum_pct_rise=max(0.01, min(10.0, float(
+                d.get("double_momentum_pct_rise", C.DOUBLE_MOMENTUM_PCT_RISE)
+            ))),
+            double_momentum_min_start_price=max(0.001, min(0.99, float(
+                d.get("double_momentum_min_start_price", C.DOUBLE_MOMENTUM_MIN_START_PRICE)
             ))),
             double_momentum_min_price=max(0.01, min(0.99, float(
                 d.get("double_momentum_min_price", C.DOUBLE_MOMENTUM_MIN_PRICE)
@@ -535,6 +610,11 @@ class RuntimeSettings:
             churn_event_cooldown_sec=max(0, min(86400, int(
                 d.get("churn_event_cooldown_sec", C.CHURN_EVENT_COOLDOWN_SEC)
             ))),
+            churn_event_loss_1_cooldown_sec=churn_l1,
+            churn_event_loss_2_cooldown_sec=churn_l2,
+            leader_switch_window_sec=leader_switch_window,
+            leader_switch_max_count=leader_switch_max,
+            unstable_event_cooldown_sec=unstable_cd,
             # fast exit watcher
             fast_exit_watcher_interval_sec=max(2, min(60, int(
                 d.get("fast_exit_watcher_interval_sec", C.FAST_EXIT_WATCHER_INTERVAL_SEC)

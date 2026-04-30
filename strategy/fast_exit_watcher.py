@@ -14,6 +14,7 @@ import sys
 import threading
 import time
 import traceback
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
@@ -27,9 +28,9 @@ import config.constants as C
 from config.settings import RuntimeSettings
 from polymarket_client import PolymarketClient
 from strategy.decision_core import (
+    effective_stop_price_for_trade,
     momentum_fast_exit_drop,
     momentum_window_sec,
-    stop_loss_bar_for_entry_type,
 )
 from strategy.probability import stop_loss_reference_if_triggered
 from telegram_bot import TelegramBot
@@ -145,7 +146,11 @@ class FastExitWatcher:
 
         # --- check 1: per-type stop-loss ---
         entry_type = str(trade_row.get("entry_type") or "normal").strip()
-        sl_bar = stop_loss_bar_for_entry_type(entry_type, settings)
+        sl_bar = effective_stop_price_for_trade(entry_type, entry, settings)
+        _log(
+            f"watch market={market_id} live={clob_price:.4f} entry={entry:.4f} "
+            f"effective_sl={sl_bar:.4f} type={entry_type}"
+        )
         if clob_price < sl_bar and clob_price < entry - 1e-9:
             _log(
                 f"SL trigger market={market_id} clob={clob_price:.4f} "
@@ -155,9 +160,17 @@ class FastExitWatcher:
             return
 
         # --- check 2: momentum fast exit (absolute drop in 15m window) ---
-        from strategy.momentum_engine import max_drawdown_in_window
+        from strategy.momentum_engine import max_drawdown_since_ts
         wsec = momentum_window_sec(settings)
-        dd = max_drawdown_in_window(market_id, wsec)
+        dd = 0.0
+        entry_time_utc = str(trade_row.get("entry_time_utc") or "").strip()
+        if entry_time_utc:
+            try:
+                entry_ts = datetime.fromisoformat(entry_time_utc).timestamp()
+            except ValueError:
+                entry_ts = 0.0
+            if entry_ts > 0:
+                dd = max_drawdown_since_ts(market_id, entry_ts, wsec)
         if dd >= momentum_fast_exit_drop(settings) and clob_price < entry:
             _log(
                 f"momentum-SL trigger market={market_id} dd={dd:.4f} "
@@ -167,6 +180,10 @@ class FastExitWatcher:
                 market_id, trade_row, clob_price, "momentum-stop-loss", settings
             )
             return
+        _log(
+            f"hold market={market_id} no-trigger dd={dd:.4f} "
+            f"need_dd={momentum_fast_exit_drop(settings):.4f}"
+        )
 
     def _trigger_exit(
         self,

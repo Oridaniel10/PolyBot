@@ -62,34 +62,40 @@ Each entry type defines its own price band and stop-loss threshold. Constants ar
 |----------|---------|-------|
 | `BUY_MIN_THRESHOLD` | **0.65** | `config/constants.py` |
 | `BUY_MAX_THRESHOLD` | **0.88** | `config/constants.py` (runtime) |
-| `STOP_LOSS_NORMAL` | **0.55** | `config/constants.py` |
+| `STOP_LOSS_NORMAL` | **0.50** | `config/constants.py` |
 | `MAX_MARKET_PROB_FOR_BUY` | **0.99** | `config/constants.py` |
 | `MIN_MODEL_PROB_FOR_BUY` | **0.0** (runtime) | `data/runtime_config.json` |
 | `RESEARCH_EDGE_GATE_BUY` | **false** (runtime) | `data/runtime_config.json` |
 
-Entry when price is in the band (0.65–0.88) and the candidate passes the competition filter (15% lead vs runner-up). With research and model-prob gates disabled by default, stable high-prob markets in 0.78–0.88 with no competing siblings flow through naturally. If market mark drops below **0.55** → exit.
+Entry when price is in the band (0.78–0.88) and the candidate passes the competition filter (15% lead vs runner-up). With research and model-prob gates disabled by default, stable high-prob markets in 0.78–0.88 with no competing siblings flow through naturally.
 
-### Momentum Entry (+0.15 price points in 15 min) ⚡
+### Momentum Entry (absolute OR percent rise in 15 min) ⚡
 
 | Variable | Default | Where |
 |----------|---------|-------|
 | `MOMENTUM_ENTRY_RISE` | **0.15** | `config/constants.py` |
+| `MOMENTUM_PCT_RISE` | **0.35** | `config/constants.py` |
+| `MOMENTUM_MIN_START_PRICE` | **0.10** | `config/constants.py` |
 | `MOMENTUM_MIN_PRICE` | **0.61** | `config/constants.py` |
 | `MOMENTUM_MAX_ENTRY` | **0.80** | `config/constants.py` |
 | `STOP_LOSS_MOMENTUM` | **0.45** | `config/constants.py` |
+| `STOP_LOSS_MOMENTUM_ENTRY_DROP_PCT` | **0.30** | `config/constants.py` |
 
-Entry when YES rose at least **0.15 absolute price points** in 15 minutes and current price is in 0.61–0.80. Rank and runner-up gap are logged for context but are not required for momentum entry. Bypasses model/edge gates. If mark drops below **0.45** → exit.
+Entry when YES rose by **absolute** rise OR **percent** rise in the configured window, with guardrails: min start price, min current price, and max current price. Rank and runner-up gap are logged for context but are not required for momentum entry. Bypasses model/edge gates.
 
-### Double Momentum Entry (+0.30 price points in 15 min) 🚀
+### Double Momentum Entry (absolute OR percent rise, wider band) 🚀
 
 | Variable | Default | Where |
 |----------|---------|-------|
 | `DOUBLE_MOMENTUM_ENTRY_RISE` | **0.30** | `config/constants.py` |
+| `DOUBLE_MOMENTUM_PCT_RISE` | **0.80** | `config/constants.py` |
+| `DOUBLE_MOMENTUM_MIN_START_PRICE` | **0.05** | `config/constants.py` |
 | `DOUBLE_MOMENTUM_MIN_PRICE` | **0.20** | `config/constants.py` |
 | `DOUBLE_MOMENTUM_MAX_PRICE` | **0.88** | `config/constants.py` |
 | `STOP_LOSS_DOUBLE_MOMENTUM` | **0.30** | `config/constants.py` |
+| `STOP_LOSS_DOUBLE_MOMENTUM_ENTRY_DROP_PCT` | **0.45** | `config/constants.py` |
 
-Entry when YES rose at least **0.30 absolute price points** in 15 minutes. Wider band than standard momentum: 0.20–0.88 — covers a market that jumped from 0.10 to 0.85. Lower stop-loss at 0.30 to accommodate the wider entry range.
+Entry when YES rose at least the configured absolute OR percent threshold in the window. Wider band than standard momentum: 0.20–0.88.
 
 ### How entry_type is determined
 
@@ -155,7 +161,7 @@ Exits are checked in priority order (first match wins). There are **two loops** 
 | 4 | **Competitor surge** 🔥 | any sibling rose ≥0.15 points in 15 min | 30s | `MOMENTUM_COMPETITOR_SURGE = 0.15` | `config/constants.py` |
 | 5 | **Time-decay** ⏰ | held >2h AND **(mark − entry) < min_gain_points** AND mark < max_price | 30s | `time_decay_hours`, `time_decay_min_gain`, `time_decay_max_price` (defaults in `TIME_DECAY_*`) | `strategy/time_filter.py`, `data/runtime_config.json` |
 | 6 | **Research model flip** | forecast contradict (optional, default off) | 30s | `RESEARCH_EXIT_ON_MODEL_FLIP` | `config/constants.py` |
-| 7 | **Per-type stop-loss** 🆕 | mark < SL bar (depends on entry_type) | **2s** (watcher) + 30s (main) | `STOP_LOSS_NORMAL=0.55`, `STOP_LOSS_MOMENTUM=0.45`, `STOP_LOSS_DOUBLE_MOMENTUM=0.30` | `config/constants.py`, `strategy/decision_core.py` |
+| 7 | **Per-type stop-loss** 🆕 | mark < effective stop (hard floor + entry-relative) | **2s** (watcher) + 30s (main) | `STOP_LOSS_NORMAL=0.50`, `STOP_LOSS_MOMENTUM=0.45`, `STOP_LOSS_DOUBLE_MOMENTUM=0.30` | `config/constants.py`, `strategy/decision_core.py` |
 | 8 | **Take-profit** | mark ≥ 0.97 | 30s | `TAKE_PROFIT_THRESHOLD = 0.97` | `config/constants.py` |
 
 ### Momentum Fast Exit — Absolute Drop 🆕
@@ -175,9 +181,13 @@ The stop-loss bar depends on how the position was entered:
 
 | Entry Type | SL Bar | Example |
 |------------|--------|---------|
-| `normal` | **0.55** | Entered at 0.80, exits if mark < 0.55 |
+| `normal` | **0.50** | hard floor for normal entries |
 | `momentum` | **0.45** | Entered at 0.70, exits if mark < 0.45 |
 | `double_momentum` | **0.30** | Entered at 0.50, exits if mark < 0.30 |
+
+Effective stop also includes entry-relative drop:
+
+`effective_stop = max(stop_loss_by_type, entry_price * (1 - entry_drop_pct_by_type))`
 
 The `entry_type` is stored in `state.json` at buy time and used by both the main loop and the fast exit watcher.
 
@@ -320,14 +330,19 @@ Every trade (buy/sell/claim) and every scheduled report sends a rich portfolio m
 ### Per-Type Stop-Loss 🆕
 | Key | Default | Description |
 |-----|---------|-------------|
-| `stop_loss_normal` | 0.55 | SL for normal entries |
+| `stop_loss_normal` | 0.50 | hard-floor SL for normal entries |
 | `stop_loss_momentum` | 0.45 | SL for momentum entries |
 | `stop_loss_double_momentum` | 0.30 | SL for double momentum entries |
+| `stop_loss_normal_entry_drop_pct` | 0.22 | entry-relative SL drop for normal |
+| `stop_loss_momentum_entry_drop_pct` | 0.30 | entry-relative SL drop for momentum |
+| `stop_loss_double_momentum_entry_drop_pct` | 0.45 | entry-relative SL drop for double momentum |
 
 ### Double Momentum Entry 🆕
 | Key | Default | Description |
 |-----|---------|-------------|
 | `double_momentum_entry_rise` | 0.30 | Min absolute price-point rise to qualify as double momentum |
+| `double_momentum_pct_rise` | 0.80 | Min fractional rise alternative for double momentum |
+| `double_momentum_min_start_price` | 0.05 | Ignore near-zero start prices for pct logic |
 | `double_momentum_min_price` | 0.20 | Min YES price for double momentum entry |
 | `double_momentum_max_price` | 0.88 | Max YES price for double momentum entry |
 
@@ -336,6 +351,8 @@ Every trade (buy/sell/claim) and every scheduled report sends a rich portfolio m
 |-----|---------|-------------|
 | `momentum_window_seconds` | 900 | Rolling window for entry rise, peer surge, and fast-exit drawdown (seconds) |
 | `momentum_entry_rise` | 0.15 | Min **absolute** YES rise inside the window to count as momentum entry |
+| `momentum_pct_rise` | 0.35 | Min **fractional** YES rise alternative for momentum entry |
+| `momentum_min_start_price` | 0.10 | Ignore near-zero start prices for pct logic |
 | `momentum_fast_exit_drop` | 0.15 | Min **absolute** peak-to-trough drop inside the window for momentum fast exit |
 | `momentum_competitor_surge` | 0.15 | Min **absolute** YES rise for sibling surge exit |
 
@@ -351,6 +368,11 @@ Every trade (buy/sell/claim) and every scheduled report sends a rich portfolio m
 |-----|---------|-------------|
 | `churn_event_max_losses` | 2 | Losses on event before blocking |
 | `churn_event_cooldown_sec` | 1800 | Block duration (30 min) |
+| `churn_event_loss_1_cooldown_sec` | 900 | cooldown after first event loss |
+| `churn_event_loss_2_cooldown_sec` | 3600 | stronger cooldown after second event loss |
+| `leader_switch_window_sec` | 600 | time window for switch counting |
+| `leader_switch_max_count` | 3 | switches allowed before event is unstable |
+| `unstable_event_cooldown_sec` | 1800 | cooldown while event marked unstable |
 
 ### Fast Exit Watcher 🆕
 | Key | Default | Description |

@@ -85,6 +85,32 @@ def max_drawdown_in_window(
     return max_dd
 
 
+def max_drawdown_since_ts(
+    market_id: str,
+    since_ts: float,
+    window_sec: float = 900.0,
+    now_ts: Optional[float] = None,
+) -> float:
+    """Max peak-to-trough decline since entry, capped by the window."""
+    now_ts = now_ts or time.time()
+    series = load_samples_for_market(market_id, window_sec, now_ts)
+    if len(series) < 2:
+        return 0.0
+    start_ts = max(float(since_ts or 0.0), float(now_ts) - float(window_sec))
+    scoped = [(ts, price) for ts, price in series if float(ts) >= start_ts]
+    if len(scoped) < 2:
+        return 0.0
+    peak = scoped[0][1]
+    max_dd = 0.0
+    for _, price in scoped:
+        if price > peak:
+            peak = price
+        dd = peak - price
+        if dd > max_dd:
+            max_dd = dd
+    return max_dd
+
+
 def should_fast_exit(
     market_id: str,
     drop_threshold: float = 0.15,
@@ -100,6 +126,18 @@ def should_fast_exit(
     # needs enough price_samples in the window; a sudden cliff without prior highs
     # can understate drawdown vs intuitive "lost 99%" — see STRATEGY_LOGIC.md exits.
     dd = max_drawdown_in_window(market_id, window_sec, now_ts)
+    return dd >= drop_threshold, dd
+
+
+def should_fast_exit_since_ts(
+    market_id: str,
+    since_ts: float,
+    drop_threshold: float = 0.15,
+    window_sec: float = 900.0,
+    now_ts: Optional[float] = None,
+) -> Tuple[bool, float]:
+    """Check drawdown only from entry time onward."""
+    dd = max_drawdown_since_ts(market_id, since_ts, window_sec, now_ts)
     return dd >= drop_threshold, dd
 
 
@@ -153,6 +191,38 @@ def momentum_entry_signal(
         min_samples=C.MOMENTUM_MIN_SAMPLE_POINTS,
     )
     return change >= rise_threshold, change
+
+
+def momentum_entry_signal_with_pct(
+    market_id: str,
+    abs_rise_threshold: float,
+    pct_rise_threshold: float,
+    window_sec: float,
+    min_start_price: float,
+    min_current_price: float,
+    max_current_price: float,
+    now_ts: Optional[float] = None,
+) -> Tuple[bool, float, float, float, float, str]:
+    """Evaluate momentum with absolute or percent rise plus guardrails."""
+    old_price, new_price, abs_change = absolute_price_change_in_window(
+        market_id,
+        window_sec,
+        now_ts,
+        min_samples=C.MOMENTUM_MIN_SAMPLE_POINTS,
+    )
+    if old_price <= 1e-9:
+        return False, old_price, new_price, abs_change, 0.0, "insufficient_samples"
+    pct_change = (new_price - old_price) / old_price
+    if old_price + 1e-12 < float(min_start_price):
+        return False, old_price, new_price, abs_change, pct_change, "start_price_too_low"
+    if new_price + 1e-12 < float(min_current_price):
+        return False, old_price, new_price, abs_change, pct_change, "current_price_too_low"
+    if new_price - 1e-12 > float(max_current_price):
+        return False, old_price, new_price, abs_change, pct_change, "current_price_too_high"
+    passed = (abs_change >= float(abs_rise_threshold)) or (
+        pct_change >= float(pct_rise_threshold)
+    )
+    return passed, old_price, new_price, abs_change, pct_change, "ok"
 
 
 def yes_rank_by_market_prob(market_id: str, siblings: List[Dict[str, Any]]) -> int:

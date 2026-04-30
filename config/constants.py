@@ -42,28 +42,67 @@ SELL_BELOW_MIN_COOLDOWN_SEC = 300
 SELL_BELOW_MIN_TELEGRAM_COOLDOWN_SEC = 1800
 
 # ═══════════════════════════════════════════════════════════════════════
-# ENTRY BANDS & STOP-LOSS — grouped by entry type
-# each entry type defines: price band (min/max) + stop-loss threshold.
+# BUY / SELL thresholds — grouped by entry type.
+# each block keeps the full entry + exit config together.
 # ═══════════════════════════════════════════════════════════════════════
 
-# ─── Normal entry (model/edge-based) ─────────────────────────────────
-BUY_MIN_THRESHOLD = 0.78
-BUY_MAX_THRESHOLD = 0.88
+# ─── NORMAL: buy band + sell stop-loss ────────────────────────────────
+# buy only if YES is inside this band.
+# example: 0.82 is inside 0.78..0.88 so normal entry can pass this gate.
+BUY_MIN_THRESHOLD = 0.80
+BUY_MAX_THRESHOLD = 0.91
 BUY_DISABLE_PRICE_BAND = False
-STOP_LOSS_NORMAL = 0.50
 
-# ─── Momentum entry (+0.15 price points in 15 min) ───────────────────
-MOMENTUM_ENTRY_RISE = 0.15  # min absolute YES-price rise to qualify
-MOMENTUM_MIN_PRICE = 0.61  # min YES price to enter
-MOMENTUM_MAX_ENTRY = 0.80  # max YES price to enter
+# hard stop for normal.
+# example: if entry was 0.82, any live price below 0.50 is always a sell.
+STOP_LOSS_NORMAL = 0.60
+# relative stop for normal.
+# example: entry 0.80 with 30% drop => relative stop is 0.56.
+# effective stop = max(0.50, 0.56) = 0.56.
+STOP_LOSS_NORMAL_ENTRY_DROP_PCT = 0.30
+
+# ─── MOMENTUM: buy on 15m surge + sell stop-loss ──────────────────────
+# absolute 15m rise trigger.
+# example: 0.30 -> 0.50 is +0.20 so this trigger passes.
+MOMENTUM_ENTRY_RISE = 0.20
+# percent 15m rise trigger.
+# example: 0.03 -> 0.33 is +1000%, so pct trigger passes.
+MOMENTUM_PCT_RISE = 10.0
+# ignore tiny start prices for pct math noise.
+# example: 0.001 -> 0.011 is also +1000%, but start 0.001 is below this floor.
+MOMENTUM_MIN_START_PRICE = 0.10
+# live price band for momentum entry.
+# example: current price 0.65 passes, current price 0.85 fails.
+MOMENTUM_MIN_PRICE = 0.61
+MOMENTUM_MAX_ENTRY = 0.80
+# hard stop for momentum.
+# example: entry 0.70, any live price below 0.45 is always a sell.
 STOP_LOSS_MOMENTUM = 0.45
+# relative stop for momentum.
+# example: entry 0.70 with 30% drop => relative stop is 0.49.
+# effective stop = max(0.45, 0.49) = 0.49.
+STOP_LOSS_MOMENTUM_ENTRY_DROP_PCT = 0.40
 
-# ─── Double momentum entry (+0.30 price points in 15 min, wider band) ─
-DOUBLE_MOMENTUM_ENTRY_RISE = 0.30
-DOUBLE_MOMENTUM_MIN_PRICE = 0.20
-# wider top so a 0.10 → 0.85 wave still qualifies (was 0.75 → missed late jumps).
-DOUBLE_MOMENTUM_MAX_PRICE = 0.88
-STOP_LOSS_DOUBLE_MOMENTUM = 0.30
+# ─── DOUBLE MOMENTUM: stronger 15m surge + wider band + sell stop-loss ─
+# absolute 15m rise trigger.
+# example: 0.30 -> 0.70 is +0.40 so this trigger passes.
+DOUBLE_MOMENTUM_ENTRY_RISE = 0.40
+# percent 15m rise trigger.
+# example: 0.02 -> 0.22 is +1000%, so pct trigger passes.
+DOUBLE_MOMENTUM_PCT_RISE = 10.0
+# ignore tiny start prices for pct math noise.
+DOUBLE_MOMENTUM_MIN_START_PRICE = 0.05
+# wider entry band.
+# example: current price 0.25 passes, current price 0.90 fails.
+DOUBLE_MOMENTUM_MIN_PRICE = 0.10
+DOUBLE_MOMENTUM_MAX_PRICE = 0.80
+# hard stop for double momentum.
+# example: entry 0.32, any live price below 0.20 is always a sell.
+STOP_LOSS_DOUBLE_MOMENTUM = 0.20
+# relative stop for double momentum.
+# example: entry 0.60 with 30% drop => relative stop is 0.42.
+# effective stop = max(0.20, 0.42) = 0.42.
+STOP_LOSS_DOUBLE_MOMENTUM_ENTRY_DROP_PCT = 0.40
 
 # ═══════════════════════════════════════════════════════════════════════
 # EXIT THRESHOLDS
@@ -100,6 +139,11 @@ CHURN_COOLDOWN_SEC = 1200
 # event-level churn: block entire event after repeated losses
 CHURN_EVENT_MAX_LOSSES = 2  # losses on same gamma event before blocking
 CHURN_EVENT_COOLDOWN_SEC = 1800  # block event for 30 minutes
+CHURN_EVENT_LOSS_1_COOLDOWN_SEC = 900
+CHURN_EVENT_LOSS_2_COOLDOWN_SEC = 3600
+LEADER_SWITCH_WINDOW_SEC = 600
+LEADER_SWITCH_MAX_COUNT = 3
+UNSTABLE_EVENT_COOLDOWN_SEC = 1800
 
 # ═══════════════════════════════════════════════════════════════════════
 # FAST EXIT WATCHER — background thread polling CLOB every N seconds
@@ -153,10 +197,10 @@ SELL_BYPASS_MIN_COOLDOWN_REASONS = frozenset(
 
 DEFAULT_ORDER_SIZE = 10.0
 MAX_TRADE_FRACTION_OF_CASH = 0.90
-MAX_BUY_NOTIONAL_USD = 3.0
-MIN_ORDER_NOTIONAL_USD = 2.0
+MAX_BUY_NOTIONAL_USD = 1.0
+MIN_ORDER_NOTIONAL_USD = 1.0
 # never allocate buys from this portion of free cash (runtime + UI override)
-CASH_RESERVE_USD = 3.0
+CASH_RESERVE_USD = 0.0
 
 # ═══════════════════════════════════════════════════════════════════════
 # LEGACY MOMENTUM (kept for backward compat with price sample infra)

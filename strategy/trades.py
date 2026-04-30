@@ -63,7 +63,9 @@ from strategy.churn import (
     churn_on_stop_loss_exit,
     churn_on_take_profit,
     churn_allows_buy,
-    churn_on_event_loss,
+    churn_event_mark_loss_tiered,
+    churn_mark_event_recent_stoploss,
+    churn_record_event_leader_switch,
 )
 from strategy.gates import market_can_post_clob_orders, market_status
 from strategy.market_match import (
@@ -75,9 +77,9 @@ from strategy.decision_core import (
     TradeDecision,
     check_exits,
     detect_momentum_switch,
+    effective_stop_price_for_trade,
     evaluate_entry,
     momentum_window_sec,
-    stop_loss_bar_for_entry_type,
 )
 from strategy.probability import (
     parse_market_probability,
@@ -90,7 +92,7 @@ from forecast.parse_title import (
     forecast_supports_yes,
     parse_highest_temp_title,
 )
-from strategy.momentum_engine import momentum_entry_signal
+from strategy.momentum_engine import momentum_entry_signal_with_pct
 from strategy.research_signal import edge_size_multiplier
 from strategy.sizing import compute_buy_usd_amount, planned_buy_cap_lines
 from strategy.time_filter import entry_time_allowed
@@ -469,8 +471,8 @@ def place_buy(
         0.0,
         min(1.0, float(settings.take_profit) - TAKE_PROFIT_COMPARE_SLACK),
     )
-    # per-type SL: use entry_type from decision engine
-    sl_bar = stop_loss_bar_for_entry_type(entry_type, settings)
+    # effective SL combines per-type floor + entry-relative drop.
+    sl_bar = effective_stop_price_for_trade(entry_type, float(probability), settings)
     est_tp_pnl = (tp_bar - float(probability)) * float(shares)
     est_sl_pnl = (sl_bar - float(probability)) * float(shares)
     est_yes_pnl = (1.0 - float(probability)) * float(shares)
@@ -1033,17 +1035,42 @@ def close_position(
             settings.churn_max_stop_cycles,
             settings.churn_cooldown_sec,
         )
-        # event-level churn: track losses across sibling markets in same event
+        # event-level churn: tiered cooldowns + immediate sibling block after a loss
         try:
             from polymarket_client import gamma_event_ids_for_market
 
             eids = gamma_event_ids_for_market(market)
             if eids:
-                churn_on_event_loss(
+                event_id = str(eids[0]).strip()
+                churn_event_mark_loss_tiered(
                     state,
-                    str(eids[0]).strip(),
-                    settings.churn_event_max_losses,
-                    settings.churn_event_cooldown_sec,
+                    event_id,
+                    int(getattr(settings, "churn_event_loss_1_cooldown_sec", 0)),
+                    int(getattr(settings, "churn_event_loss_2_cooldown_sec", 0)),
+                )
+                churn_mark_event_recent_stoploss(
+                    state,
+                    event_id,
+                    int(getattr(settings, "churn_event_loss_1_cooldown_sec", 0)),
+                )
+        except Exception:
+            pass
+    elif reason == "momentum-switch-out":
+        # repeated sibling rotations in a short window mark event unstable.
+        try:
+            from polymarket_client import gamma_event_ids_for_market
+
+            eids = gamma_event_ids_for_market(market)
+            if eids:
+                churn_record_event_leader_switch(
+                    state=state,
+                    event_id=str(eids[0]).strip(),
+                    now_ts=time.time(),
+                    window_sec=int(getattr(settings, "leader_switch_window_sec", 600)),
+                    max_count=int(getattr(settings, "leader_switch_max_count", 3)),
+                    unstable_cooldown_sec=int(
+                        getattr(settings, "unstable_event_cooldown_sec", 1800)
+                    ),
                 )
         except Exception:
             pass
@@ -1201,19 +1228,6 @@ def process_single_market(
                 settings,
                 state_trade_key=sk,
             )
-            # no event-level buy cooldown here — it blocked rotating into the surging
-            # sibling bucket (same gamma event) for ~20m after competitor-surge exits.
-            if exit_reason in (
-                "momentum-stop-loss",
-                "competitor-surge",
-                "momentum-competitor-dominant",
-            ):
-                churn_on_stop_loss_exit(
-                    state,
-                    market_id,
-                    settings.churn_max_stop_cycles,
-                    settings.churn_cooldown_sec,
-                )
             return
 
     # research model flip exit (optional)
@@ -1260,7 +1274,8 @@ def process_single_market(
 
     # regular stop-loss — use per-type SL (from entry_type stored at buy time)
     entry_type = str((trade_row or {}).get("entry_type") or "normal").strip()
-    sl_bar_live = stop_loss_bar_for_entry_type(entry_type, settings)
+    entry_price_live = float((trade_row or {}).get("entry_price") or 0.0)
+    sl_bar_live = effective_stop_price_for_trade(entry_type, entry_price_live, settings)
     prob_stop = stop_loss_reference_if_triggered(market, trade_row, sl_bar_live)
     if prob_stop is not None:
         close_position(
@@ -1371,13 +1386,21 @@ def process_single_market(
 
     wsec = momentum_window_sec(settings)
     rise_thr = float(getattr(settings, "momentum_entry_rise", 0.15))
-    mom_sig, mom_rise_pts = momentum_entry_signal(
-        market_id,
-        rise_threshold=rise_thr,
-        window_sec=wsec,
-    )
+    rise_pct_thr = float(getattr(settings, "momentum_pct_rise", 0.35))
+    mom_start_min = float(getattr(settings, "momentum_min_start_price", 0.10))
     mom_lo = float(getattr(settings, "momentum_min_price", MOMENTUM_MIN_PRICE))
     mom_hi = float(getattr(settings, "momentum_max_entry", MOMENTUM_MAX_ENTRY))
+    mom_sig, _mom_old, _mom_new, mom_rise_pts, _mom_pct, _mom_reason = (
+        momentum_entry_signal_with_pct(
+            market_id=market_id,
+            abs_rise_threshold=rise_thr,
+            pct_rise_threshold=rise_pct_thr,
+            window_sec=wsec,
+            min_start_price=mom_start_min,
+            min_current_price=mom_lo,
+            max_current_price=mom_hi,
+        )
+    )
     dbl_min = float(
         getattr(settings, "double_momentum_min_price", DOUBLE_MOMENTUM_MIN_PRICE)
     )
@@ -1387,10 +1410,20 @@ def process_single_market(
     dbl_rise = float(
         getattr(settings, "double_momentum_entry_rise", DOUBLE_MOMENTUM_ENTRY_RISE)
     )
-    double_momentum_price_ok = (
-        mom_rise_pts + 1e-12 >= dbl_rise
-        and dbl_min - 1e-12 <= gamma_probability <= dbl_max + 1e-12
+    dbl_pct_rise = float(getattr(settings, "double_momentum_pct_rise", 0.80))
+    dbl_start_min = float(getattr(settings, "double_momentum_min_start_price", 0.05))
+    dbl_sig, _dbl_old, _dbl_new, _dbl_abs, _dbl_pct, _dbl_reason = (
+        momentum_entry_signal_with_pct(
+            market_id=market_id,
+            abs_rise_threshold=dbl_rise,
+            pct_rise_threshold=dbl_pct_rise,
+            window_sec=wsec,
+            min_start_price=dbl_start_min,
+            min_current_price=dbl_min,
+            max_current_price=dbl_max,
+        )
     )
+    double_momentum_price_ok = bool(dbl_sig)
     momentum_price_ok = (
         mom_sig and mom_lo - 1e-12 <= gamma_probability <= mom_hi + 1e-12
     ) or double_momentum_price_ok
