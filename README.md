@@ -102,11 +102,15 @@ python app/dashboard.py
 
 Merged **each tick** with env-backed sizing. Keys include:
 
-- `buy_min_threshold`, `buy_max_threshold`, `stop_loss_normal`, `stop_loss_momentum`, `stop_loss_double_momentum`, `take_profit_threshold`
+- `buy_min_threshold`, `buy_max_threshold` (default **0.84** — lowered from 0.91 so normal entries keep meaningful upside), `stop_loss_normal`, `stop_loss_momentum`, `stop_loss_double_momentum`, `take_profit_threshold`
 - `stop_loss_normal_entry_drop_pct`, `stop_loss_momentum_entry_drop_pct`, `stop_loss_double_momentum_entry_drop_pct` (entry-relative SL extension)
+- `trailing_stop_enabled`, `trailing_stop_activation_gain` (default **0.20**), `trailing_stop_lock_gain` (default **0.10**) — once `highest_seen_price ≥ entry + activation_gain`, the effective stop is raised to `entry + lock_gain`
 - `min_lead_over_runner_up`, `enable_competition_filter` — require YES lead vs next-best sibling market in the same Gamma **event**
-- `momentum_window_seconds`, `momentum_fast_exit_drop`, `momentum_competitor_surge`, `momentum_entry_rise`, `momentum_pct_rise`, `momentum_min_start_price`
-- `double_momentum_entry_rise`, `double_momentum_pct_rise`, `double_momentum_min_start_price`, `double_momentum_min_price`, `double_momentum_max_price`
+- `momentum_window_seconds` (15m std), `momentum_fast_window_seconds` (default **300** = 5m fast), `momentum_fast_exit_drop`, `momentum_competitor_surge`, `momentum_entry_rise` (**0.20**), `momentum_pct_rise` (**6.0** = +600%), `momentum_min_start_price`
+- `double_momentum_fast_window_seconds` (default **300**), `double_momentum_entry_rise` (**0.40**), `double_momentum_pct_rise` (**10.0** = +1000%), `double_momentum_min_start_price`, `double_momentum_min_price`, `double_momentum_max_price`
+- `limit_orders_enabled`, `buy_limit_order_timeout_sec`, `sell_limit_order_timeout_sec`, `emergency_exit_allow_market_order`, `buy_limit_price_offset`, `sell_limit_price_offset`, `require_fill_before_state_buy` — limit-first order execution; emergency reasons (stop-loss, momentum-fast-exit, bucket switch, time-decay) may fall back to market when allowed
+- `telegram_failed_exit_dedupe_enabled`, `telegram_failed_exit_cooldown_sec` — suppress repeated failed-exit Telegram notices for the same `(market_id, exit_reason, error_category)`
+- `trade_log_full_reason_enabled`, `telegram_verbose_trade_reason` — write/render the rich trade reason (entry type, trigger window, abs/pct rise, decision vs CLOB price, SL category)
 - `time_decay_hours`, `time_decay_min_gain`, `time_decay_max_price` — time-decay uses **absolute YES points** gain vs entry, not percent of entry
 - `churn_event_loss_1_cooldown_sec`, `churn_event_loss_2_cooldown_sec`, `leader_switch_window_sec`, `leader_switch_max_count`, `unstable_event_cooldown_sec`
 - `churn_max_stop_cycles`, `churn_cooldown_sec` — after N **stop-loss** exits, buy cooldown (default 1 cycle, 20 minutes); **take-profit resets** the counter
@@ -142,16 +146,23 @@ Current defaults are in `config/constants.py`, and live values can override them
 
 Append-only `data/price_samples/YYYY-MM-DD.jsonl` (one line per market per tick for scanned + held markets). Files older than **7 days** are deleted on bot startup. Each market keeps the latest **240** samples per day, enough for roughly 2 hours at a 30-second scan. Momentum entry and competitor surge use **absolute YES-price points** (`+0.15`, not +15% relative), with at least **2** samples required in the window — low enough that a fresh market that just jumped from 0.10 to 0.70 in two ticks still qualifies for **double-momentum** entry (`+0.30` rise, price band 0.20–0.88).
 
-## Stop-loss (per-type) and the fast-exit watcher
+## Stop-loss (per-type), trailing stop, and the fast-exit watcher
 
-Stop-loss now uses **effective stop** from `entry_type` and entry price:
+Stop-loss now uses an **effective stop** built from the entry type, entry price and the running peak:
 
-`effective_stop = max(stop_loss_by_type, entry_price * (1 - entry_drop_pct_by_type))`
+`effective_stop = max(stop_loss_by_type, entry_price × (1 − entry_drop_pct_by_type), trailing_stop_level_if_active)`
+
+* `trailing_stop_level` activates once `highest_seen_price ≥ entry + trailing_stop_activation_gain` (default +0.20) and locks the stop at `entry + trailing_stop_lock_gain` (default +0.10).
+* Each breach is **categorized** as `SL_ABSOLUTE` / `SL_RELATIVE` / `SL_TRAILING` / `SL_MOMENTUM` and persisted on the trade row; Telegram and the trade ledger render that label so post-mortems are unambiguous.
 
 Two paths check it:
 
-1. **Main loop** (~30s): `stop_loss_reference_if_triggered` in `strategy/probability.py`.
-2. **Fast exit watcher** (`strategy/fast_exit_watcher.py`, default 2s): polls **live CLOB orderbook** via `get_clob_yes_price_live_by_id` (best ask / midpoint), bypassing the stale Gamma `bestAsk` cache that previously caused SL to miss real drops. The watcher writes the fresh price back into `trade_row["last_price"]` so the slow loop also sees current data.
+1. **Main loop** (~30s): `decision_core.check_exits` calls `classify_stop_loss_breach` with the latest mark.
+2. **Fast exit watcher** (`strategy/fast_exit_watcher.py`, default 2s): polls **live CLOB orderbook** via `get_clob_yes_price_live_by_id` (best ask / midpoint), updates `highest_seen_price`, bypasses the stale Gamma `bestAsk` cache, and writes the fresh price back into `trade_row["last_price"]` so the slow loop also sees current data.
+
+## Order execution (limit-first)
+
+`strategy/limit_executor.py` posts a **GTC limit buy** at the live best ask + `buy_limit_price_offset`, polls for `buy_limit_order_timeout_sec`, and cancels on timeout (no chasing). Slippage and fill price are persisted in `state.json` and the trade CSV. Non-emergency sells try a limit too; emergency reasons (stop-loss, momentum-fast-exit, bucket switch, time-decay) may fall back to a market order when `emergency_exit_allow_market_order` is `true`. Bucket switching is now atomic: sell first, confirm fill, only then buy the new bucket — see the `switch_*` log labels in `STRATEGY_LOGIC.md`.
 
 ## Docker
 

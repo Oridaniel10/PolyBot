@@ -217,6 +217,22 @@ def align_price_to_tick_sell(price: float, tick: float) -> float:
     return round(out, 12)
 
 
+def align_price_to_tick_buy(price: float, tick: float) -> float:
+    """round buy limit price up to the next valid tick (so the order can rest at/above ask)."""
+    if tick <= 0:
+        return min(0.99, max(0.01, round(price, 4)))
+    if price <= 0:
+        price = tick
+    steps = math.ceil((price - 1e-12) / tick)
+    out = steps * tick
+    if out < tick:
+        out = tick
+    ceiling = 1.0 - tick
+    if out > ceiling:
+        out = ceiling
+    return round(out, 12)
+
+
 def midpoint_price_from_clob(clob: Any, token_id: str) -> float:
     try:
         raw = clob.get_midpoint(token_id)
@@ -1358,6 +1374,139 @@ class PolymarketClient:
                 errors.append(f"{order_type}:{err!r}")
                 continue
         raise PolyApiException(error_msg="buy failed: " + " | ".join(errors))
+
+    def get_clob_best_ask_yes(self, market: Dict[str, Any]) -> float:
+        """Latest live CLOB best ask for YES token; bypasses any cached gamma data."""
+        try:
+            token_id = yes_token_id_from_market(market)
+        except (ValueError, KeyError):
+            return 0.0
+        clob = self.make_clob_client()
+        try:
+            book = clob.get_order_book(token_id)
+            if book and getattr(book, "asks", None):
+                return float(book.asks[0].price)
+        except Exception:
+            pass
+        return 0.0
+
+    def get_clob_best_bid_yes(self, market: Dict[str, Any]) -> float:
+        """Latest live CLOB best bid for YES token; used as anchor for limit sells."""
+        try:
+            token_id = yes_token_id_from_market(market)
+        except (ValueError, KeyError):
+            return 0.0
+        clob = self.make_clob_client()
+        try:
+            book = clob.get_order_book(token_id)
+            if book and getattr(book, "bids", None):
+                return float(book.bids[0].price)
+        except Exception:
+            pass
+        return 0.0
+
+    def get_clob_tick_size_yes(self, market: Dict[str, Any]) -> float:
+        try:
+            token_id = yes_token_id_from_market(market)
+        except (ValueError, KeyError):
+            return 0.01
+        clob = self.make_clob_client()
+        try:
+            return float(clob.get_tick_size(token_id))
+        except (TypeError, ValueError, Exception):
+            return 0.01
+
+    def place_limit_buy_yes(
+        self,
+        market: Dict[str, Any],
+        usd_amount: float,
+        limit_price: float,
+    ) -> Dict[str, Any]:
+        """post a GTC limit buy at a controlled price.
+
+        params:
+        - market: gamma market dict.
+        - usd_amount: order notional in USD.
+        - limit_price: max price to pay (will be tick-aligned upward).
+
+        returns:
+        - order response dict including limit_price + token_id.
+        """
+        from py_clob_client_v2 import OrderArgs, OrderType
+        from py_clob_client_v2.exceptions import PolyApiException
+
+        if usd_amount <= 0:
+            raise ValueError("usd_amount must be positive")
+        if limit_price <= 0 or limit_price >= 1.0:
+            raise ValueError(f"limit_price out of range: {limit_price}")
+        token_id = yes_token_id_from_market(market)
+        clob = self.make_clob_client()
+        try:
+            tick_f = float(clob.get_tick_size(token_id))
+        except (TypeError, ValueError):
+            tick_f = 0.01
+        aligned_px = align_price_to_tick_buy(float(limit_price), tick_f)
+        if aligned_px <= 0:
+            aligned_px = align_price_to_tick_buy(max(tick_f, limit_price), tick_f)
+        size_shares = float(usd_amount) / aligned_px
+
+        def exec_limit_buy() -> Any:
+            oa = OrderArgs(
+                token_id=token_id,
+                price=aligned_px,
+                size=size_shares,
+                side=CLOB_ORDER_SIDE_BUY,
+            )
+            return clob.create_and_post_order(oa, order_type=OrderType.GTC)
+
+        try:
+            posted = clob_retry_transient(exec_limit_buy)
+        except Exception as err:
+            raise PolyApiException(
+                error_msg=(
+                    f"limit_buy failed at px={aligned_px:.4f} usd={usd_amount:.2f}: {err!r}"
+                )
+            )
+        out = posted if isinstance(posted, dict) else {"raw": posted}
+        out["limit_price"] = aligned_px
+        out["limit_size"] = size_shares
+        out["token_id"] = token_id
+        self.invalidate_data_positions_cache()
+        self.invalidate_balance_allowance_cache()
+        return out
+
+    def get_order_state(self, order_id: str) -> Dict[str, Any]:
+        """fetch live order state from CLOB; safe to poll repeatedly."""
+        oid = str(order_id or "").strip()
+        if not oid:
+            return {}
+        clob = self.make_clob_client()
+        try:
+            info = clob_retry_transient(lambda: clob.get_order(oid))
+        except Exception:
+            return {}
+        if isinstance(info, dict):
+            return info
+        return {}
+
+    def cancel_order(self, order_id: str) -> bool:
+        """best-effort cancel; returns True if accepted/already gone."""
+        from py_clob_client_v2.exceptions import PolyApiException
+
+        oid = str(order_id or "").strip()
+        if not oid:
+            return False
+        clob = self.make_clob_client()
+        try:
+            clob_retry_transient(lambda: clob.cancel(oid))
+            self.invalidate_balance_allowance_cache()
+            return True
+        except PolyApiException as err:
+            if err.status_code == 404:
+                return True
+            return False
+        except Exception:
+            return False
 
     def place_market_sell_yes(
         self,

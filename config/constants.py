@@ -48,9 +48,11 @@ SELL_BELOW_MIN_TELEGRAM_COOLDOWN_SEC = 1800
 
 # ─── NORMAL: buy band + sell stop-loss ────────────────────────────────
 # buy only if YES is inside this band.
-# example: 0.82 is inside 0.78..0.88 so normal entry can pass this gate.
-BUY_MIN_THRESHOLD = 0.80
-BUY_MAX_THRESHOLD = 0.91
+# example: 0.82 is inside 0.80..0.84 so normal entry can pass this gate.
+# upper bound lowered from 0.91 to 0.84 — at 0.88-0.92 upside is tiny while
+# downside risk on a missed bracket is large.
+BUY_MIN_THRESHOLD = 0.81
+BUY_MAX_THRESHOLD = 0.87
 BUY_DISABLE_PRICE_BAND = False
 
 # hard stop for normal.
@@ -62,15 +64,15 @@ STOP_LOSS_NORMAL = 0.60
 STOP_LOSS_NORMAL_ENTRY_DROP_PCT = 0.30
 
 # ─── MOMENTUM: buy on 15m surge + sell stop-loss ──────────────────────
-# absolute 15m rise trigger.
+# absolute rise trigger (any window).
 # example: 0.30 -> 0.50 is +0.20 so this trigger passes.
 MOMENTUM_ENTRY_RISE = 0.20
-# percent 15m rise trigger.
-# example: 0.03 -> 0.33 is +1000%, so pct trigger passes.
-MOMENTUM_PCT_RISE = 10.0
+# percent rise trigger (fractional, not percent points).
+# example: 6.0 means +600%; 0.05 -> 0.35 (+600%) passes.
+MOMENTUM_PCT_RISE = 6.0
 # ignore tiny start prices for pct math noise.
 # example: 0.001 -> 0.011 is also +1000%, but start 0.001 is below this floor.
-MOMENTUM_MIN_START_PRICE = 0.10
+MOMENTUM_MIN_START_PRICE = 0.55
 # live price band for momentum entry.
 # example: current price 0.65 passes, current price 0.85 fails.
 MOMENTUM_MIN_PRICE = 0.61
@@ -91,7 +93,7 @@ DOUBLE_MOMENTUM_ENTRY_RISE = 0.40
 # example: 0.02 -> 0.22 is +1000%, so pct trigger passes.
 DOUBLE_MOMENTUM_PCT_RISE = 10.0
 # ignore tiny start prices for pct math noise.
-DOUBLE_MOMENTUM_MIN_START_PRICE = 0.05
+DOUBLE_MOMENTUM_MIN_START_PRICE = 0.25
 # wider entry band.
 # example: current price 0.25 passes, current price 0.90 fails.
 DOUBLE_MOMENTUM_MIN_PRICE = 0.10
@@ -117,10 +119,24 @@ TAKE_PROFIT_COMPARE_SLACK = 0.002
 # this is absolute price points, NOT percentage.
 MOMENTUM_FAST_EXIT_DROP = 0.15
 MOMENTUM_WINDOW_SECONDS = 900
-MOMENTUM_COMPETITOR_SURGE = 0.15
+MOMENTUM_COMPETITOR_SURGE = 0.25
 # kept low so a fresh market that just jumped 0.1 → 0.7 in 2 ticks still
 # qualifies for double-momentum entry (was 3 → blocked late entries on big moves).
 MOMENTUM_MIN_SAMPLE_POINTS = 2
+
+# fast (short) momentum window — runs alongside the 15m window.
+# either window passing = momentum signal qualifies.
+# motivation: 15m can be too diluted on rapid moves; 5m catches fresh surges.
+MOMENTUM_FAST_WINDOW_SECONDS = 300
+DOUBLE_MOMENTUM_FAST_WINDOW_SECONDS = 300
+
+# ─── Trailing stop ────────────────────────────────────────────────────
+# protects unrealized profit when price has moved up significantly.
+# example: entry 0.50 → price reaches 0.70 (>=entry+0.20 activation) →
+# trailing level becomes entry+0.10 = 0.60 (locks 0.10 of gain).
+TRAILING_STOP_ENABLED = True
+TRAILING_STOP_ACTIVATION_GAIN = 0.20
+TRAILING_STOP_LOCK_GAIN = 0.10
 
 # ─── Time-decay exit ─────────────────────────────────────────────────
 TIME_DECAY_HOURS = 2.0
@@ -179,6 +195,7 @@ SELL_BYPASS_MIN_COOLDOWN_REASONS = frozenset(
     {
         "take-profit",
         "stop-loss",
+        "trailing-stop",
         "momentum-stop-loss",
         "competitor-surge",
         "time-decay",
@@ -191,16 +208,23 @@ SELL_BYPASS_MIN_COOLDOWN_REASONS = frozenset(
     }
 )
 
+# stop-loss category labels — emitted by exit detection so logs/telegram/reports
+# can distinguish hard-floor vs entry-relative vs trailing vs momentum SL.
+SL_CATEGORY_ABSOLUTE = "SL_ABSOLUTE"
+SL_CATEGORY_RELATIVE = "SL_RELATIVE"
+SL_CATEGORY_TRAILING = "SL_TRAILING"
+SL_CATEGORY_MOMENTUM = "SL_MOMENTUM"
+
 # ═══════════════════════════════════════════════════════════════════════
 # SIZING
 # ═══════════════════════════════════════════════════════════════════════
 
 DEFAULT_ORDER_SIZE = 10.0
 MAX_TRADE_FRACTION_OF_CASH = 0.90
-MAX_BUY_NOTIONAL_USD = 1.0
+MAX_BUY_NOTIONAL_USD = 2.0
 MIN_ORDER_NOTIONAL_USD = 1.0
 # never allocate buys from this portion of free cash (runtime + UI override)
-CASH_RESERVE_USD = 0.0
+CASH_RESERVE_USD = 10.0
 
 # ═══════════════════════════════════════════════════════════════════════
 # LEGACY MOMENTUM (kept for backward compat with price sample infra)
@@ -296,6 +320,62 @@ RESEARCH_CROWD_DISAGREE_EXTRA_EDGE = 0.03
 RESEARCH_SKIP_TELEGRAM_COOLDOWN_SEC = 600
 # when false, no Telegram for decision-engine BUY skips (still logged to console)
 DECISION_SKIP_TELEGRAM_NOTIFY = False
+
+# ═══════════════════════════════════════════════════════════════════════
+# LIMIT-ORDER-FIRST EXECUTION
+# ═══════════════════════════════════════════════════════════════════════
+
+# when true, BUY orders are submitted as GTC limit at controlled price.
+# market orders pay taker fees + slippage; limit at best ask captures the
+# same fill probability without crossing more than necessary.
+LIMIT_ORDERS_ENABLED = True
+# how long to wait for a limit BUY to fill before cancelling.
+# kept short so we don't chase price endlessly on missed fills.
+# 8s was too tight in practice: thin books + scan interval meant many GTC cancels.
+BUY_LIMIT_ORDER_TIMEOUT_SEC = 15
+# limit SELL timeout — used for non-emergency exits (take-profit, time-decay).
+SELL_LIMIT_ORDER_TIMEOUT_SEC = 5
+# emergency exits (stop-loss, momentum-stop-loss, etc.) prioritize fill speed
+# over maker rebate. when true, these go straight to market.
+EMERGENCY_EXIT_ALLOW_MARKET_ORDER = True
+# offset added to best ask for limit BUY (positive = chase up; 0 = at best ask).
+BUY_LIMIT_PRICE_OFFSET = 0.0
+# offset subtracted from best bid for limit SELL (positive = below bid; faster fill).
+SELL_LIMIT_PRICE_OFFSET = 0.005
+# require a real fill before we record the position as held.
+# protects against state.json drift when limit BUY times out unfilled.
+REQUIRE_FILL_BEFORE_STATE_BUY = True
+# emergency SELL reasons — these can use market order even when limit-orders enabled.
+EMERGENCY_SELL_REASONS = frozenset(
+    {
+        "stop-loss",
+        "momentum-stop-loss",
+        "trailing-stop",
+        "competitor-surge",
+        "momentum-competitor-dominant",
+        "peer-yes-surge",
+    }
+)
+
+# ═══════════════════════════════════════════════════════════════════════
+# TELEGRAM FAILED-EXIT DEDUPLICATION
+# ═══════════════════════════════════════════════════════════════════════
+
+# notify once per (market_id, exit_reason) and suppress repeats inside cooldown.
+# avoids spam when a stop-loss / take-profit sell keeps failing every tick.
+TELEGRAM_FAILED_EXIT_DEDUPE_ENABLED = True
+TELEGRAM_FAILED_EXIT_COOLDOWN_SEC = 900
+
+# ═══════════════════════════════════════════════════════════════════════
+# RICH TRADE LOGGING / TELEGRAM VERBOSITY
+# ═══════════════════════════════════════════════════════════════════════
+
+# when true, log full reason/trigger metadata (window, abs/pct rise, prices).
+# adds a few extra columns to trade CSV; safe to disable for compact logs.
+TRADE_LOG_FULL_REASON_ENABLED = True
+# when true, BUY/SELL telegram messages include explicit category + trigger
+# context (e.g. "Triggered by 5m Fast Window (+0.25 / 700%)").
+TELEGRAM_VERBOSE_TRADE_REASON = True
 
 # ═══════════════════════════════════════════════════════════════════════
 # EXCHANGE / CLOB

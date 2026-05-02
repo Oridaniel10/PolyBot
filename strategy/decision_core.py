@@ -64,6 +64,26 @@ def momentum_window_sec(settings: RuntimeSettings) -> float:
     return max(120.0, min(7200.0, w))
 
 
+def momentum_fast_window_sec(settings: RuntimeSettings) -> float:
+    w = float(
+        getattr(
+            settings, "momentum_fast_window_seconds", C.MOMENTUM_FAST_WINDOW_SECONDS
+        )
+    )
+    return max(60.0, min(3600.0, w))
+
+
+def double_momentum_fast_window_sec(settings: RuntimeSettings) -> float:
+    w = float(
+        getattr(
+            settings,
+            "double_momentum_fast_window_seconds",
+            C.DOUBLE_MOMENTUM_FAST_WINDOW_SECONDS,
+        )
+    )
+    return max(60.0, min(3600.0, w))
+
+
 def momentum_fast_exit_drop(settings: RuntimeSettings) -> float:
     d = float(getattr(settings, "momentum_fast_exit_drop", C.MOMENTUM_FAST_EXIT_DROP))
     return max(0.01, min(0.95, d))
@@ -89,6 +109,72 @@ def double_momentum_entry_pct_rise_thr(settings: RuntimeSettings) -> float:
         getattr(settings, "double_momentum_pct_rise", C.DOUBLE_MOMENTUM_PCT_RISE)
     )
     return max(0.01, min(10.0, r))
+
+
+def momentum_dual_window_check(
+    *,
+    market_id: str,
+    abs_rise_threshold: float,
+    pct_rise_threshold: float,
+    std_window_sec: float,
+    fast_window_sec: float,
+    min_start_price: float,
+    min_current_price: float,
+    max_current_price: float,
+) -> Tuple[bool, str, Dict[str, Any]]:
+    """run momentum_entry_signal_with_pct on both 15m and fast windows.
+
+    returns:
+    - (passed, trigger_window, metadata) where trigger_window is "15m_std",
+      "5m_fast", "both", or "none". metadata carries each window's metrics.
+    """
+    std_passed, std_old, std_new, std_abs, std_pct, std_reason = (
+        momentum_entry_signal_with_pct(
+            market_id=market_id,
+            abs_rise_threshold=abs_rise_threshold,
+            pct_rise_threshold=pct_rise_threshold,
+            window_sec=std_window_sec,
+            min_start_price=min_start_price,
+            min_current_price=min_current_price,
+            max_current_price=max_current_price,
+        )
+    )
+    fast_passed, fast_old, fast_new, fast_abs, fast_pct, fast_reason = (
+        momentum_entry_signal_with_pct(
+            market_id=market_id,
+            abs_rise_threshold=abs_rise_threshold,
+            pct_rise_threshold=pct_rise_threshold,
+            window_sec=fast_window_sec,
+            min_start_price=min_start_price,
+            min_current_price=min_current_price,
+            max_current_price=max_current_price,
+        )
+    )
+    if std_passed and fast_passed:
+        trigger = "both"
+    elif std_passed:
+        trigger = "15m_std"
+    elif fast_passed:
+        trigger = "5m_fast"
+    else:
+        trigger = "none"
+    meta = {
+        "std_window_sec": float(std_window_sec),
+        "fast_window_sec": float(fast_window_sec),
+        "std_passed": bool(std_passed),
+        "std_abs_rise": float(std_abs),
+        "std_pct_rise": float(std_pct),
+        "std_old_price": float(std_old),
+        "std_new_price": float(std_new),
+        "std_reason": str(std_reason),
+        "fast_passed": bool(fast_passed),
+        "fast_abs_rise": float(fast_abs),
+        "fast_pct_rise": float(fast_pct),
+        "fast_old_price": float(fast_old),
+        "fast_new_price": float(fast_new),
+        "fast_reason": str(fast_reason),
+    }
+    return std_passed or fast_passed, trigger, meta
 
 
 def get_recent_decisions(limit: int = 50) -> List[Dict[str, Any]]:
@@ -117,6 +203,13 @@ class TradeDecision:
     # "normal" → stop_loss_normal, "momentum" → stop_loss_momentum,
     # "double_momentum" → stop_loss_double_momentum
     entry_type: str = "normal"
+    # which window triggered the momentum signal: "15m_std" / "5m_fast" / "both" / "none"
+    trigger_window: str = "none"
+    # raw rise metrics on the path that triggered (for trade log + telegram)
+    trigger_abs_rise: float = 0.0
+    trigger_pct_rise: float = 0.0
+    trigger_old_price: float = 0.0
+    trigger_new_price: float = 0.0
 
 
 def collect_event_id_and_market_ids(
@@ -434,16 +527,16 @@ def evaluate_entry(
     )
     mom_min = float(getattr(settings, "momentum_min_price", C.MOMENTUM_MIN_PRICE))
     mom_max = float(getattr(settings, "momentum_max_entry", C.MOMENTUM_MAX_ENTRY))
-    mom_signal, mom_old, mom_new, mom_rise, mom_rise_pct, mom_reason = (
-        momentum_entry_signal_with_pct(
-            market_id=market_id,
-            abs_rise_threshold=rise_thr,
-            pct_rise_threshold=rise_pct_thr,
-            window_sec=wsec,
-            min_start_price=mom_start_min,
-            min_current_price=mom_min,
-            max_current_price=mom_max,
-        )
+    fast_wsec = momentum_fast_window_sec(settings)
+    mom_signal, mom_trigger, mom_meta = momentum_dual_window_check(
+        market_id=market_id,
+        abs_rise_threshold=rise_thr,
+        pct_rise_threshold=rise_pct_thr,
+        std_window_sec=wsec,
+        fast_window_sec=fast_wsec,
+        min_start_price=mom_start_min,
+        min_current_price=mom_min,
+        max_current_price=mom_max,
     )
 
     # double momentum: abs + pct with wider price band.
@@ -464,21 +557,24 @@ def evaluate_entry(
     dbl_max = float(
         getattr(settings, "double_momentum_max_price", C.DOUBLE_MOMENTUM_MAX_PRICE)
     )
-    dbl_signal, dbl_old, dbl_new, dbl_abs_rise, dbl_pct_rise, dbl_reason = (
-        momentum_entry_signal_with_pct(
-            market_id=market_id,
-            abs_rise_threshold=dbl_rise_thr,
-            pct_rise_threshold=dbl_rise_pct_thr,
-            window_sec=wsec,
-            min_start_price=dbl_start_min,
-            min_current_price=dbl_min,
-            max_current_price=dbl_max,
-        )
+    dbl_fast_wsec = double_momentum_fast_window_sec(settings)
+    dbl_signal, dbl_trigger, dbl_meta = momentum_dual_window_check(
+        market_id=market_id,
+        abs_rise_threshold=dbl_rise_thr,
+        pct_rise_threshold=dbl_rise_pct_thr,
+        std_window_sec=wsec,
+        fast_window_sec=dbl_fast_wsec,
+        min_start_price=dbl_start_min,
+        min_current_price=dbl_min,
+        max_current_price=dbl_max,
     )
     is_double_momentum = bool(dbl_signal)
 
-    # standard momentum: abs + pct in tighter band.
+    # standard momentum: abs + pct in tighter band — either window may trigger.
     is_momentum_entry = bool(is_double_momentum or mom_signal)
+
+    # mom_meta / dbl_meta below carry legacy std-window fields used by the
+    # debug payload + finish() trigger metric extraction.
 
     _, _, momentum_15m = absolute_price_change_in_window(
         market_id,
@@ -503,6 +599,57 @@ def evaluate_entry(
     ) -> TradeDecision:
         relaxed = bool(momentum_relaxed and decision == "BUY")
         etype = _resolve_entry_type() if decision == "BUY" else "normal"
+        # pick which window's metrics to expose: prefer the path that triggered.
+        if etype == "double_momentum":
+            tr_window = dbl_trigger
+            tr_abs = (
+                dbl_meta["fast_abs_rise"]
+                if tr_window == "5m_fast"
+                else dbl_meta["std_abs_rise"]
+            )
+            tr_pct = (
+                dbl_meta["fast_pct_rise"]
+                if tr_window == "5m_fast"
+                else dbl_meta["std_pct_rise"]
+            )
+            tr_old = (
+                dbl_meta["fast_old_price"]
+                if tr_window == "5m_fast"
+                else dbl_meta["std_old_price"]
+            )
+            tr_new = (
+                dbl_meta["fast_new_price"]
+                if tr_window == "5m_fast"
+                else dbl_meta["std_new_price"]
+            )
+        elif etype == "momentum":
+            tr_window = mom_trigger
+            tr_abs = (
+                mom_meta["fast_abs_rise"]
+                if tr_window == "5m_fast"
+                else mom_meta["std_abs_rise"]
+            )
+            tr_pct = (
+                mom_meta["fast_pct_rise"]
+                if tr_window == "5m_fast"
+                else mom_meta["std_pct_rise"]
+            )
+            tr_old = (
+                mom_meta["fast_old_price"]
+                if tr_window == "5m_fast"
+                else mom_meta["std_old_price"]
+            )
+            tr_new = (
+                mom_meta["fast_new_price"]
+                if tr_window == "5m_fast"
+                else mom_meta["std_new_price"]
+            )
+        else:
+            tr_window = "none"
+            tr_abs = 0.0
+            tr_pct = 0.0
+            tr_old = mom_meta["std_old_price"]
+            tr_new = mom_meta["std_new_price"]
         td = TradeDecision(
             city=city,
             date_iso=date_iso,
@@ -520,6 +667,11 @@ def evaluate_entry(
             momentum_relaxed_gates=relaxed,
             event_yes_rank=int(rank),
             entry_type=etype,
+            trigger_window=str(tr_window),
+            trigger_abs_rise=float(tr_abs),
+            trigger_pct_rise=float(tr_pct),
+            trigger_old_price=float(tr_old),
+            trigger_new_price=float(tr_new),
         )
         _log_decision(td)
         _momentum_eval_debug_line(
@@ -527,16 +679,20 @@ def evaluate_entry(
                 "market_id": market_id,
                 "city": city,
                 "momentum_15m_points": round(float(momentum_15m), 4),
-                "window_rise_points": round(float(mom_rise), 4),
-                "window_rise_pct": round(float(mom_rise_pct), 4),
-                "momentum_reason": mom_reason,
-                "momentum_old_price": round(float(mom_old), 4),
-                "momentum_new_price": round(float(mom_new), 4),
-                "double_window_rise_points": round(float(dbl_abs_rise), 4),
-                "double_window_rise_pct": round(float(dbl_pct_rise), 4),
-                "double_momentum_reason": dbl_reason,
-                "double_old_price": round(float(dbl_old), 4),
-                "double_new_price": round(float(dbl_new), 4),
+                "mom_trigger_window": mom_trigger,
+                "mom_std_pass": mom_meta["std_passed"],
+                "mom_std_rise_points": round(float(mom_meta["std_abs_rise"]), 4),
+                "mom_std_rise_pct": round(float(mom_meta["std_pct_rise"]), 4),
+                "mom_fast_pass": mom_meta["fast_passed"],
+                "mom_fast_rise_points": round(float(mom_meta["fast_abs_rise"]), 4),
+                "mom_fast_rise_pct": round(float(mom_meta["fast_pct_rise"]), 4),
+                "double_trigger_window": dbl_trigger,
+                "dbl_std_pass": dbl_meta["std_passed"],
+                "dbl_std_rise_points": round(float(dbl_meta["std_abs_rise"]), 4),
+                "dbl_std_rise_pct": round(float(dbl_meta["std_pct_rise"]), 4),
+                "dbl_fast_pass": dbl_meta["fast_passed"],
+                "dbl_fast_rise_points": round(float(dbl_meta["fast_abs_rise"]), 4),
+                "dbl_fast_rise_pct": round(float(dbl_meta["fast_pct_rise"]), 4),
                 "yes_rank": int(rank),
                 "market_lead_gap": round(float(market_lead_gap), 4),
                 "runner_up_yes": round(float(runner_up_yes), 4),
@@ -550,6 +706,9 @@ def evaluate_entry(
                 "momentum_relaxed_buy": relaxed,
                 "entry_type": etype,
                 "is_double_momentum": is_double_momentum,
+                "active_trigger_window": td.trigger_window,
+                "active_abs_rise": round(float(td.trigger_abs_rise), 4),
+                "active_pct_rise": round(float(td.trigger_pct_rise), 4),
             }
         )
         return td
@@ -713,15 +872,88 @@ def stop_loss_entry_drop_pct_for_entry_type(
     )
 
 
+def trailing_stop_level(
+    entry_price: float,
+    highest_seen_price: float,
+    settings: RuntimeSettings,
+) -> Optional[float]:
+    """compute trailing stop level (or None if not yet activated).
+
+    activation: highest_seen_price >= entry_price + activation_gain.
+    locked level: entry_price + lock_gain.
+    """
+    if not bool(getattr(settings, "trailing_stop_enabled", True)):
+        return None
+    entry = float(entry_price or 0.0)
+    peak = float(highest_seen_price or 0.0)
+    if entry <= 1e-9 or peak <= 1e-9:
+        return None
+    act = float(getattr(settings, "trailing_stop_activation_gain", 0.20))
+    lock = float(getattr(settings, "trailing_stop_lock_gain", 0.10))
+    if peak + 1e-12 < entry + act:
+        return None
+    return entry + lock
+
+
 def effective_stop_price_for_trade(
     entry_type: str,
     entry_price: float,
     settings: RuntimeSettings,
+    *,
+    highest_seen_price: float = 0.0,
 ) -> float:
+    """compute the effective stop level combining floor / entry-drop / trailing.
+
+    keeping the call signature backward-compatible: callers that don't pass
+    highest_seen_price get the legacy floor + entry-drop only.
+    """
     hard_floor = stop_loss_bar_for_entry_type(entry_type, settings)
     drop_pct = stop_loss_entry_drop_pct_for_entry_type(entry_type, settings)
     entry_relative = max(0.0, float(entry_price) * (1.0 - float(drop_pct)))
-    return max(float(hard_floor), float(entry_relative))
+    base = max(float(hard_floor), float(entry_relative))
+    trail = trailing_stop_level(entry_price, highest_seen_price, settings)
+    if trail is None:
+        return base
+    return max(base, float(trail))
+
+
+def classify_stop_loss_breach(
+    entry_type: str,
+    entry_price: float,
+    live_price: float,
+    settings: RuntimeSettings,
+    *,
+    highest_seen_price: float = 0.0,
+) -> Optional[Tuple[str, float]]:
+    """label which stop-loss component breached, if any.
+
+    compares live_price to the same combined bar as `effective_stop_price_for_trade`
+    and attributes the breach to whichever component pins that bar (trailing wins
+    ties, then entry-relative, then hard floor).
+    """
+    px = float(live_price or 0.0)
+    if px <= 0:
+        return None
+    hard_floor = stop_loss_bar_for_entry_type(entry_type, settings)
+    drop_pct = stop_loss_entry_drop_pct_for_entry_type(entry_type, settings)
+    entry_relative = max(0.0, float(entry_price) * (1.0 - float(drop_pct)))
+    trail = trailing_stop_level(entry_price, highest_seen_price, settings)
+    effective = effective_stop_price_for_trade(
+        entry_type,
+        float(entry_price),
+        settings,
+        highest_seen_price=float(highest_seen_price or 0.0),
+    )
+    if px + 1e-12 >= float(effective):
+        return None
+    # which single component set `effective`?
+    if trail is not None and float(effective) <= float(trail) + 1e-9:
+        return (C.SL_CATEGORY_TRAILING, float(trail))
+    if float(effective) <= float(entry_relative) + 1e-9 and entry_relative >= hard_floor - 1e-9:
+        return (C.SL_CATEGORY_RELATIVE, float(entry_relative))
+    if float(effective) <= float(hard_floor) + 1e-9:
+        return (C.SL_CATEGORY_ABSOLUTE, float(hard_floor))
+    return (C.SL_CATEGORY_RELATIVE, float(effective))
 
 
 def check_exits(
@@ -764,7 +996,39 @@ def check_exits(
                 window_sec=wsec,
             )
     if fast_exit and mark < entry:
+        # tag SL category so close_position can label it in logs/telegram.
+        trade["sl_category"] = C.SL_CATEGORY_MOMENTUM
+        trade["sl_drawdown_points"] = round(float(dd), 6)
         return "momentum-stop-loss", gamma_prob
+
+    # 2. trailing stop / per-type SL breach (live mark vs effective stop)
+    entry_type = str(trade.get("entry_type") or "normal").strip()
+    highest_seen = float(trade.get("highest_seen_price") or 0.0)
+    breach = classify_stop_loss_breach(
+        entry_type,
+        entry,
+        mark,
+        settings,
+        highest_seen_price=highest_seen,
+    )
+    if breach is not None:
+        category, level = breach
+        trade["sl_category"] = category
+        trade["sl_level"] = round(float(level), 6)
+        trade["sl_effective"] = round(
+            float(
+                effective_stop_price_for_trade(
+                    entry_type,
+                    entry,
+                    settings,
+                    highest_seen_price=highest_seen,
+                )
+            ),
+            6,
+        )
+        if category == C.SL_CATEGORY_TRAILING:
+            return "trailing-stop", gamma_prob
+        return "stop-loss", gamma_prob
 
     dom_reason, dom_ref = momentum_competitor_dominates_held_exit(
         market,

@@ -61,48 +61,53 @@ Each entry type defines its own price band and stop-loss threshold. Constants ar
 | Variable | Default | Where |
 |----------|---------|-------|
 | `BUY_MIN_THRESHOLD` | **0.65** | `config/constants.py` |
-| `BUY_MAX_THRESHOLD` | **0.88** | `config/constants.py` (runtime) |
+| `BUY_MAX_THRESHOLD` | **0.84** | `config/constants.py` (runtime) |
 | `STOP_LOSS_NORMAL` | **0.50** | `config/constants.py` |
 | `MAX_MARKET_PROB_FOR_BUY` | **0.99** | `config/constants.py` |
 | `MIN_MODEL_PROB_FOR_BUY` | **0.0** (runtime) | `data/runtime_config.json` |
 | `RESEARCH_EDGE_GATE_BUY` | **false** (runtime) | `data/runtime_config.json` |
 
-Entry when price is in the band (0.78–0.88) and the candidate passes the competition filter (15% lead vs runner-up). With research and model-prob gates disabled by default, stable high-prob markets in 0.78–0.88 with no competing siblings flow through naturally.
+Entry when price is in the band (0.80–0.84 by default) and the candidate passes the competition filter (15% lead vs runner-up). The upper bound was tightened from 0.91 → **0.84** because buys at 0.85+ leave too little upside and large downside, and `place_buy` re-checks the **live CLOB best ask** before submitting; if it exceeds the entry-type max it logs `live_price_above_entry_type_max` and skips. With research and model-prob gates disabled by default, stable high-prob markets in 0.80–0.84 with no competing siblings flow through naturally.
 
-### Momentum Entry (absolute OR percent rise in 15 min) ⚡
+### Momentum Entry (absolute OR percent rise, dual-window) ⚡
 
 | Variable | Default | Where |
 |----------|---------|-------|
-| `MOMENTUM_ENTRY_RISE` | **0.15** | `config/constants.py` |
-| `MOMENTUM_PCT_RISE` | **0.35** | `config/constants.py` |
+| `MOMENTUM_ENTRY_RISE` | **0.20** | `config/constants.py` |
+| `MOMENTUM_PCT_RISE` | **6.0** (i.e. +600%) | `config/constants.py` |
 | `MOMENTUM_MIN_START_PRICE` | **0.10** | `config/constants.py` |
 | `MOMENTUM_MIN_PRICE` | **0.61** | `config/constants.py` |
 | `MOMENTUM_MAX_ENTRY` | **0.80** | `config/constants.py` |
+| `MOMENTUM_WINDOW_SECONDS` | **900** (15 min) | `config/constants.py` |
+| `MOMENTUM_FAST_WINDOW_SECONDS` | **300** (5 min) | `config/constants.py` |
 | `STOP_LOSS_MOMENTUM` | **0.45** | `config/constants.py` |
-| `STOP_LOSS_MOMENTUM_ENTRY_DROP_PCT` | **0.30** | `config/constants.py` |
+| `STOP_LOSS_MOMENTUM_ENTRY_DROP_PCT` | **0.40** | `config/constants.py` |
 
-Entry when YES rose by **absolute** rise OR **percent** rise in the configured window, with guardrails: min start price, min current price, and max current price. Rank and runner-up gap are logged for context but are not required for momentum entry. Bypasses model/edge gates.
+Entry when YES rose by **absolute** rise OR **percent** rise in **either** the standard 15-minute window **or** the new 5-minute fast window (`momentum_dual_window_check` in `decision_core.py`). Both windows use the same guardrails: min start price (no 0.001 → 0.01 noise), min current price, and max current price. Rank and runner-up gap are logged for context but are not required for momentum entry. Bypasses model/edge gates. **Both** the rise condition and the live-price band must hold at execution.
 
 ### Double Momentum Entry (absolute OR percent rise, wider band) 🚀
 
 | Variable | Default | Where |
 |----------|---------|-------|
-| `DOUBLE_MOMENTUM_ENTRY_RISE` | **0.30** | `config/constants.py` |
-| `DOUBLE_MOMENTUM_PCT_RISE` | **0.80** | `config/constants.py` |
+| `DOUBLE_MOMENTUM_ENTRY_RISE` | **0.40** | `config/constants.py` |
+| `DOUBLE_MOMENTUM_PCT_RISE` | **10.0** (i.e. +1000%) | `config/constants.py` |
 | `DOUBLE_MOMENTUM_MIN_START_PRICE` | **0.05** | `config/constants.py` |
-| `DOUBLE_MOMENTUM_MIN_PRICE` | **0.20** | `config/constants.py` |
-| `DOUBLE_MOMENTUM_MAX_PRICE` | **0.88** | `config/constants.py` |
-| `STOP_LOSS_DOUBLE_MOMENTUM` | **0.30** | `config/constants.py` |
-| `STOP_LOSS_DOUBLE_MOMENTUM_ENTRY_DROP_PCT` | **0.45** | `config/constants.py` |
+| `DOUBLE_MOMENTUM_MIN_PRICE` | **0.10** | `config/constants.py` |
+| `DOUBLE_MOMENTUM_MAX_PRICE` | **0.80** | `config/constants.py` |
+| `DOUBLE_MOMENTUM_FAST_WINDOW_SECONDS` | **300** (5 min) | `config/constants.py` |
+| `STOP_LOSS_DOUBLE_MOMENTUM` | **0.20** | `config/constants.py` |
+| `STOP_LOSS_DOUBLE_MOMENTUM_ENTRY_DROP_PCT` | **0.40** | `config/constants.py` |
 
-Entry when YES rose at least the configured absolute OR percent threshold in the window. Wider band than standard momentum: 0.20–0.88.
+Entry when YES rose at least the configured absolute OR percent threshold in **either** window. Same explicit guardrail: rise + live price band must both pass.
 
 ### How entry_type is determined
 
-At buy time, `evaluate_entry()` in `decision_core.py` sets `TradeDecision.entry_type`:
-- `"double_momentum"` → rise ≥0.30 points, price in 0.20–0.88
-- `"momentum"` → rise ≥0.15 points, price in 0.61–0.80
-- `"normal"` → everything else (price band + competition)
+At buy time, `evaluate_entry()` in `decision_core.py` sets `TradeDecision.entry_type` based on the dual-window check:
+- `"double_momentum"` → abs rise ≥0.40 OR pct rise ≥1000% in 15m **or** 5m, AND price in 0.10–0.80
+- `"momentum"` → abs rise ≥0.20 OR pct rise ≥600% in 15m **or** 5m, AND price in 0.61–0.80
+- `"normal"` → everything else (price in 0.65–0.84 + competition)
+
+The `TradeDecision` also carries `trigger_window` (`15m_std` / `5m_fast` / `both`), `trigger_abs_rise`, `trigger_pct_rise`, and a `full_reason` string that downstream logs/Telegram render verbatim.
 
 The `entry_type` is stored in `state.json → active_trades[market_id]["entry_type"]` and preserved through `sync_state_with_portfolio`. The per-type stop-loss is computed from `entry_type` via `stop_loss_bar_for_entry_type()` in `decision_core.py`.
 
@@ -133,13 +138,13 @@ A buy is executed only when **ALL** conditions pass, checked in order:
 | 10 | **Market prob ceiling** | market_yes ≤ max (skipped for momentum) | `MAX_MARKET_PROB_FOR_BUY = 0.99` | `config/constants.py` |
 | 11 | **Model prob floor** | model_prob ≥ min (skipped for momentum) — **default 0.0 in runtime, effectively off** | `MIN_MODEL_PROB_FOR_BUY = 0.10` (constant) / `0.0` (runtime) | `config/constants.py`, `data/runtime_config.json` |
 | 12 | **Not flat distribution** | model peak gate (skipped for momentum) — **default 0.0 in runtime, effectively off** | `DECISION_MIN_MODEL_PEAK_PROB = 0.12` (constant) / `0.0` (runtime) | `config/constants.py`, `data/runtime_config.json` |
-| 13 | **Momentum entry** ⚡ | Standard (+0.15 points) or Double (+0.30 points) — see entry type tables above | `MOMENTUM_ENTRY_RISE`, `DOUBLE_MOMENTUM_ENTRY_RISE` | `strategy/decision_core.py` |
-| 13b | **Momentum switch** 🔁 | hold A; B is #1 with momentum + gap → sell A, buy B | `MOMENTUM_SWITCH_ABOVE_HELD_GAP = 0.15` | `strategy/decision_core.py` |
+| 13 | **Momentum entry** ⚡ | Standard (+0.20 abs OR +600%) or Double (+0.40 abs OR +1000%) — checked in **15m std + 5m fast** windows | `MOMENTUM_ENTRY_RISE`, `MOMENTUM_PCT_RISE`, `DOUBLE_MOMENTUM_ENTRY_RISE`, `DOUBLE_MOMENTUM_PCT_RISE`, `MOMENTUM_FAST_WINDOW_SECONDS`, `DOUBLE_MOMENTUM_FAST_WINDOW_SECONDS` | `strategy/decision_core.py::momentum_dual_window_check` |
+| 13b | **Momentum switch** 🔁 | hold A; B is #1 with momentum + gap → sell A, **wait for fill**, then buy B atomically (`_execute_bucket_switch_sell`) | `MOMENTUM_SWITCH_ABOVE_HELD_GAP = 0.15` | `strategy/decision_core.py`, `strategy/trades.py` |
 | 14 | **Competition** | gap vs runner-up ≥ `min_lead` (skipped for momentum entry) | `MIN_LEAD_OVER_RUNNER_UP = 0.15` | `strategy/competition_filter.py` |
 | 15 | **No negative momentum** | 15-min change > -0.10 points (skipped for momentum) | — | `strategy/decision_core.py` |
 | 16 | **Edge gate** | `edge ≥ required_edge` (skipped for momentum) — **default OFF in runtime** (`research_edge_gate_buy=false`) | `RESEARCH_MIN_EDGE` | `strategy/research_signal.py` |
-| 17 | **Forecast gate** | bracket contradict check | `FORECAST_CONTRADICT_MARGIN_C = 2.5` | `strategy/trades.py` |
-| 18 | **CLOB price verify** | normal or momentum band at execution time | — | `strategy/trades.py` |
+| 17 | **Forecast gate** | bracket contradict check (relaxed for momentum/double-momentum) | `FORECAST_CONTRADICT_MARGIN_C = 2.5` | `strategy/trades.py` |
+| 18 | **CLOB price verify** | re-fetch live best ask, enforce entry-type max (`buy_max_threshold` / `momentum_max_entry` / `double_momentum_max_price`); skip with `live_price_above_entry_type_max` if breached | — | `strategy/trades.py::place_buy` |
 | 19 | **Market churn** | no cooldown from prior stop-loss on this market | `CHURN_COOLDOWN_SEC = 1200` | `strategy/churn.py` |
 
 ---
@@ -158,7 +163,7 @@ Exits are checked in priority order (first match wins). There are **two loops** 
 | 1 | **Market resolved** | status = closed/claimable/resolved → CLAIM | 30s | `STATUS_CLOSED` | `config/constants.py` |
 | 2 | **Momentum fast exit** 🚨 | ABSOLUTE price drop ≥ **0.15** from peak in 15-min window **and** mark < entry | **2s** (watcher) + 30s (main) | `MOMENTUM_FAST_EXIT_DROP = 0.15` | `config/constants.py`, `strategy/momentum_engine.py` |
 | 3 | **Dominant competitor** | sibling #1 by YES has momentum + gap ≥ held + 0.15 → EXIT | 30s | `MOMENTUM_SWITCH_ABOVE_HELD_GAP` | `strategy/decision_core.py` |
-| 4 | **Competitor surge** 🔥 | any sibling rose ≥0.15 points in 15 min | 30s | `MOMENTUM_COMPETITOR_SURGE = 0.15` | `config/constants.py` |
+| 4 | **Competitor surge** 🔥 | any sibling rose ≥ `momentum_competitor_surge` **absolute** points in `momentum_window_seconds` | 30s | `MOMENTUM_COMPETITOR_SURGE` (default **0.25**) | `config/constants.py` + `data/runtime_config.json` → `strategy/decision_core.py::check_exits` → `peer_surge_detected` |
 | 5 | **Time-decay** ⏰ | held >2h AND **(mark − entry) < min_gain_points** AND mark < max_price | 30s | `time_decay_hours`, `time_decay_min_gain`, `time_decay_max_price` (defaults in `TIME_DECAY_*`) | `strategy/time_filter.py`, `data/runtime_config.json` |
 | 6 | **Research model flip** | forecast contradict (optional, default off) | 30s | `RESEARCH_EXIT_ON_MODEL_FLIP` | `config/constants.py` |
 | 7 | **Per-type stop-loss** 🆕 | mark < effective stop (hard floor + entry-relative) | **2s** (watcher) + 30s (main) | `STOP_LOSS_NORMAL=0.50`, `STOP_LOSS_MOMENTUM=0.45`, `STOP_LOSS_DOUBLE_MOMENTUM=0.30` | `config/constants.py`, `strategy/decision_core.py` |
@@ -170,6 +175,18 @@ Momentum entry, competitor surge, and fast exit use **absolute price points**, n
 - Entry: 0.40 → 0.46 is **not** +0.15 momentum; 0.40 → 0.55 is.
 - Surge: peer 0.30 → 0.45 qualifies; 0.30 → 0.345 does not.
 - Fast exit: peak-to-trough ≥ **0.15 absolute** exits (e.g., 0.75 → 0.59 = 0.16 > 0.15).
+
+#### Where to change competitor surge (not the same as price stop-loss)
+
+This exit is **`competitor-surge`**: a **sibling bucket** in the same event gained at least **`momentum_competitor_surge`** YES points inside **`momentum_window_seconds`**. It is **not** `stop_loss_normal` / trailing — those compare **our** market’s mark to floors.
+
+| What to edit | Key / constant |
+|--------------|----------------|
+| Static default | `MOMENTUM_COMPETITOR_SURGE` in `config/constants.py` |
+| Live override (preferred) | `momentum_competitor_surge` in `data/runtime_config.json` |
+| Code path | `momentum_competitor_surge_thr(settings)` in `strategy/decision_core.py` → passed to `peer_surge_detected(..., surge_threshold=...)` from `check_exits` |
+
+**Tuning direction:** the value is a **minimum rise** on the peer. **Higher number** (e.g. 0.25) → peer must jump **more** before we exit → **fewer** surge exits. **Lower number** (e.g. 0.08) → exit **sooner** when any sibling climbs a little.
 
 Example: entered at 0.60, price spiked to 0.75, then dropped to 0.59.
 - Peak = 0.75, current = 0.59, drop = 0.16 > 0.15 → **exit**
@@ -183,13 +200,38 @@ The stop-loss bar depends on how the position was entered:
 |------------|--------|---------|
 | `normal` | **0.50** | hard floor for normal entries |
 | `momentum` | **0.45** | Entered at 0.70, exits if mark < 0.45 |
-| `double_momentum` | **0.30** | Entered at 0.50, exits if mark < 0.30 |
+| `double_momentum` | **0.20** | Entered at 0.30, exits if mark < 0.20 |
 
-Effective stop also includes entry-relative drop:
+Effective stop also includes entry-relative drop **and** the trailing stop level:
 
-`effective_stop = max(stop_loss_by_type, entry_price * (1 - entry_drop_pct_by_type))`
+`effective_stop = max(stop_loss_by_type, entry_price * (1 - entry_drop_pct_by_type), trailing_stop_level_if_active)`
 
 The `entry_type` is stored in `state.json` at buy time and used by both the main loop and the fast exit watcher.
+
+### Trailing Stop 🆕
+
+A profit-protection layer that piggy-backs on the per-type stop. Logic in `strategy/decision_core.py::trailing_stop_level`:
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `TRAILING_STOP_ENABLED` | `true` | master toggle |
+| `TRAILING_STOP_ACTIVATION_GAIN` | **0.20** | unlock once `highest_seen_price ≥ entry_price + 0.20` |
+| `TRAILING_STOP_LOCK_GAIN` | **0.10** | once unlocked, lock stop at `entry_price + 0.10` |
+
+Both the main loop and the fast exit watcher call `update_highest_seen_price` so `trade["highest_seen_price"]` always reflects the running peak from live CLOB. The trailing level is folded into `effective_stop_price_for_trade` and applies to **all** entry types unless disabled in runtime config.
+
+### Stop-Loss Categories 🆕
+
+When a stop-loss fires, the bot tags the breach so reports and Telegram messages can distinguish a slow bleed from a sudden crash. `strategy/decision_core.py::classify_stop_loss_breach` returns one of:
+
+| Category | When |
+|----------|------|
+| `SL_ABSOLUTE` | mark below per-type hard floor |
+| `SL_RELATIVE` | mark below `entry_price × (1 − entry_drop_pct)` |
+| `SL_TRAILING` | mark below `entry_price + lock_gain` after activation |
+| `SL_MOMENTUM` | momentum drawdown fast exit (`momentum_fast_exit_drop`) |
+
+The category is stored on the trade row (`trade["sl_category"]` / `trade["sl_level"]` / `trade["sl_drawdown_points"]`) so it survives the close path, ledger write, and the Telegram template (`🔴 SELL: [STOP LOSS] - Reason: Trailing Stop (Trigger: 0.60, Max Seen: 0.72)`).
 
 ### Fast Exit Watcher 🆕
 
@@ -203,6 +245,96 @@ A **daemon thread** running every **2 seconds** that checks ONLY open positions 
 - Module: `strategy/fast_exit_watcher.py`
 - Started in `strategy/bot_runner.py` at startup
 - Interval configurable: `FAST_EXIT_WATCHER_INTERVAL_SEC = 2` (runtime override via `runtime_config.json`)
+
+---
+
+## Order Execution — Limit-First 🆕
+
+By default the bot now **never** places blind market orders for buys. The flow is in `strategy/limit_executor.py::execute_buy` and on the sell side in `strategy/trades.py::close_position`.
+
+### Buy path
+
+1. `place_buy` re-fetches the **live CLOB best ask** (`get_clob_best_ask_yes`) and snaps it to the market tick (`align_price_to_tick_buy`).
+2. If best ask exceeds the entry-type max (see entry-type tables) the buy is skipped with reason `live_price_above_entry_type_max` and structured log fields `entry_type / decision_price / live_clob_price_before_order / max_allowed_price / buy_allowed_true_false`.
+3. Otherwise a **GTC limit buy** is posted at `best_ask + buy_limit_price_offset`.
+4. Up to `buy_limit_order_timeout_sec` seconds the executor polls `get_order_state`. Filled → state is written; not filled → `cancel_order` is called and the candidate is dropped (no chasing).
+5. Slippage and fill price are recorded in `state.json → active_trades[market_id]["execution_*"]` and in the trade ledger for post-mortems.
+6. If `limit_orders_enabled` is `false`, the same wrapper falls back to the legacy market order so the toggle is reversible without a redeploy.
+
+### Sell path
+
+* Normal take-profit and non-emergency exits attempt a limit sell first (best bid − `sell_limit_price_offset`) with `sell_limit_order_timeout_sec`.
+* Stop-loss / momentum-fast-exit / bucket-switch / time-decay are tagged as **emergency** (see `EMERGENCY_SELL_REASONS` in `config/constants.py`). When `emergency_exit_allow_market_order` is `true`, the bot is allowed to fall back to market orders so safety wins over fee savings.
+
+### Config keys
+
+| Key | Default |
+|-----|---------|
+| `limit_orders_enabled` | `true` |
+| `buy_limit_order_timeout_sec` | `8` |
+| `sell_limit_order_timeout_sec` | `5` |
+| `emergency_exit_allow_market_order` | `true` |
+| `buy_limit_price_offset` | `0.0` |
+| `sell_limit_price_offset` | `0.005` |
+| `require_fill_before_state_buy` | `true` |
+
+---
+
+## Safe Bucket Switching 🆕
+
+`strategy/trades.py::_execute_bucket_switch_sell` enforces the **sell first → confirm → buy** ordering so the bot never holds two buckets in the same gamma event. Each step emits a structured log line via `_bucket_switch_log` and a Telegram update via `_bucket_switch_telegram`:
+
+| Log label | Trigger |
+|-----------|---------|
+| `switch_candidate_detected` | `decision_core` flagged a stronger sibling |
+| `switch_sell_started` | the held position is being closed |
+| `switch_sell_failed_skip_buy` | the sell attempt did not complete — buy is **aborted** |
+| `switch_sell_success_buy_new` | sell confirmed, new bucket buy is initiated |
+| `switch_buy_failed_after_sell` | sell succeeded, but buy on the new bucket failed |
+| `switch_completed` | both legs succeeded |
+
+If the sell fails for any reason the new buy is unconditionally skipped. The sell uses the emergency path so it can fall back to a market order when needed.
+
+---
+
+## Telegram Failed-Exit Dedup 🆕
+
+`strategy/telegram_dedup.py` replaces the old SHA-256 fingerprint with a `(market_id, exit_reason, error_category)` cooldown. `categorize_error` strips IDs/whitespace from the underlying error string so a sequence of similar failures (e.g. repeated `not enough liquidity`) does **not** spam Telegram.
+
+| Key | Default | Purpose |
+|-----|---------|---------|
+| `telegram_failed_exit_dedupe_enabled` | `true` | master toggle |
+| `telegram_failed_exit_cooldown_sec` | `900` | min seconds between identical failure notices |
+
+Behaviour:
+
+* First failure for a `(market_id, reason, category)` triple → Telegram sends one message and logs `telegram_failed_exit_first_notice`.
+* Subsequent identical failures inside the cooldown → suppressed; logs `telegram_failed_exit_suppressed_duplicate`.
+* On the next successful close, `clear_failed_exit_notices(market_id)` runs and the normal SELL message is sent. Logs `telegram_failed_exit_success_cleared`.
+* A different category or a new exit_reason (e.g. switching from `stop-loss` to `take-profit`) produces a new message immediately.
+
+The dedup applies to: stop-loss failures, take-profit failures, emergency exits, and bucket-switch sell failures. Successful BUY/SELL/CLAIM/STOP-LOSS messages are unaffected.
+
+---
+
+## Rich Trade Logging 🆕
+
+Every BUY/SELL row in `data/trade_log_YYYY-MM-DD.csv` (and the JSONL ledger) now carries the full traceable context. Schema lives in `state/pnl_ledger.py::TRADE_CSV_FIELDS`:
+
+| Field | Description |
+|-------|-------------|
+| `entry_type` | `normal` / `momentum` / `double_momentum` |
+| `trigger_window` | `15m_std` / `5m_fast` / `both` (`-` for normal entries) |
+| `trigger_abs_rise`, `trigger_pct_rise` | exact values that satisfied the rise gate |
+| `decision_price` | Gamma price at the moment of decision |
+| `live_clob_price_before_order` | best-ask read just before submitting |
+| `execution_mode` | `limit` / `market` / `emergency_market` / `cancelled` |
+| `execution_limit_price`, `execution_fill_price`, `execution_slippage` | from the limit executor |
+| `sl_category` | `SL_ABSOLUTE` / `SL_RELATIVE` / `SL_TRAILING` / `SL_MOMENTUM` (sell rows only) |
+| `highest_seen_price` | trailing-stop reference at exit time |
+| `full_reason` | human-readable concatenation; toggled by `trade_log_full_reason_enabled` |
+
+Telegram BUY/SELL HTML mirrors the same data when `telegram_verbose_trade_reason=true` so the chat tells you exactly which window/metric/band fired the trade.
 
 ---
 
@@ -354,7 +486,7 @@ Every trade (buy/sell/claim) and every scheduled report sends a rich portfolio m
 | `momentum_pct_rise` | 0.35 | Min **fractional** YES rise alternative for momentum entry |
 | `momentum_min_start_price` | 0.10 | Ignore near-zero start prices for pct logic |
 | `momentum_fast_exit_drop` | 0.15 | Min **absolute** peak-to-trough drop inside the window for momentum fast exit |
-| `momentum_competitor_surge` | 0.15 | Min **absolute** YES rise for sibling surge exit |
+| `momentum_competitor_surge` | 0.25 | Min **absolute** YES rise on **any sibling** in the event (within `momentum_window_seconds`) to fire exit **`competitor-surge`** — raise to require a bigger peer jump; lower to exit earlier on peer strength |
 
 ### Time decay (runtime) 🆕
 | Key | Default | Description |
@@ -378,3 +510,39 @@ Every trade (buy/sell/claim) and every scheduled report sends a rich portfolio m
 | Key | Default | Description |
 |-----|---------|-------------|
 | `fast_exit_watcher_interval_sec` | 2 | Polling interval (seconds) |
+
+### Limit-Order Execution 🆕
+| Key | Default | Description |
+|-----|---------|-------------|
+| `limit_orders_enabled` | `true` | master toggle for limit-first buy/sell |
+| `buy_limit_order_timeout_sec` | `8` | seconds to wait for a buy limit fill before cancel |
+| `sell_limit_order_timeout_sec` | `5` | seconds to wait for a non-emergency sell limit fill |
+| `emergency_exit_allow_market_order` | `true` | allow market fallback on stop-loss / fast-exit / switch |
+| `buy_limit_price_offset` | `0.0` | added to best ask for buy limit price (use negative to be tighter) |
+| `sell_limit_price_offset` | `0.005` | subtracted from best bid for non-emergency sells |
+| `require_fill_before_state_buy` | `true` | only mark position open when the limit buy actually fills |
+
+### Trailing Stop & SL Categories 🆕
+| Key | Default | Description |
+|-----|---------|-------------|
+| `trailing_stop_enabled` | `true` | enable trailing stop for all entry types |
+| `trailing_stop_activation_gain` | `0.20` | unlock trailing stop when peak ≥ entry + this |
+| `trailing_stop_lock_gain` | `0.10` | once unlocked, lock stop at entry + this |
+
+### Fast Momentum Window 🆕
+| Key | Default | Description |
+|-----|---------|-------------|
+| `momentum_fast_window_seconds` | `300` | fast (5m) window for normal momentum check |
+| `double_momentum_fast_window_seconds` | `300` | fast (5m) window for double momentum check |
+
+### Telegram Failed-Exit Dedup 🆕
+| Key | Default | Description |
+|-----|---------|-------------|
+| `telegram_failed_exit_dedupe_enabled` | `true` | suppress repeated failed-exit notifications |
+| `telegram_failed_exit_cooldown_sec` | `900` | seconds before the same failure may notify again |
+
+### Rich Trade Logging & Telegram Verbosity 🆕
+| Key | Default | Description |
+|-----|---------|-------------|
+| `trade_log_full_reason_enabled` | `true` | write the full reason string to the trade ledger |
+| `telegram_verbose_trade_reason` | `true` | render trigger window/metric/band lines in Telegram |

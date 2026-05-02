@@ -1,4 +1,3 @@
-import hashlib
 import os
 import time
 from typing import Any, Dict, List, Optional
@@ -22,8 +21,13 @@ from config.constants import (
     SELL_BELOW_MIN_COOLDOWN_SEC,
     SELL_BELOW_MIN_TELEGRAM_COOLDOWN_SEC,
     SELL_BYPASS_MIN_COOLDOWN_REASONS,
+    SL_CATEGORY_ABSOLUTE,
+    SL_CATEGORY_MOMENTUM,
+    SL_CATEGORY_RELATIVE,
+    SL_CATEGORY_TRAILING,
     STATUS_CLOSED,
     TAKE_PROFIT_COMPARE_SLACK,
+    TERM_CYAN,
     TERM_DIM,
     TERM_RED,
     TERM_YELLOW,
@@ -80,6 +84,18 @@ from strategy.decision_core import (
     effective_stop_price_for_trade,
     evaluate_entry,
     momentum_window_sec,
+    momentum_fast_window_sec,
+    double_momentum_fast_window_sec,
+    momentum_dual_window_check,
+)
+from strategy.limit_executor import (
+    LimitExecutionResult,
+    execute_buy,
+)
+from strategy.telegram_dedup import (
+    categorize_error,
+    clear_failed_exit_notices,
+    should_send_failed_exit_notice,
 )
 from strategy.probability import (
     parse_market_probability,
@@ -92,7 +108,6 @@ from forecast.parse_title import (
     forecast_supports_yes,
     parse_highest_temp_title,
 )
-from strategy.momentum_engine import momentum_entry_signal_with_pct
 from strategy.research_signal import edge_size_multiplier
 from strategy.sizing import compute_buy_usd_amount, planned_buy_cap_lines
 from strategy.time_filter import entry_time_allowed
@@ -198,6 +213,403 @@ _TRADE_CSV_PLAN_PAD = {
     "buy_est_sl_pnl_usd": "",
     "buy_est_yes_resolve_pnl_usd": "",
 }
+
+
+def entry_type_max_price(entry_type: str, settings: RuntimeSettings) -> float:
+    """resolve the max allowed live CLOB price for a buy of this entry type."""
+    et = str(entry_type or "normal").strip()
+    if et == "double_momentum":
+        return float(
+            getattr(settings, "double_momentum_max_price", DOUBLE_MOMENTUM_MAX_PRICE)
+        )
+    if et == "momentum":
+        return float(getattr(settings, "momentum_max_entry", MOMENTUM_MAX_ENTRY))
+    return float(getattr(settings, "buy_max", 0.84))
+
+
+def entry_type_min_price(entry_type: str, settings: RuntimeSettings) -> float:
+    et = str(entry_type or "normal").strip()
+    if et == "double_momentum":
+        return float(
+            getattr(settings, "double_momentum_min_price", DOUBLE_MOMENTUM_MIN_PRICE)
+        )
+    if et == "momentum":
+        return float(getattr(settings, "momentum_min_price", MOMENTUM_MIN_PRICE))
+    return float(getattr(settings, "buy_min", 0.80))
+
+
+def update_highest_seen_price(trade_row: Dict[str, Any], live_price: float) -> float:
+    """track the running peak so trailing stop has a reliable reference.
+
+    returns the updated highest_seen_price.
+    """
+    px = float(live_price or 0.0)
+    if px <= 0:
+        return float(trade_row.get("highest_seen_price") or 0.0)
+    cur = float(trade_row.get("highest_seen_price") or 0.0)
+    if px > cur:
+        trade_row["highest_seen_price"] = round(px, 6)
+        return px
+    return cur
+
+
+def _trigger_window_label(window: str) -> str:
+    if window == "5m_fast":
+        return "5m Fast"
+    if window == "15m_std":
+        return "15m Std"
+    if window == "both":
+        return "Both Windows"
+    return ""
+
+
+def _entry_type_label(entry_type: str) -> str:
+    et = str(entry_type or "normal").strip().lower()
+    if et == "double_momentum":
+        return "DOUBLE MOMENTUM"
+    if et == "momentum":
+        return "MOMENTUM"
+    return "NORMAL"
+
+
+def _format_trigger_summary_html(td: TradeDecision) -> str:
+    """build the human-readable trigger context for a momentum BUY telegram."""
+    if not td or td.entry_type == "normal" or td.trigger_window == "none":
+        return ""
+    window_label = _trigger_window_label(td.trigger_window)
+    abs_pts = float(td.trigger_abs_rise or 0.0)
+    pct = float(td.trigger_pct_rise or 0.0)
+    pct_str = f"{pct * 100:.0f}%"
+    return (
+        f"⚡ Triggered by {tg_escape(window_label)} Window "
+        f"(<code>+{abs_pts:+.3f} pts / {tg_escape(pct_str)}</code>)\n"
+    )
+
+
+def _format_band_summary_html(entry_type: str, live_price: float, settings: RuntimeSettings) -> str:
+    lo = entry_type_min_price(entry_type, settings)
+    hi = entry_type_max_price(entry_type, settings)
+    label = _entry_type_label(entry_type)
+    return (
+        f"📈 Entry price <code>{live_price:.4f}</code> within "
+        f"{tg_escape(label.title())} Band "
+        f"(<code>{lo:.2f}</code>-<code>{hi:.2f}</code>)\n"
+    )
+
+
+def _sl_category_human(category: str) -> str:
+    if category == SL_CATEGORY_TRAILING:
+        return "Trailing Stop"
+    if category == SL_CATEGORY_RELATIVE:
+        return "Entry-Drop Stop"
+    if category == SL_CATEGORY_ABSOLUTE:
+        return "Hard Floor Stop"
+    if category == SL_CATEGORY_MOMENTUM:
+        return "Momentum Drawdown"
+    return ""
+
+
+def _sell_header_label(reason: str) -> str:
+    r = str(reason or "").strip().lower()
+    if r in ("stop-loss",):
+        return "STOP LOSS"
+    if r == "trailing-stop":
+        return "TRAILING STOP"
+    if r == "momentum-stop-loss":
+        return "MOMENTUM STOP LOSS"
+    if r == "take-profit":
+        return "TAKE PROFIT"
+    if r in ("competitor-surge", "peer-yes-surge", "momentum-competitor-dominant"):
+        return "COMPETITOR SURGE"
+    if r == "time-decay":
+        return "TIME DECAY"
+    if r == "momentum-switch-out":
+        return "MOMENTUM SWITCH OUT"
+    if r == "research-model-flip":
+        return "RESEARCH FLIP"
+    return "SELL"
+
+
+def _build_full_reason_buy(
+    td: Optional[TradeDecision],
+    entry_type: str,
+    exec_result: "LimitExecutionResult",
+) -> str:
+    """concatenated single-line reason path for a BUY (used in CSV/logs)."""
+    parts: List[str] = []
+    parts.append(f"entry_type={entry_type}")
+    if td is not None:
+        parts.append(f"decision_reason={str(td.reason)[:120]}")
+        parts.append(f"trigger_window={td.trigger_window}")
+        parts.append(
+            f"trigger_metric=abs={float(td.trigger_abs_rise):+.4f},pct={float(td.trigger_pct_rise):+.4f}"
+        )
+        parts.append(
+            f"prices=old={float(td.trigger_old_price):.4f},new={float(td.trigger_new_price):.4f}"
+        )
+    parts.append(f"exec_mode={exec_result.mode}")
+    parts.append(
+        f"limit_px={exec_result.limit_price:.4f}|fill_px={exec_result.fill_price:.4f}"
+        f"|slip={exec_result.slippage_estimate:+.4f}"
+    )
+    return " · ".join(parts)[:400]
+
+
+def _build_full_reason_sell(
+    trade: Dict[str, Any],
+    reason: str,
+    *,
+    execution_mode: str,
+    fill_price: float,
+    limit_price: float,
+    settings: Optional[RuntimeSettings] = None,
+) -> str:
+    parts: List[str] = []
+    parts.append(f"reason={reason}")
+    cat = str(trade.get("sl_category") or "").strip()
+    if cat:
+        parts.append(f"sl_category={cat}")
+    level = trade.get("sl_level")
+    if level is not None:
+        parts.append(f"sl_level={float(level):.4f}")
+    if settings is not None and reason in ("stop-loss", "trailing-stop"):
+        et = str(trade.get("entry_type") or "normal").strip()
+        ent = float(trade.get("entry_price") or 0.0)
+        peak = float(trade.get("highest_seen_price") or 0.0)
+        if ent > 1e-9:
+            eff = effective_stop_price_for_trade(
+                et, ent, settings, highest_seen_price=peak
+            )
+            parts.append(f"sl_effective={eff:.4f}")
+    peak = float(trade.get("highest_seen_price") or 0.0)
+    if peak > 0:
+        parts.append(f"max_seen={peak:.4f}")
+    dd = trade.get("sl_drawdown_points")
+    if dd is not None:
+        parts.append(f"dd={float(dd):+.4f}")
+    parts.append(f"exec_mode={execution_mode}")
+    parts.append(
+        f"limit_px={limit_price:.4f}|fill_px={fill_price:.4f}"
+    )
+    return " · ".join(parts)[:400]
+
+
+def _bucket_switch_log(step: str, **fields: Any) -> None:
+    """structured terminal log for each bucket-switch step.
+
+    keeps every label requested by the strategy hardening doc:
+    switch_candidate_detected / switch_sell_started / switch_sell_failed_skip_buy /
+    switch_sell_success_buy_new / switch_buy_failed_after_sell / switch_completed.
+    """
+    parts = [f"step={step}"]
+    for key, value in fields.items():
+        parts.append(f"{key}={value!r}")
+    body = "  ".join(parts)
+    print(term_wrap(TERM_CYAN, f"[bucket_switch] {body}"))
+
+
+def _bucket_switch_telegram(
+    telegram: TelegramBot,
+    settings: RuntimeSettings,
+    *,
+    step_label: str,
+    target_title: str,
+    held_title: str,
+    extra: str = "",
+) -> None:
+    if not bool(getattr(settings, "telegram_verbose_trade_reason", True)):
+        return
+    if not telegram.is_configured():
+        return
+    try:
+        body = (
+            f"{_telegram_local_clock_html()}"
+            f"🔁 <b>BUCKET SWITCH</b> · <i>{tg_escape(step_label)}</i>\n"
+            f"out: {tg_escape(held_title)}\n"
+            f"in:  {tg_escape(target_title)}"
+        )
+        if extra:
+            body += f"\n<pre>{tg_escape(extra)}</pre>"
+        telegram.send_html_chunks(body)
+    except requests.RequestException:
+        pass
+
+
+def _execute_bucket_switch_sell(
+    *,
+    client: PolymarketClient,
+    telegram: TelegramBot,
+    state: Dict[str, Any],
+    settings: RuntimeSettings,
+    held_market: Dict[str, Any],
+    held_key: str,
+    target_title: str,
+    target_market_id: str,
+) -> bool:
+    """sell the held bucket atomically before allowing a new BUY in the same event.
+
+    returns True when the held position is cleared (so caller may proceed to
+    place_buy on the target). returns False if the sell failed or didn't fully
+    clear the position — in that case the caller MUST NOT place a new buy.
+    """
+    held_title = str(
+        held_market.get("question") or held_market.get("title") or held_key
+    )
+    _bucket_switch_log(
+        "switch_candidate_detected",
+        held_key=held_key,
+        target=target_market_id,
+    )
+    _bucket_switch_telegram(
+        telegram,
+        settings,
+        step_label="candidate detected",
+        target_title=target_title,
+        held_title=held_title,
+    )
+    _bucket_switch_log("switch_sell_started", held_key=held_key)
+    _bucket_switch_telegram(
+        telegram,
+        settings,
+        step_label="selling held first",
+        target_title=target_title,
+        held_title=held_title,
+    )
+    try:
+        close_position(
+            client,
+            held_market,
+            state,
+            telegram,
+            parse_market_probability(held_market),
+            "momentum-switch-out",
+            settings,
+            state_trade_key=held_key,
+        )
+    except Exception as err:
+        _bucket_switch_log("switch_sell_failed_skip_buy", error=repr(err))
+        _bucket_switch_telegram(
+            telegram,
+            settings,
+            step_label="sell failed — skip buy",
+            target_title=target_title,
+            held_title=held_title,
+            extra=repr(err),
+        )
+        return False
+    still_held = (state.get("active_trades") or {}).get(held_key)
+    if still_held:
+        _bucket_switch_log(
+            "switch_buy_failed_after_sell",
+            reason="held_not_cleared",
+            held_key=held_key,
+        )
+        _bucket_switch_telegram(
+            telegram,
+            settings,
+            step_label="held not cleared — skip buy",
+            target_title=target_title,
+            held_title=held_title,
+        )
+        return False
+    _bucket_switch_log(
+        "switch_sell_success_buy_new", held_key=held_key, target=target_market_id
+    )
+    _bucket_switch_telegram(
+        telegram,
+        settings,
+        step_label="sell ok — placing new buy",
+        target_title=target_title,
+        held_title=held_title,
+    )
+    return True
+
+
+def _emit_failed_exit_telegram(
+    *,
+    telegram: TelegramBot,
+    settings: RuntimeSettings,
+    market_id: str,
+    reason: str,
+    title: str,
+    sell_shares: float,
+    exchange_yes: float,
+    mark: float,
+    detail: str,
+) -> None:
+    """send a deduped failed-exit notification.
+
+    suppresses repeats for the same (market_id, reason, error_category)
+    inside the configured cooldown so the user gets one alert per failure mode
+    instead of every tick. terminal logs continue as before.
+    """
+    err_cat = categorize_error(detail)
+    if not should_send_failed_exit_notice(
+        settings,
+        market_id=market_id,
+        exit_reason=reason,
+        error_category=err_cat,
+    ):
+        print(
+            term_wrap(
+                TERM_DIM,
+                f"[telegram_dedup] failed-exit suppressed market={market_id} "
+                f"reason={reason} category={err_cat}",
+            )
+        )
+        return
+    if not telegram.is_configured():
+        return
+    cooldown = int(getattr(settings, "telegram_failed_exit_cooldown_sec", 900))
+    print(
+        term_wrap(
+            TERM_DIM,
+            f"[telegram_dedup] failed-exit FIRST notice market={market_id} "
+            f"reason={reason} category={err_cat} cooldown={cooldown}s",
+        )
+    )
+    try:
+        telegram.send_html_chunks(
+            f"{_telegram_local_clock_html()}"
+            f"🔴 <b>SELL FAILED</b> <code>{tg_escape(reason)}</code>"
+            f"  ·  category <code>{tg_escape(err_cat)}</code>\n"
+            f"{tg_escape(title)}\n"
+            f"shares <code>{sell_shares:.6f}</code>  ·  exch ~<code>{exchange_yes:.6f}</code>"
+            f"  ·  mark <code>{mark:.4f}</code>\n"
+            f"<pre>{tg_escape(detail)}</pre>"
+        )
+    except requests.RequestException:
+        pass
+
+
+def _format_sl_category_html(trade: Dict[str, Any], reason: str) -> str:
+    """render a one-line category summary for SELL telegram."""
+    if reason not in (
+        "stop-loss",
+        "trailing-stop",
+        "momentum-stop-loss",
+    ):
+        return ""
+    category = str(trade.get("sl_category") or "").strip()
+    if not category:
+        return ""
+    label = _sl_category_human(category)
+    if not label:
+        return ""
+    parts = [f"🧭 SL category <code>{tg_escape(category)}</code> · {tg_escape(label)}"]
+    level = trade.get("sl_level")
+    if level is not None:
+        parts.append(f"trigger <code>{float(level):.4f}</code>")
+    peak = float(trade.get("highest_seen_price") or 0.0)
+    if peak > 0:
+        parts.append(f"max seen <code>{peak:.4f}</code>")
+    dd = trade.get("sl_drawdown_points")
+    if dd is not None:
+        parts.append(f"dd <code>{float(dd):+.4f}</code>")
+    eff = trade.get("sl_effective")
+    if eff is not None and float(eff) > 0:
+        parts.append(f"bar <code>{float(eff):.4f}</code>")
+    return " · ".join(parts) + "\n"
 
 
 def market_event_id(market: Dict[str, Any]) -> str:
@@ -317,47 +729,53 @@ def place_buy(
         or market.get("title")
         or market.get("id", "unknown-market")
     )
-    # verify real CLOB price before committing
-    clob_price = client.get_clob_yes_price(market)
-    mom_relax = bool(
-        trade_decision is not None
-        and getattr(trade_decision, "momentum_relaxed_gates", False)
-    )
-    mom_lo_pb = float(getattr(settings, "momentum_min_price", MOMENTUM_MIN_PRICE))
-    mom_hi_pb = float(getattr(settings, "momentum_max_entry", MOMENTUM_MAX_ENTRY))
+    decision_price = float(probability or 0.0)
+    # always-fresh CLOB best ask — bypass any cached gamma value because price
+    # can move between scan and submit on fast-moving buckets.
+    live_clob = client.get_clob_best_ask_yes(market)
+    if live_clob <= 0:
+        live_clob = client.get_clob_yes_price(market)
     entry_type = "normal"
     if trade_decision:
         entry_type = getattr(trade_decision, "entry_type", "normal") or "normal"
-    if entry_type == "double_momentum":
-        mom_lo_pb = float(
-            getattr(settings, "double_momentum_min_price", DOUBLE_MOMENTUM_MIN_PRICE)
+    max_allowed = entry_type_max_price(entry_type, settings)
+    min_allowed = entry_type_min_price(entry_type, settings)
+    band_off = bool(getattr(settings, "buy_disable_price_band", False))
+    print(
+        term_wrap(
+            TERM_DIM,
+            f"[buy_safety] entry_type={entry_type} decision={decision_price:.4f} "
+            f"live_clob={live_clob:.4f} max_allowed={max_allowed:.4f} "
+            f"min_allowed={min_allowed:.4f} band_off={band_off}\n  {title}",
         )
-        mom_hi_pb = float(
-            getattr(settings, "double_momentum_max_price", DOUBLE_MOMENTUM_MAX_PRICE)
-        )
-    if not getattr(settings, "buy_disable_price_band", False):
-        hi = mom_hi_pb if mom_relax else float(settings.buy_max)
-        lo = mom_lo_pb if mom_relax else float(settings.buy_min)
-        if clob_price > 0 and clob_price > hi + 1e-9:
+    )
+    if not band_off and live_clob > 0:
+        if live_clob > max_allowed + 1e-9:
             print(
                 term_wrap(
-                    TERM_DIM,
-                    f"[clob price] skip buy — CLOB yes={clob_price:.4f} > band_hi={hi:.4f}\n  {title}",
+                    TERM_RED,
+                    f"[buy_safety] skip buy — live_price_above_entry_type_max "
+                    f"live={live_clob:.4f} > max={max_allowed:.4f} "
+                    f"type={entry_type} buy_allowed=false\n  {title}",
                 )
             )
             return
-        if clob_price > 0 and clob_price < lo - 1e-9:
+        if live_clob < min_allowed - 1e-9:
             print(
                 term_wrap(
                     TERM_DIM,
-                    f"[clob price] skip buy — CLOB yes={clob_price:.4f} < band_lo={lo:.4f}\n  {title}",
+                    f"[buy_safety] skip buy — live_price_below_entry_type_min "
+                    f"live={live_clob:.4f} < min={min_allowed:.4f} "
+                    f"type={entry_type} buy_allowed=false\n  {title}",
                 )
             )
             return
-    if clob_price > 0:
-        probability = clob_price
+    if live_clob > 0:
+        probability = live_clob
 
     # decision engine already validated — use its result
+    # momentum/double_momentum bypass the forecast contradiction gate (legacy mom_relax).
+    mom_relax = entry_type in ("momentum", "double_momentum")
     research_decision = trade_decision.research if trade_decision else None
     forecast_usd_factor = 1.0
     if research_decision is not None:
@@ -436,8 +854,16 @@ def place_buy(
     set_trade_lock(state, "buy_market", market_id, TRADE_BUY_LOCK_TTL_SEC)
     if event_id:
         set_trade_lock(state, "buy_event", event_id, TRADE_BUY_LOCK_TTL_SEC)
+    require_fill = bool(getattr(settings, "require_fill_before_state_buy", True))
+    exec_result: Optional[LimitExecutionResult] = None
     try:
-        order = client.place_market_buy_yes(market, usd)
+        exec_result = execute_buy(
+            client=client,
+            market=market,
+            usd_amount=usd,
+            settings=settings,
+            decision_price=float(probability),
+        )
     except PolyApiException as err:
         clear_trade_lock(state, "buy_market", market_id)
         if event_id:
@@ -466,7 +892,64 @@ def place_buy(
         except requests.RequestException:
             pass
         return
-    shares = round(usd / probability, 6) if probability else 0.0
+
+    # log execution outcome before deciding whether to record state
+    print(
+        term_wrap(
+            TERM_CYAN,
+            f"[execution] mode={exec_result.mode} filled={exec_result.filled} "
+            f"limit_px={exec_result.limit_price:.4f} fill_px={exec_result.fill_price:.4f} "
+            f"timeout={exec_result.timeout_sec}s slippage={exec_result.slippage_estimate:+.4f}",
+        )
+    )
+    if not exec_result.filled and require_fill:
+        clear_trade_lock(state, "buy_market", market_id)
+        if event_id:
+            clear_trade_lock(state, "buy_event", event_id)
+        print(
+            term_wrap(
+                TERM_YELLOW,
+                f"[execution] buy not filled within timeout — skip recording state "
+                f"(mode={exec_result.mode})\n  {title}",
+            )
+        )
+        try:
+            if telegram.is_configured() and exec_result.mode != "limit_filled":
+                live_px = float(exec_result.live_clob_price_before_order or 0.0)
+                live_show = (
+                    f"{live_px:.4f}"
+                    if live_px > 1e-12
+                    else f"(n/a, decision {exec_result.decision_price:.4f})"
+                )
+                err_tail = ""
+                if exec_result.mode == "limit_failed" and (
+                    exec_result.error or ""
+                ).strip():
+                    err_tail = f"\n<pre>{tg_escape(exec_result.error[:280])}</pre>"
+                telegram.send_html_chunks(
+                    f"{_telegram_local_clock_html()}"
+                    f"🟠 <b>BUY UNFILLED</b> <code>{tg_escape(exec_result.mode)}</code>\n"
+                    f"{tg_escape(title)}\n"
+                    f"limit <code>{exec_result.limit_price:.4f}</code> · "
+                    f"timeout <code>{exec_result.timeout_sec}s</code> · "
+                    f"live ask (ref) <code>{tg_escape(live_show)}</code>"
+                    f"{err_tail}"
+                )
+        except requests.RequestException:
+            pass
+        return
+
+    order = exec_result.market_response if exec_result.market_response else {
+        "orderID": exec_result.order_id,
+    }
+    fill_price = float(exec_result.fill_price or probability)
+    if fill_price > 0:
+        probability = fill_price
+    shares = (
+        float(exec_result.filled_shares)
+        if exec_result.filled_shares > 0
+        else (round(usd / probability, 6) if probability else 0.0)
+    )
     tp_bar = max(
         0.0,
         min(1.0, float(settings.take_profit) - TAKE_PROFIT_COMPARE_SLACK),
@@ -484,11 +967,35 @@ def place_buy(
         "last_action": "buy",
         "entry_price": probability,
         "last_price": probability,
+        "highest_seen_price": probability,
         "order_ref": order_ref_from_response(order),
         "tp_exit_bar": tp_bar,
         "sl_mark_bar": sl_bar,
         "entry_time_utc": now_in_report_timezone().isoformat(),
         "entry_type": entry_type,
+        "trigger_window": (
+            getattr(trade_decision, "trigger_window", "none")
+            if trade_decision is not None
+            else "none"
+        ),
+        "trigger_abs_rise": (
+            float(getattr(trade_decision, "trigger_abs_rise", 0.0))
+            if trade_decision is not None
+            else 0.0
+        ),
+        "trigger_pct_rise": (
+            float(getattr(trade_decision, "trigger_pct_rise", 0.0))
+            if trade_decision is not None
+            else 0.0
+        ),
+        "decision_price": round(decision_price, 6),
+        "live_clob_price_before_order": round(
+            float(exec_result.live_clob_price_before_order), 6
+        ),
+        "execution_mode": str(exec_result.mode),
+        "execution_limit_price": round(float(exec_result.limit_price), 6),
+        "execution_fill_price": round(float(exec_result.fill_price or probability), 6),
+        "execution_slippage": round(float(exec_result.slippage_estimate), 6),
     }
     clear_trade_lock(state, "buy_market", market_id)
     if event_id:
@@ -509,15 +1016,32 @@ def place_buy(
         f"order_ref={order_ref_from_response(order) or order}"
     )
     oref = order_ref_from_response(order) or str(order)
+    et_label = _entry_type_label(entry_type)
+    verbose_tg = bool(getattr(settings, "telegram_verbose_trade_reason", True))
+    trigger_html = (
+        _format_trigger_summary_html(trade_decision)
+        if (verbose_tg and trade_decision is not None)
+        else ""
+    )
+    band_html = (
+        _format_band_summary_html(entry_type, float(probability), settings)
+        if verbose_tg
+        else ""
+    )
     headline_html = _status_portfolio_headline_html(
         (
             f"{_city_local_clock_html(str(title))}"
-            f"🟢 <b>BUY YES</b> <i>(bot)</i>\n"
+            f"🚀 <b>NEW BUY: [{tg_escape(et_label)}]</b> <i>(bot)</i>\n"
             f"{tg_escape(title)}\n"
+            f"{trigger_html}{band_html}"
             f"💰 cash <code>${cash:.2f}</code>  ·  reserve <code>${reserve_usd:.2f}</code>"
             f"  ·  tradable <code>${tradable:.2f}</code>\n"
             f"💵 <code>${usd:.2f}</code>  ·  shares ~<code>{shares:.4f}</code>"
             f"  ·  yes ~<code>{probability:.4f}</code>\n"
+            f"🔧 exec <code>{tg_escape(exec_result.mode)}</code>"
+            f"  ·  limit <code>{exec_result.limit_price:.4f}</code>"
+            f"  ·  fill <code>{exec_result.fill_price:.4f}</code>"
+            f"  ·  slip <code>{exec_result.slippage_estimate:+.4f}</code>\n"
             f"{format_buy_max_risk_line_html(usd)}\n"
             f"{format_buy_exit_plan_html(probability, shares, tp_bar, sl_bar)}\n"
             f"📏 min({frac * 100:.0f}%×tradable, ${cap_hard:.0f} cap) → "
@@ -583,6 +1107,7 @@ def place_buy(
     balance_after = client.get_portfolio_balance(force_allowance_refresh=False)
     cash_after = float(balance_after.get("cash") or 0)
     mtm_after = float(balance_after.get("positions_market_value") or 0)
+    full_reason_buy = _build_full_reason_buy(trade_decision, entry_type, exec_result)
     csv_buy: Dict[str, Any] = {
         **_trade_csv_base(str(title)),
         **_TRADE_CSV_RESEARCH_PAD,
@@ -613,6 +1138,30 @@ def place_buy(
         "buy_est_tp_pnl_usd": round(est_tp_pnl, 2),
         "buy_est_sl_pnl_usd": round(est_sl_pnl, 2),
         "buy_est_yes_resolve_pnl_usd": round(est_yes_pnl, 2),
+        "trigger_window": (
+            getattr(trade_decision, "trigger_window", "none")
+            if trade_decision is not None
+            else "none"
+        ),
+        "trigger_abs_rise": round(
+            float(getattr(trade_decision, "trigger_abs_rise", 0.0)) if trade_decision else 0.0,
+            6,
+        ),
+        "trigger_pct_rise": round(
+            float(getattr(trade_decision, "trigger_pct_rise", 0.0)) if trade_decision else 0.0,
+            6,
+        ),
+        "decision_price": round(decision_price, 6),
+        "live_clob_price_before_order": round(
+            float(exec_result.live_clob_price_before_order), 6
+        ),
+        "execution_mode": str(exec_result.mode),
+        "execution_limit_price": round(float(exec_result.limit_price), 6),
+        "execution_fill_price": round(float(exec_result.fill_price or probability), 6),
+        "execution_slippage": round(float(exec_result.slippage_estimate), 6),
+        "sl_category": "",
+        "highest_seen_price": round(float(probability), 6),
+        "full_reason": full_reason_buy,
     }
     if research_decision is not None:
         csv_buy["consensus_c"] = round(research_decision.consensus_c, 4)
@@ -693,6 +1242,39 @@ def close_position(
     )
     held_entry_type = str(trade.get("entry_type") or "").strip()
     entry = float(trade.get("entry_price", trade.get("last_price", 0)) or 0)
+    # ensure SL category is set even when called outside check_exits/fast_watcher.
+    if reason in ("stop-loss", "trailing-stop") and not trade.get("sl_category"):
+        try:
+            from strategy.decision_core import classify_stop_loss_breach
+
+            breach = classify_stop_loss_breach(
+                held_entry_type or "normal",
+                entry,
+                float(probability),
+                settings,
+                highest_seen_price=float(trade.get("highest_seen_price") or 0.0),
+            )
+            if breach is not None:
+                category, level = breach
+                trade["sl_category"] = category
+                trade["sl_level"] = round(float(level), 6)
+                trade["sl_effective"] = round(
+                    float(
+                        effective_stop_price_for_trade(
+                            held_entry_type or "normal",
+                            entry,
+                            settings,
+                            highest_seen_price=float(
+                                trade.get("highest_seen_price") or 0.0
+                            ),
+                        )
+                    ),
+                    6,
+                )
+        except Exception:
+            pass
+    elif reason == "momentum-stop-loss" and not trade.get("sl_category"):
+        trade["sl_category"] = SL_CATEGORY_MOMENTUM
     exchange_yes = client.get_yes_shares_on_exchange_for_market_id(key)
     if exchange_yes < DUST_SHARES_EPS:
         active_trades.pop(key, None)
@@ -761,64 +1343,45 @@ def close_position(
         )
     except PolyApiException as err:
         clear_trade_lock(state, "sell_market", market_id)
-        fp = hashlib.sha256(str(err).encode("utf-8", errors="replace")).hexdigest()
-        if trade.get("_sell_err_fingerprint") == fp:
-            print(
-                term_wrap(
-                    TERM_DIM,
-                    "[sell] same error as last tick — telegram suppressed",
-                )
-            )
-            return
-        trade["_sell_err_fingerprint"] = fp
+        detail = str(err.error_msg) if err.error_msg is not None else str(err)
         log_trade_sell_terminal(
             str(title), reason, sell_shares, entry, probability, failed=True
         )
-        detail = str(err.error_msg) if err.error_msg is not None else str(err)
         print(term_wrap(TERM_RED, f"  detail: {err}\n  {detail}"))
-        try:
-            if telegram.is_configured():
-                telegram.send_html_chunks(
-                    f"{_telegram_local_clock_html()}"
-                    f"🔴 <b>SELL FAILED</b> <code>{tg_escape(reason)}</code>\n"
-                    f"{tg_escape(title)}\n"
-                    f"shares <code>{sell_shares:.6f}</code>  ·  exch ~<code>{exchange_yes:.6f}</code>"
-                    f"  ·  mark <code>{probability:.4f}</code>\n"
-                    f"<pre>{tg_escape(detail)}</pre>"
-                )
-        except requests.RequestException:
-            pass
+        _emit_failed_exit_telegram(
+            telegram=telegram,
+            settings=settings,
+            market_id=market_id,
+            reason=reason,
+            title=str(title),
+            sell_shares=float(sell_shares),
+            exchange_yes=float(exchange_yes),
+            mark=float(probability),
+            detail=detail,
+        )
         return
     except Exception as err:
         clear_trade_lock(state, "sell_market", market_id)
-        fp = hashlib.sha256(str(err).encode("utf-8", errors="replace")).hexdigest()
-        if trade.get("_sell_err_fingerprint") == fp:
-            print(
-                term_wrap(
-                    TERM_DIM,
-                    "[sell] same error as last tick — telegram suppressed",
-                )
-            )
-            return
-        trade["_sell_err_fingerprint"] = fp
+        detail = repr(err)
         log_trade_sell_terminal(
             str(title), reason, sell_shares, entry, probability, failed=True
         )
-        print(term_wrap(TERM_RED, f"  detail: {err!r}"))
-        try:
-            if telegram.is_configured():
-                telegram.send_html_chunks(
-                    f"{_telegram_local_clock_html()}"
-                    f"🔴 <b>SELL FAILED</b> <code>{tg_escape(reason)}</code>\n"
-                    f"{tg_escape(title)}\n"
-                    f"shares <code>{sell_shares:.6f}</code>  ·  exch ~<code>{exchange_yes:.6f}</code>"
-                    f"  ·  mark <code>{probability:.4f}</code>\n"
-                    f"<pre>{tg_escape(repr(err))}</pre>"
-                )
-        except requests.RequestException:
-            pass
+        print(term_wrap(TERM_RED, f"  detail: {detail}"))
+        _emit_failed_exit_telegram(
+            telegram=telegram,
+            settings=settings,
+            market_id=market_id,
+            reason=reason,
+            title=str(title),
+            sell_shares=float(sell_shares),
+            exchange_yes=float(exchange_yes),
+            mark=float(probability),
+            detail=detail,
+        )
         return
 
+    # sell finally went through — clear any lingering failed-exit dedup state
+    clear_failed_exit_notices(market_id)
     trade.pop("_sell_err_fingerprint", None)
 
     if result.get("sell_execution") == SELL_EXECUTION_SKIPPED:
@@ -940,6 +1503,20 @@ def close_position(
                 "cash_after": round(cash_after, 2),
                 "positions_mtm": round(mtm_after, 2),
                 "total_value": round(cash_after + mtm_after, 2),
+                "sl_category": str(trade.get("sl_category") or ""),
+                "highest_seen_price": round(
+                    float(trade.get("highest_seen_price") or 0.0), 6
+                ),
+                "execution_mode": "limit_gtc",
+                "execution_limit_price": round(float(limit_px), 6),
+                "full_reason": _build_full_reason_sell(
+                    trade,
+                    reason,
+                    execution_mode="limit_gtc",
+                    fill_price=float(probability),
+                    limit_price=float(limit_px),
+                    settings=settings,
+                ),
             }
         )
         try:
@@ -964,8 +1541,14 @@ def close_position(
     mark_recent_sell(state, market_id)
     clear_trade_lock(state, "sell_market", market_id)
     summary = result.get("sell_attempt_summary") or ""
+    sell_header_label = _sell_header_label(reason)
+    sl_cat_line = (
+        _format_sl_category_html(trade, reason)
+        if bool(getattr(settings, "telegram_verbose_trade_reason", True))
+        else ""
+    )
     headline = (
-        f"TRADE: SELL ({reason})\n"
+        f"TRADE: {sell_header_label} ({reason})\n"
         f"{title}\n"
         f"shares={sell_shares:.6f}  entry~={entry:.4f}  mark~={probability:.4f}\n"
         f"---\n{summary}"
@@ -974,8 +1557,9 @@ def close_position(
     headline_html = _status_portfolio_headline_html(
         (
             f"{_city_local_clock_html(str(title))}"
-            f"🔴 <b>SELL</b> <code>{tg_escape(reason)}</code> <i>(bot)</i>\n"
+            f"🔴 <b>SELL: [{tg_escape(sell_header_label)}]</b> <code>{tg_escape(reason)}</code> <i>(bot)</i>\n"
             f"{tg_escape(title)}\n"
+            f"{sl_cat_line}"
             f"📦 <code>{sell_shares:.6f}</code>  ·  entry <code>{entry:.4f}</code>"
             f"  ·  mark <code>{probability:.4f}</code>\n"
             f"{format_est_pnl_line_html(sell_shares, entry, probability)}"
@@ -1000,6 +1584,19 @@ def close_position(
     balance_after = client.get_portfolio_balance(force_allowance_refresh=False)
     cash_after = float(balance_after.get("cash") or 0)
     mtm_after = float(balance_after.get("positions_market_value") or 0)
+    sell_exec_mode = (
+        "market"
+        if (result.get("sell_execution") or "").lower() == "market"
+        else (result.get("sell_execution") or "")
+    )
+    full_reason_sell = _build_full_reason_sell(
+        trade,
+        reason,
+        execution_mode=str(sell_exec_mode or "market"),
+        fill_price=float(probability),
+        limit_price=float(result.get("limit_price") or 0.0),
+        settings=settings,
+    )
     append_trade_csv_row(
         {
             **_trade_csv_base(str(title)),
@@ -1019,10 +1616,17 @@ def close_position(
             "cash_after": round(cash_after, 2),
             "positions_mtm": round(mtm_after, 2),
             "total_value": round(cash_after + mtm_after, 2),
+            "sl_category": str(trade.get("sl_category") or ""),
+            "highest_seen_price": round(float(trade.get("highest_seen_price") or 0.0), 6),
+            "execution_mode": str(sell_exec_mode or "market"),
+            "execution_fill_price": round(float(probability), 6),
+            "execution_limit_price": round(float(result.get("limit_price") or 0.0), 6),
+            "full_reason": full_reason_sell,
         }
     )
     if reason in (
         "stop-loss",
+        "trailing-stop",
         "peer-yes-surge",
         "momentum-stop-loss",
         "competitor-surge",
@@ -1201,6 +1805,16 @@ def process_single_market(
     if has_position and not trade_row_matches_gamma_market(trade_row, market):
         warn_gamma_trade_mismatch_once(trade_row, market, telegram)
         return
+
+    # keep highest_seen_price fresh on every tick the slow loop sees a new price.
+    # the fast watcher does the same against live CLOB; either path keeps the
+    # trailing stop reference up to date so we can lock in profit reliably.
+    if has_position and trade_row is not None:
+        live_for_peak = float(trade_row.get("last_price") or 0.0) or float(
+            gamma_probability
+        )
+        if live_for_peak > 0:
+            update_highest_seen_price(trade_row, live_for_peak)
 
     # --- EXIT LOGIC (for existing positions) ---
     if has_position and status in STATUS_CLOSED:
@@ -1385,21 +1999,22 @@ def process_single_market(
         return
 
     wsec = momentum_window_sec(settings)
+    fast_wsec = momentum_fast_window_sec(settings)
     rise_thr = float(getattr(settings, "momentum_entry_rise", 0.15))
     rise_pct_thr = float(getattr(settings, "momentum_pct_rise", 0.35))
     mom_start_min = float(getattr(settings, "momentum_min_start_price", 0.10))
     mom_lo = float(getattr(settings, "momentum_min_price", MOMENTUM_MIN_PRICE))
     mom_hi = float(getattr(settings, "momentum_max_entry", MOMENTUM_MAX_ENTRY))
-    mom_sig, _mom_old, _mom_new, mom_rise_pts, _mom_pct, _mom_reason = (
-        momentum_entry_signal_with_pct(
-            market_id=market_id,
-            abs_rise_threshold=rise_thr,
-            pct_rise_threshold=rise_pct_thr,
-            window_sec=wsec,
-            min_start_price=mom_start_min,
-            min_current_price=mom_lo,
-            max_current_price=mom_hi,
-        )
+    # check both 15m and 5m windows — either passing qualifies the bucket
+    mom_sig, _mom_trigger, _mom_meta = momentum_dual_window_check(
+        market_id=market_id,
+        abs_rise_threshold=rise_thr,
+        pct_rise_threshold=rise_pct_thr,
+        std_window_sec=wsec,
+        fast_window_sec=fast_wsec,
+        min_start_price=mom_start_min,
+        min_current_price=mom_lo,
+        max_current_price=mom_hi,
     )
     dbl_min = float(
         getattr(settings, "double_momentum_min_price", DOUBLE_MOMENTUM_MIN_PRICE)
@@ -1412,18 +2027,19 @@ def process_single_market(
     )
     dbl_pct_rise = float(getattr(settings, "double_momentum_pct_rise", 0.80))
     dbl_start_min = float(getattr(settings, "double_momentum_min_start_price", 0.05))
-    dbl_sig, _dbl_old, _dbl_new, _dbl_abs, _dbl_pct, _dbl_reason = (
-        momentum_entry_signal_with_pct(
-            market_id=market_id,
-            abs_rise_threshold=dbl_rise,
-            pct_rise_threshold=dbl_pct_rise,
-            window_sec=wsec,
-            min_start_price=dbl_start_min,
-            min_current_price=dbl_min,
-            max_current_price=dbl_max,
-        )
+    dbl_fast_wsec = double_momentum_fast_window_sec(settings)
+    dbl_sig, _dbl_trigger, _dbl_meta = momentum_dual_window_check(
+        market_id=market_id,
+        abs_rise_threshold=dbl_rise,
+        pct_rise_threshold=dbl_pct_rise,
+        std_window_sec=wsec,
+        fast_window_sec=dbl_fast_wsec,
+        min_start_price=dbl_start_min,
+        min_current_price=dbl_min,
+        max_current_price=dbl_max,
     )
     double_momentum_price_ok = bool(dbl_sig)
+    # guardrail: rise condition AND price band must both pass for momentum entry
     momentum_price_ok = (
         mom_sig and mom_lo - 1e-12 <= gamma_probability <= mom_hi + 1e-12
     ) or double_momentum_price_ok
@@ -1439,32 +2055,17 @@ def process_single_market(
     )
     if sw is not None:
         held_mkt, held_key = sw
-        h_t = str(held_mkt.get("question") or held_mkt.get("title") or held_key)
-        print(
-            term_wrap(
-                TERM_DIM,
-                f"[momentum_switch] sell held → buy surging sibling\n"
-                f"  out: {h_t}\n"
-                f"  in:  {_title}",
-            )
+        cleared = _execute_bucket_switch_sell(
+            client=client,
+            telegram=telegram,
+            state=state,
+            settings=settings,
+            held_market=held_mkt,
+            held_key=held_key,
+            target_title=str(_title),
+            target_market_id=market_id,
         )
-        close_position(
-            client,
-            held_mkt,
-            state,
-            telegram,
-            parse_market_probability(held_mkt),
-            "momentum-switch-out",
-            settings,
-            state_trade_key=held_key,
-        )
-        if (state.get("active_trades") or {}).get(held_key):
-            print(
-                term_wrap(
-                    TERM_YELLOW,
-                    "[momentum_switch] held not cleared after sell — skip new buy",
-                )
-            )
+        if not cleared:
             return
 
     # price band gate (normal buy band OR momentum surge band)
@@ -1557,3 +2158,25 @@ def process_single_market(
         event_cache,
         trade_decision=td,
     )
+    if sw is not None:
+        # switch_completed if the buy actually recorded a position; otherwise
+        # we already logged switch_buy_failed_after_sell elsewhere.
+        if (state.get("active_trades") or {}).get(market_id):
+            _bucket_switch_log(
+                "switch_completed", target=market_id, held_key=str(sw[1])
+            )
+            _bucket_switch_telegram(
+                telegram,
+                settings,
+                step_label="switch completed",
+                target_title=str(_title),
+                held_title=str(
+                    sw[0].get("question") or sw[0].get("title") or sw[1]
+                ),
+            )
+        else:
+            _bucket_switch_log(
+                "switch_buy_failed_after_sell",
+                target=market_id,
+                reason="buy_did_not_record",
+            )

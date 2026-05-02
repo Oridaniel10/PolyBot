@@ -155,6 +155,20 @@ TRADE_CSV_FIELDS = [
     "buy_est_tp_pnl_usd",
     "buy_est_sl_pnl_usd",
     "buy_est_yes_resolve_pnl_usd",
+    # rich trade traceability — every BUY/SELL row carries enough to reconstruct
+    # exactly which window/category triggered the action.
+    "trigger_window",
+    "trigger_abs_rise",
+    "trigger_pct_rise",
+    "decision_price",
+    "live_clob_price_before_order",
+    "execution_mode",
+    "execution_limit_price",
+    "execution_fill_price",
+    "execution_slippage",
+    "sl_category",
+    "highest_seen_price",
+    "full_reason",
 ]
 
 
@@ -173,7 +187,15 @@ def append_trade_csv_row(row: Dict[str, Any]) -> None:
             with path.open("r", encoding="utf-8") as f:
                 first = f.readline()
             if first.strip() and "timestamp" in first:
-                need = ("local_hhmm", "city_local_hhmm", "entry_type", "decision_reason")
+                need = (
+                    "local_hhmm",
+                    "city_local_hhmm",
+                    "entry_type",
+                    "decision_reason",
+                    "trigger_window",
+                    "execution_mode",
+                    "sl_category",
+                )
                 if any(n not in first for n in need):
                     legacy = path.with_name(f"{path.stem}_legacy{path.suffix}")
                     if not legacy.is_file():

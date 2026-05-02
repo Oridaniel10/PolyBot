@@ -28,11 +28,12 @@ import config.constants as C
 from config.settings import RuntimeSettings
 from polymarket_client import PolymarketClient
 from strategy.decision_core import (
+    classify_stop_loss_breach,
     effective_stop_price_for_trade,
     momentum_fast_exit_drop,
     momentum_window_sec,
+    trailing_stop_level,
 )
-from strategy.probability import stop_loss_reference_if_triggered
 from telegram_bot import TelegramBot
 
 
@@ -141,22 +142,50 @@ class FastExitWatcher:
         if clob_price <= 0:
             return
 
-        # update trade row mark so the slow main loop sees fresh price too
+        # update trade row mark so the slow main loop sees fresh price too.
         trade_row["last_price"] = clob_price
+        # update peak so the trailing stop tracks the highest seen across both
+        # the slow loop and this watcher.
+        cur_peak = float(trade_row.get("highest_seen_price") or 0.0)
+        if clob_price > cur_peak:
+            trade_row["highest_seen_price"] = round(float(clob_price), 6)
 
-        # --- check 1: per-type stop-loss ---
+        # --- check 1: per-type stop-loss / trailing stop (live mark) ---
         entry_type = str(trade_row.get("entry_type") or "normal").strip()
-        sl_bar = effective_stop_price_for_trade(entry_type, entry, settings)
+        peak = float(trade_row.get("highest_seen_price") or 0.0)
+        sl_bar = effective_stop_price_for_trade(
+            entry_type, entry, settings, highest_seen_price=peak
+        )
+        trail_lvl = trailing_stop_level(entry, peak, settings)
         _log(
             f"watch market={market_id} live={clob_price:.4f} entry={entry:.4f} "
-            f"effective_sl={sl_bar:.4f} type={entry_type}"
+            f"peak={peak:.4f} effective_sl={sl_bar:.4f} "
+            f"trail_level={'-' if trail_lvl is None else f'{trail_lvl:.4f}'} "
+            f"type={entry_type}"
         )
-        if clob_price < sl_bar and clob_price < entry - 1e-9:
-            _log(
-                f"SL trigger market={market_id} clob={clob_price:.4f} "
-                f"sl_bar={sl_bar:.4f} entry={entry:.4f} type={entry_type}"
+        breach = classify_stop_loss_breach(
+            entry_type,
+            entry,
+            float(clob_price),
+            settings,
+            highest_seen_price=peak,
+        )
+        if breach is not None and clob_price < sl_bar:
+            category, level = breach
+            trade_row["sl_category"] = category
+            trade_row["sl_level"] = round(float(level), 6)
+            trade_row["sl_effective"] = round(float(sl_bar), 6)
+            exit_reason = (
+                "trailing-stop"
+                if category == C.SL_CATEGORY_TRAILING
+                else "stop-loss"
             )
-            self._trigger_exit(market_id, trade_row, clob_price, "stop-loss", settings)
+            _log(
+                f"{category} trigger market={market_id} clob={clob_price:.4f} "
+                f"sl_bar={sl_bar:.4f} level={level:.4f} entry={entry:.4f} "
+                f"peak={peak:.4f} type={entry_type}"
+            )
+            self._trigger_exit(market_id, trade_row, clob_price, exit_reason, settings)
             return
 
         # --- check 2: momentum fast exit (absolute drop in 15m window) ---
@@ -172,8 +201,10 @@ class FastExitWatcher:
             if entry_ts > 0:
                 dd = max_drawdown_since_ts(market_id, entry_ts, wsec)
         if dd >= momentum_fast_exit_drop(settings) and clob_price < entry:
+            trade_row["sl_category"] = C.SL_CATEGORY_MOMENTUM
+            trade_row["sl_drawdown_points"] = round(float(dd), 6)
             _log(
-                f"momentum-SL trigger market={market_id} dd={dd:.4f} "
+                f"{C.SL_CATEGORY_MOMENTUM} trigger market={market_id} dd={dd:.4f} "
                 f"clob={clob_price:.4f} entry={entry:.4f}"
             )
             self._trigger_exit(

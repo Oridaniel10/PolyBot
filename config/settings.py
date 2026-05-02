@@ -111,6 +111,8 @@ def default_runtime_dict() -> Dict[str, Any]:
         "peer_surge_skip_buy_enabled": C.PEER_SURGE_SKIP_BUY_ENABLED,
         "peer_surge_skip_buy_rise_threshold": C.PEER_SURGE_SKIP_BUY_RISE_THRESHOLD,
         "momentum_window_seconds": C.MOMENTUM_WINDOW_SECONDS,
+        "momentum_fast_window_seconds": C.MOMENTUM_FAST_WINDOW_SECONDS,
+        "double_momentum_fast_window_seconds": C.DOUBLE_MOMENTUM_FAST_WINDOW_SECONDS,
         "momentum_fast_exit_drop": C.MOMENTUM_FAST_EXIT_DROP,
         "momentum_competitor_surge": C.MOMENTUM_COMPETITOR_SURGE,
         "time_decay_hours": C.TIME_DECAY_HOURS,
@@ -126,6 +128,23 @@ def default_runtime_dict() -> Dict[str, Any]:
         "unstable_event_cooldown_sec": C.UNSTABLE_EVENT_COOLDOWN_SEC,
         # fast exit watcher
         "fast_exit_watcher_interval_sec": C.FAST_EXIT_WATCHER_INTERVAL_SEC,
+        # trailing stop
+        "trailing_stop_enabled": C.TRAILING_STOP_ENABLED,
+        "trailing_stop_activation_gain": C.TRAILING_STOP_ACTIVATION_GAIN,
+        "trailing_stop_lock_gain": C.TRAILING_STOP_LOCK_GAIN,
+        # limit-order-first execution
+        "limit_orders_enabled": C.LIMIT_ORDERS_ENABLED,
+        "buy_limit_order_timeout_sec": C.BUY_LIMIT_ORDER_TIMEOUT_SEC,
+        "sell_limit_order_timeout_sec": C.SELL_LIMIT_ORDER_TIMEOUT_SEC,
+        "emergency_exit_allow_market_order": C.EMERGENCY_EXIT_ALLOW_MARKET_ORDER,
+        "buy_limit_price_offset": C.BUY_LIMIT_PRICE_OFFSET,
+        "sell_limit_price_offset": C.SELL_LIMIT_PRICE_OFFSET,
+        "require_fill_before_state_buy": C.REQUIRE_FILL_BEFORE_STATE_BUY,
+        # telegram dedupe + verbosity
+        "telegram_failed_exit_dedupe_enabled": C.TELEGRAM_FAILED_EXIT_DEDUPE_ENABLED,
+        "telegram_failed_exit_cooldown_sec": C.TELEGRAM_FAILED_EXIT_COOLDOWN_SEC,
+        "trade_log_full_reason_enabled": C.TRADE_LOG_FULL_REASON_ENABLED,
+        "telegram_verbose_trade_reason": C.TELEGRAM_VERBOSE_TRADE_REASON,
     }
 
 
@@ -251,6 +270,8 @@ class RuntimeSettings:
     peer_surge_skip_buy_enabled: bool
     peer_surge_skip_buy_rise_threshold: float
     momentum_window_seconds: float
+    momentum_fast_window_seconds: float
+    double_momentum_fast_window_seconds: float
     momentum_fast_exit_drop: float
     momentum_competitor_surge: float
     momentum_entry_rise: float
@@ -259,6 +280,23 @@ class RuntimeSettings:
     time_decay_hours: float
     time_decay_min_gain: float
     time_decay_max_price: float
+    # trailing stop
+    trailing_stop_enabled: bool
+    trailing_stop_activation_gain: float
+    trailing_stop_lock_gain: float
+    # limit-order-first execution
+    limit_orders_enabled: bool
+    buy_limit_order_timeout_sec: int
+    sell_limit_order_timeout_sec: int
+    emergency_exit_allow_market_order: bool
+    buy_limit_price_offset: float
+    sell_limit_price_offset: float
+    require_fill_before_state_buy: bool
+    # telegram dedupe + verbosity
+    telegram_failed_exit_dedupe_enabled: bool
+    telegram_failed_exit_cooldown_sec: int
+    trade_log_full_reason_enabled: bool
+    telegram_verbose_trade_reason: bool
     blacklist_market_ids: Set[str] = field(default_factory=set)
 
     @classmethod
@@ -357,6 +395,17 @@ class RuntimeSettings:
         ps_skip_thr = max(0.01, min(2.0, ps_skip_thr))
         mom_wsec = float(d.get("momentum_window_seconds", C.MOMENTUM_WINDOW_SECONDS))
         mom_wsec = max(120.0, min(7200.0, mom_wsec))
+        mom_fast_wsec = float(
+            d.get("momentum_fast_window_seconds", C.MOMENTUM_FAST_WINDOW_SECONDS)
+        )
+        mom_fast_wsec = max(60.0, min(3600.0, mom_fast_wsec))
+        dbl_fast_wsec = float(
+            d.get(
+                "double_momentum_fast_window_seconds",
+                C.DOUBLE_MOMENTUM_FAST_WINDOW_SECONDS,
+            )
+        )
+        dbl_fast_wsec = max(60.0, min(3600.0, dbl_fast_wsec))
         mom_drop = float(d.get("momentum_fast_exit_drop", C.MOMENTUM_FAST_EXIT_DROP))
         mom_drop = max(0.01, min(0.95, mom_drop))
         mom_surge = float(d.get("momentum_competitor_surge", C.MOMENTUM_COMPETITOR_SURGE))
@@ -395,6 +444,57 @@ class RuntimeSettings:
             d.get("unstable_event_cooldown_sec", C.UNSTABLE_EVENT_COOLDOWN_SEC)
         )
         unstable_cd = max(0, min(86400, unstable_cd))
+        # trailing stop
+        ts_enabled = bool(d.get("trailing_stop_enabled", C.TRAILING_STOP_ENABLED))
+        ts_act = float(
+            d.get("trailing_stop_activation_gain", C.TRAILING_STOP_ACTIVATION_GAIN)
+        )
+        ts_act = max(0.01, min(0.95, ts_act))
+        ts_lock = float(d.get("trailing_stop_lock_gain", C.TRAILING_STOP_LOCK_GAIN))
+        ts_lock = max(0.0, min(0.95, ts_lock))
+        if ts_lock + 1e-9 >= ts_act:
+            # lock must stay strictly below activation; otherwise trailing never bites.
+            ts_lock = max(0.0, ts_act - 0.01)
+        # limit-order execution
+        lo_enabled = bool(d.get("limit_orders_enabled", C.LIMIT_ORDERS_ENABLED))
+        buy_to = int(d.get("buy_limit_order_timeout_sec", C.BUY_LIMIT_ORDER_TIMEOUT_SEC))
+        buy_to = max(1, min(120, buy_to))
+        sell_to = int(
+            d.get("sell_limit_order_timeout_sec", C.SELL_LIMIT_ORDER_TIMEOUT_SEC)
+        )
+        sell_to = max(1, min(120, sell_to))
+        em_market = bool(
+            d.get(
+                "emergency_exit_allow_market_order", C.EMERGENCY_EXIT_ALLOW_MARKET_ORDER
+            )
+        )
+        buy_off = float(d.get("buy_limit_price_offset", C.BUY_LIMIT_PRICE_OFFSET))
+        buy_off = max(-0.05, min(0.05, buy_off))
+        sell_off = float(d.get("sell_limit_price_offset", C.SELL_LIMIT_PRICE_OFFSET))
+        sell_off = max(-0.05, min(0.05, sell_off))
+        req_fill = bool(
+            d.get("require_fill_before_state_buy", C.REQUIRE_FILL_BEFORE_STATE_BUY)
+        )
+        # telegram dedupe + verbosity
+        tg_dedup = bool(
+            d.get(
+                "telegram_failed_exit_dedupe_enabled",
+                C.TELEGRAM_FAILED_EXIT_DEDUPE_ENABLED,
+            )
+        )
+        tg_cd = int(
+            d.get(
+                "telegram_failed_exit_cooldown_sec",
+                C.TELEGRAM_FAILED_EXIT_COOLDOWN_SEC,
+            )
+        )
+        tg_cd = max(0, min(86400, tg_cd))
+        trade_full_reason = bool(
+            d.get("trade_log_full_reason_enabled", C.TRADE_LOG_FULL_REASON_ENABLED)
+        )
+        tg_verbose = bool(
+            d.get("telegram_verbose_trade_reason", C.TELEGRAM_VERBOSE_TRADE_REASON)
+        )
         return cls(
             buy_min=float(d.get("buy_min_threshold", C.BUY_MIN_THRESHOLD)),
             buy_max=float(d.get("buy_max_threshold", C.BUY_MAX_THRESHOLD)),
@@ -559,6 +659,8 @@ class RuntimeSettings:
             ),
             peer_surge_skip_buy_rise_threshold=ps_skip_thr,
             momentum_window_seconds=mom_wsec,
+            momentum_fast_window_seconds=mom_fast_wsec,
+            double_momentum_fast_window_seconds=dbl_fast_wsec,
             momentum_fast_exit_drop=mom_drop,
             momentum_competitor_surge=mom_surge,
             momentum_entry_rise=mom_entry_rise,
@@ -567,6 +669,20 @@ class RuntimeSettings:
             time_decay_hours=td_hours,
             time_decay_min_gain=td_min_gain,
             time_decay_max_price=td_max_px,
+            trailing_stop_enabled=ts_enabled,
+            trailing_stop_activation_gain=ts_act,
+            trailing_stop_lock_gain=ts_lock,
+            limit_orders_enabled=lo_enabled,
+            buy_limit_order_timeout_sec=buy_to,
+            sell_limit_order_timeout_sec=sell_to,
+            emergency_exit_allow_market_order=em_market,
+            buy_limit_price_offset=buy_off,
+            sell_limit_price_offset=sell_off,
+            require_fill_before_state_buy=req_fill,
+            telegram_failed_exit_dedupe_enabled=tg_dedup,
+            telegram_failed_exit_cooldown_sec=tg_cd,
+            trade_log_full_reason_enabled=trade_full_reason,
+            telegram_verbose_trade_reason=tg_verbose,
             blacklist_market_ids=ids,
             # per-type stop-loss
             stop_loss_normal=max(0.01, min(0.99, float(
