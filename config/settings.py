@@ -146,10 +146,15 @@ def default_runtime_dict() -> Dict[str, Any]:
         "trade_log_full_reason_enabled": C.TRADE_LOG_FULL_REASON_ENABLED,
         "telegram_verbose_trade_reason": C.TELEGRAM_VERBOSE_TRADE_REASON,
         "crash_drop_pct_from_peak": C.CRASH_DROP_PCT_FROM_PEAK,
+        "crash_from_peak_grace_sec_after_entry": C.CRASH_FROM_PEAK_GRACE_SEC_AFTER_ENTRY,
         "buy_escalate_notional_on_submit_fail": C.BUY_ESCALATE_NOTIONAL_ON_SUBMIT_FAIL,
         "buy_escalate_notional_step_usd": C.BUY_ESCALATE_NOTIONAL_STEP_USD,
         "momentum_antifomo_min_mkt": C.MOMENTUM_ANTIFOMO_MIN_MKT,
         "momentum_antifomo_min_prior_rise": C.MOMENTUM_ANTIFOMO_MIN_PRIOR_RISE,
+        "momentum_entry_max_window_seconds": C.MOMENTUM_ENTRY_MAX_WINDOW_SEC,
+        "leader_yield_min_leader_old_price": C.LEADER_YIELD_MIN_LEADER_OLD_PRICE,
+        "leader_yield_fall_min_abs_pts": C.LEADER_YIELD_FALL_MIN_ABS_PTS,
+        "leader_yield_fall_min_frac": C.LEADER_YIELD_FALL_MIN_FRAC,
     }
 
 
@@ -303,10 +308,15 @@ class RuntimeSettings:
     trade_log_full_reason_enabled: bool
     telegram_verbose_trade_reason: bool
     crash_drop_pct_from_peak: float
+    crash_from_peak_grace_sec_after_entry: float
     buy_escalate_notional_on_submit_fail: bool
     buy_escalate_notional_step_usd: float
     momentum_antifomo_min_mkt: float
     momentum_antifomo_min_prior_rise: float
+    momentum_entry_max_window_seconds: float
+    leader_yield_min_leader_old_price: float
+    leader_yield_fall_min_abs_pts: float
+    leader_yield_fall_min_frac: float
     blacklist_market_ids: Set[str] = field(default_factory=set)
 
     @classmethod
@@ -748,6 +758,12 @@ class RuntimeSettings:
             crash_drop_pct_from_peak=max(0.0, min(0.95, float(
                 d.get("crash_drop_pct_from_peak", C.CRASH_DROP_PCT_FROM_PEAK)
             ))),
+            crash_from_peak_grace_sec_after_entry=max(0.0, min(3600.0, float(
+                d.get(
+                    "crash_from_peak_grace_sec_after_entry",
+                    C.CRASH_FROM_PEAK_GRACE_SEC_AFTER_ENTRY,
+                )
+            ))),
             buy_escalate_notional_on_submit_fail=bool(
                 d.get(
                     "buy_escalate_notional_on_submit_fail",
@@ -767,6 +783,30 @@ class RuntimeSettings:
                 d.get(
                     "momentum_antifomo_min_prior_rise",
                     C.MOMENTUM_ANTIFOMO_MIN_PRIOR_RISE,
+                )
+            ))),
+            momentum_entry_max_window_seconds=max(60.0, min(3600.0, float(
+                d.get(
+                    "momentum_entry_max_window_seconds",
+                    C.MOMENTUM_ENTRY_MAX_WINDOW_SEC,
+                )
+            ))),
+            leader_yield_min_leader_old_price=max(0.0, min(0.99, float(
+                d.get(
+                    "leader_yield_min_leader_old_price",
+                    C.LEADER_YIELD_MIN_LEADER_OLD_PRICE,
+                )
+            ))),
+            leader_yield_fall_min_abs_pts=max(0.0, min(0.95, float(
+                d.get(
+                    "leader_yield_fall_min_abs_pts",
+                    C.LEADER_YIELD_FALL_MIN_ABS_PTS,
+                )
+            ))),
+            leader_yield_fall_min_frac=max(0.0, min(0.98, float(
+                d.get(
+                    "leader_yield_fall_min_frac",
+                    C.LEADER_YIELD_FALL_MIN_FRAC,
                 )
             ))),
         )

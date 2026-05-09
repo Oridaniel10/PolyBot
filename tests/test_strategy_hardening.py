@@ -40,6 +40,10 @@ from strategy.telegram_dedup import (
     clear_failed_exit_notices,
     should_send_failed_exit_notice,
 )
+from strategy.leader_yield_momentum import (
+    leader_yield_drop_qualifies,
+    parse_trigger_window_seconds,
+)
 
 
 def make_settings(**overrides) -> RuntimeSettings:
@@ -166,12 +170,12 @@ def test_trailing_stop_disabled_returns_none():
 
 def test_effective_stop_combines_floor_and_trailing():
     s = make_settings()
-    # entry 0.50 normal: floor=0.60, drop_pct=0.30 -> entry_relative=0.35
-    # base = max(0.60, 0.35) = 0.60. peak 0.70 → trail=0.60. final = 0.60.
+    # entry 0.50 normal: floor=0.65, drop_pct=0.30 -> entry_relative=0.35
+    # base = max(0.65, 0.35) = 0.65. peak 0.70 → trail=0.60. final = max(0.65,0.60)=0.65.
     assert effective_stop_price_for_trade(
         "normal", 0.50, s, highest_seen_price=0.70
-    ) == pytest.approx(0.60)
-    # entry 0.80 normal: floor=0.60, drop=0.30 → entry_relative=0.56, base=0.60
+    ) == pytest.approx(0.65)
+    # entry 0.80 normal: floor=0.65, drop=0.30 → entry_relative=0.56, base=0.65
     # peak 1.00 → trail=0.90. final=0.90.
     assert effective_stop_price_for_trade(
         "normal", 0.80, s, highest_seen_price=1.00
@@ -182,12 +186,12 @@ def test_classify_sl_categories_distinct():
     s = make_settings()
     # SL_ABSOLUTE: live below floor only
     breach = classify_stop_loss_breach("normal", 0.55, 0.59, s)
-    # entry 0.55 → entry_relative=0.385. live=0.59 above 0.60 floor would be 0.59<0.60 yes.
+    # entry 0.55 → entry_relative=0.385. live=0.59 < floor 0.65 → absolute breach.
     # actually 0.59<0.60, so absolute breach.
     assert breach is not None
     cat, level = breach
     assert cat == C.SL_CATEGORY_ABSOLUTE
-    assert level == pytest.approx(0.60)
+    assert level == pytest.approx(0.65)
 
     # SL_RELATIVE: entry-relative > floor and live below it
     s2 = make_settings(stop_loss_normal=0.40)
@@ -199,11 +203,12 @@ def test_classify_sl_categories_distinct():
     assert cat2 == C.SL_CATEGORY_RELATIVE
     assert level2 == pytest.approx(0.56)
 
-    # SL_TRAILING: peak triggers trail above base
+    # SL_TRAILING: trail pins effective above default hard floor
+    s_tr = make_settings(stop_loss_normal=0.50)
     breach3 = classify_stop_loss_breach(
-        "normal", 0.50, 0.55, s, highest_seen_price=0.80
+        "normal", 0.50, 0.55, s_tr, highest_seen_price=0.80
     )
-    # entry 0.50, peak 0.80 → trail=0.60. live=0.55 < 0.60 → SL_TRAILING.
+    # entry 0.50, peak 0.80 → trail=0.60 > floor 0.50. effective=0.60. live=0.55 < 0.60.
     assert breach3 is not None
     assert breach3[0] == C.SL_CATEGORY_TRAILING
     assert breach3[1] == pytest.approx(0.60)
@@ -330,8 +335,8 @@ def test_is_emergency_sell_reason_classifies_critical_exits():
 
 def test_trade_decision_carries_trigger_metadata(tmp_path, monkeypatch):
     monkeypatch.setattr("strategy.momentum.PRICE_SAMPLES_DIR", tmp_path)
-    # start above DOUBLE_MOMENTUM_MIN_START_PRICE (0.05); end inside the
-    # double-momentum band; abs +0.45 clears the +0.40 abs threshold.
+    # sibling ex-leader must bleed (leader-yield gate) while target ramps for double momentum
+    add_samples("td_leader", [0.75, 0.55, 0.38])
     add_samples("td_meta", [0.05, 0.30, 0.50])
     from datetime import date
 
@@ -348,13 +353,21 @@ def test_trade_decision_carries_trigger_metadata(tmp_path, monkeypatch):
     )
     market = {
         "id": "td_meta",
+        "eventId": "ev_td",
         "outcomePrices": "[0.50, 0.50]",
         "question": parsed.raw_title,
     }
 
     class FakeClient:
         def get_markets_for_event_id(self, _eid):
-            return []
+            return [
+                {
+                    "id": "td_leader",
+                    "outcomePrices": "[0.38, 0.62]",
+                    "question": "leader bucket",
+                },
+                market.copy(),
+            ]
 
     decision = evaluate_entry(
         parsed,
@@ -369,6 +382,7 @@ def test_trade_decision_carries_trigger_metadata(tmp_path, monkeypatch):
     assert decision.entry_type == "double_momentum"
     assert decision.trigger_window.endswith("m_win") and decision.trigger_window != "none"
     assert decision.trigger_abs_rise > 0
+    assert decision.leader_fallen_market_id == "td_leader"
 
 
 # ─── csv schema includes new columns ─────────────────────────────────
@@ -548,3 +562,59 @@ def test_bucket_switch_clears_when_close_position_removes_held():
         )
     assert cleared is True
     assert "held" not in state["active_trades"]
+
+
+def test_parse_trigger_window_seconds_maps_nm_win():
+    assert parse_trigger_window_seconds("15m_win") == 900.0
+    assert parse_trigger_window_seconds("1m_win") == 60.0
+    assert parse_trigger_window_seconds("none") is None
+
+
+def test_leader_yield_ok_when_ex_leader_bleeds_in_window(tmp_path, monkeypatch):
+    monkeypatch.setattr("strategy.momentum.PRICE_SAMPLES_DIR", tmp_path)
+    spacing = 120.0
+    now = time.time()
+    leader_prices = [0.70, 0.62, 0.55, 0.45, 0.34]
+    tgt_prices = [0.08, 0.10, 0.15, 0.22, 0.38]
+    noise_prices = [0.05] * 5
+    for mid, series in (("L", leader_prices), ("T", tgt_prices), ("N", noise_prices)):
+        for i, pr in enumerate(series):
+            append_price_sample(mid, pr, ts=now - (len(series) - i - 1) * spacing)
+    ok, meta = leader_yield_drop_qualifies(
+        target_market_id="T",
+        event_market_ids=["L", "T", "N"],
+        window_sec=900.0,
+        min_leader_old_price=0.05,
+        min_fall_abs_pts=0.30,
+        min_fall_frac_of_old=0.40,
+        min_samples=2,
+        now_ts=now,
+    )
+    assert ok is True
+    assert meta.get("leader_id") == "L"
+    assert meta.get("reason") == "ok"
+
+
+def test_leader_yield_fails_when_only_non_leader_sibling_drops(tmp_path, monkeypatch):
+    monkeypatch.setattr("strategy.momentum.PRICE_SAMPLES_DIR", tmp_path)
+    spacing = 120.0
+    now = time.time()
+    leader_prices = [0.70] * 5
+    dropper_prices = [0.25, 0.20, 0.15, 0.10, 0.02]
+    target_prices = [0.06, 0.10, 0.18, 0.25, 0.40]
+    for mid, series in (("X", leader_prices), ("Y", dropper_prices), ("Z", target_prices)):
+        for i, pr in enumerate(series):
+            append_price_sample(mid, pr, ts=now - (len(series) - i - 1) * spacing)
+    ok, meta = leader_yield_drop_qualifies(
+        target_market_id="Z",
+        event_market_ids=["X", "Y", "Z"],
+        window_sec=900.0,
+        min_leader_old_price=0.05,
+        min_fall_abs_pts=0.30,
+        min_fall_frac_of_old=0.40,
+        min_samples=2,
+        now_ts=now,
+    )
+    assert ok is False
+    assert meta.get("leader_id") == "X"
+    assert meta.get("reason") == "leader_fall_below_threshold"

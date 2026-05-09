@@ -51,13 +51,13 @@ SELL_BELOW_MIN_TELEGRAM_COOLDOWN_SEC = 1800
 # example: 0.82 is inside 0.80..0.84 so normal entry can pass this gate.
 # upper bound lowered from 0.91 to 0.84 — at 0.88-0.92 upside is tiny while
 # downside risk on a missed bracket is large.
-BUY_MIN_THRESHOLD = 0.90
-BUY_MAX_THRESHOLD = 0.92
+BUY_MIN_THRESHOLD = 0.93
+BUY_MAX_THRESHOLD = 0.96
 BUY_DISABLE_PRICE_BAND = False
 
 # hard stop for normal.
 # example: if entry was 0.82, any live price below 0.50 is always a sell.
-STOP_LOSS_NORMAL = 0.60
+STOP_LOSS_NORMAL = 0.65
 # relative stop for normal.
 # example: entry 0.80 with 30% drop => relative stop is 0.56.
 # effective stop = max(0.50, 0.56) = 0.56.
@@ -72,61 +72,61 @@ STOP_LOSS_MANUAL_ENTRY_DROP_PCT = 0.30
 
 # ─── MOMENTUM: buy on 15m surge + sell stop-loss ──────────────────────
 # absolute rise trigger (any window).
-# example: 0.30 -> 0.50 is +0.20 so this trigger passes.
-MOMENTUM_ENTRY_RISE = 0.15
+# example: 0.30 -> 0.45 is +0.15 so this trigger passes.
+MOMENTUM_ENTRY_RISE = 0.20
 # percent rise trigger (fractional, not percent points).
-# example: 1.0 means +100%; 0.05 -> 0.10 passes on pct gate.
-MOMENTUM_PCT_RISE = 1.0
+# example: 3.0 means +300%; 0.05 -> 0.15 passes on pct gate.
+MOMENTUM_PCT_RISE = 2.0
 # floor on *old* YES in window below which we reject the pct gate (noise).
 # 0.0 = allow any positive baseline; merged runtime still clamps ≥0 via settings.
 MOMENTUM_MIN_START_PRICE = 0.0
 # live price band for momentum entry (current YES must fall in band at decision time).
-MOMENTUM_MIN_PRICE = 0.20
+MOMENTUM_MIN_PRICE = 0.40
 MOMENTUM_MAX_ENTRY = 0.85
-# hard stop for momentum.
-# example: entry 0.70, any live price below 0.45 is always a sell.
-STOP_LOSS_MOMENTUM = 0.50
-# relative stop for momentum.
-# example: entry 0.70 with 30% drop => relative stop is 0.49.
-# effective stop = max(0.45, 0.49) = 0.49.
-STOP_LOSS_MOMENTUM_ENTRY_DROP_PCT = 0.40
+# hard floor for momentum SL (effective = max(floor, entry*(1-drop_pct), trailing…)).
+STOP_LOSS_MOMENTUM = 0.20
+# entry-relative leg: e.g. entry 0.56 → mark must stay above 0.28 before exit.
+STOP_LOSS_MOMENTUM_ENTRY_DROP_PCT = 0.50
 
 # ─── DOUBLE MOMENTUM: stronger 15m surge + wider band + sell stop-loss ─
 # absolute 15m rise trigger.
 # example: 0.30 -> 0.70 is +0.40 so this trigger passes.
-DOUBLE_MOMENTUM_ENTRY_RISE = 0.25
-# percent rise trigger (fractional). 5.0 = +500%.
-DOUBLE_MOMENTUM_PCT_RISE = 5.0
+DOUBLE_MOMENTUM_ENTRY_RISE = 0.40
+# percent rise trigger (fractional). 4.0 = +400%.
+DOUBLE_MOMENTUM_PCT_RISE = 4.0
 # same pct noise floor as standard momentum — 0 allows low-start pct moves.
 DOUBLE_MOMENTUM_MIN_START_PRICE = 0.0
 # wider entry band for larger surges only.
-DOUBLE_MOMENTUM_MIN_PRICE = 0.10
+DOUBLE_MOMENTUM_MIN_PRICE = 0.40
 DOUBLE_MOMENTUM_MAX_PRICE = 0.85
-# hard stop for double momentum.
-# example: entry 0.32, any live price below 0.20 is always a sell.
-STOP_LOSS_DOUBLE_MOMENTUM = 0.50
-# relative stop for double momentum.
-# example: entry 0.60 with 30% drop => relative stop is 0.42.
-# effective stop = max(0.20, 0.42) = 0.42.
-STOP_LOSS_DOUBLE_MOMENTUM_ENTRY_DROP_PCT = 0.40
+STOP_LOSS_DOUBLE_MOMENTUM = 0.20
+STOP_LOSS_DOUBLE_MOMENTUM_ENTRY_DROP_PCT = 0.50
 
 # ═══════════════════════════════════════════════════════════════════════
 # EXIT THRESHOLDS
 # ═══════════════════════════════════════════════════════════════════════
 
-TAKE_PROFIT_THRESHOLD = 0.98
+TAKE_PROFIT_THRESHOLD = 0.99
 # float slack vs gamma/mark rounding; also helps when take_profit is 0.99 and mark is 0.988
 TAKE_PROFIT_COMPARE_SLACK = 0.002
 
-# ─── Momentum fast exit: ABSOLUTE price drop from peak in 15-min window ──
-# e.g. peak was 0.75, now 0.59 → drop = 0.16 > 0.15 → exit.
-# this is absolute price points, NOT percentage.
-MOMENTUM_FAST_EXIT_DROP = 0.15
+# ─── Momentum fast exit: ABSOLUTE price drop from peak in rolling window ──
+# absolute YES points peak→now (see momentum_engine). not percent.
+MOMENTUM_FAST_EXIT_DROP = 0.30
 MOMENTUM_WINDOW_SECONDS = 900
 MOMENTUM_COMPETITOR_SURGE = 0.25
 # kept low so a fresh market that just jumped 0.1 → 0.7 in 2 ticks still
 # qualifies for double-momentum entry (was 3 → blocked late entries on big moves).
 MOMENTUM_MIN_SAMPLE_POINTS = 2
+
+# bot momentum entry: only sample windows ≤ this length (seconds). 900 = 15m.
+MOMENTUM_ENTRY_MAX_WINDOW_SEC = 900.0
+# ex-leader at window-start must bleed vs current YES inside the same window.
+# leader picked as max(old_yes) among siblings with old_yes > min_leader_old_price.
+LEADER_YIELD_MIN_LEADER_OLD_PRICE = 0.05
+LEADER_YIELD_FALL_MIN_ABS_PTS = 0.30
+# fractional drop vs leader's window-start YES (e.g. 0.50 = halves or −50%).
+LEADER_YIELD_FALL_MIN_FRAC = 0.50
 
 # fast (short) momentum window — runs alongside the 15m window.
 # either window passing = momentum signal qualifies.
@@ -223,6 +223,8 @@ SL_CATEGORY_CRASH_PEAK = "SL_CRASH_PEAK"
 
 # drop from highest_seen_price vs peak; 0 disables. catches cliff when window DD thin.
 CRASH_DROP_PCT_FROM_PEAK = 0.50
+# skip crash-from-peak for this long after entry_ts (API avg can jump; thin book whipsaws).
+CRASH_FROM_PEAK_GRACE_SEC_AFTER_ENTRY = 180.0
 
 # on limit submit/network failure before a fillable order id exists, bump notional (+step) up to max.
 # unfilled-timeout (cancel) does not escalate — only submit-side failure.

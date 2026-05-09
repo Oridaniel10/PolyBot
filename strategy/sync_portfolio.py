@@ -156,6 +156,13 @@ def sync_state_with_portfolio(
         avg_px = float(position.get("avg_price", 0.0) or 0.0)
         cur_px = float(position.get("cur_price", 0.0) or 0.0)
         pos_title = str(position.get("title") or "").strip()
+        prev_ep = float(prev.get("entry_price") or 0.0)
+        # data-api avg_price can diverge from the bot fill (blended legs, rounding).
+        # keep ledger-quality entry when we're merging an existing bot row.
+        if prev and prev_ep > 1e-12:
+            merged_entry_px = prev_ep
+        else:
+            merged_entry_px = avg_px if avg_px > 1e-12 else prev_ep
         row = {
             "market_id": mid or str(prev.get("market_id") or ""),
             "condition_id": cid or str(prev.get("condition_id") or ""),
@@ -163,7 +170,7 @@ def sync_state_with_portfolio(
             or str(prev.get("position_title") or "").strip(),
             "shares": size,
             "last_action": prev.get("last_action", "sync"),
-            "entry_price": avg_px or float(prev.get("entry_price", 0.0) or 0.0),
+            "entry_price": merged_entry_px,
             # always use data-api mark (0 is valid); never replace 0 with avg — that hides TP/stop
             "last_price": cur_px,
             "order_ref": prev.get("order_ref", ""),
@@ -184,7 +191,11 @@ def sync_state_with_portfolio(
                     pnl_usd=0.0,
                 )
             )
-            if telegram and hasattr(telegram, "is_configured") and telegram.is_configured():
+            if (
+                telegram
+                and hasattr(telegram, "is_configured")
+                and telegram.is_configured()
+            ):
                 try:
                     telegram.send_html_chunks(
                         f"⚡ <b>MANUAL BUY DETECTED</b>\n"
@@ -211,15 +222,41 @@ def sync_state_with_portfolio(
             if prev.get("pending_limit_sell_price") is not None:
                 row["pending_limit_sell_price"] = prev.get("pending_limit_sell_price")
         for key in [
-            "entry_type", "entry_time_utc", "tp_exit_bar", "sl_mark_bar",
-            "trigger_window", "trigger_abs_rise", "trigger_pct_rise",
-            "execution_mode", "execution_limit_price", "execution_fill_price", "execution_slippage",
-            "highest_seen_price"
+            "entry_type",
+            "entry_time_utc",
+            "tp_exit_bar",
+            "sl_mark_bar",
+            "trigger_window",
+            "trigger_abs_rise",
+            "trigger_pct_rise",
+            "execution_mode",
+            "execution_limit_price",
+            "execution_fill_price",
+            "execution_slippage",
+            "highest_seen_price",
         ]:
             if prev.get(key) is not None:
                 row[key] = prev[key]
+
+        hp = float(row.get("entry_price") or merged_entry_px or 0.0)
+        lp = float(row.get("last_price") or cur_px or 0.0)
+        hs = float(row.get("highest_seen_price") or 0.0)
+        row["highest_seen_price"] = round(max(hs, hp, lp), 6)
+
         if not row.get("entry_type"):
-            row["entry_type"] = "manual"
+            if prev:
+                et_prev = str(prev.get("entry_type") or "").strip()
+                row["entry_type"] = (
+                    et_prev
+                    if et_prev
+                    else (
+                        "normal"
+                        if str(prev.get("last_action") or "").lower() == "buy"
+                        else "manual"
+                    )
+                )
+            else:
+                row["entry_type"] = "manual"
         active_trades[state_key] = row
 
     for tid, details in tracked.items():

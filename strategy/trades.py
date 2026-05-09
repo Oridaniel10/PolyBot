@@ -84,11 +84,10 @@ from strategy.decision_core import (
     detect_momentum_switch,
     effective_stop_price_for_trade,
     evaluate_entry,
-    momentum_window_sec,
-    momentum_fast_window_sec,
-    double_momentum_fast_window_sec,
+    momentum_entry_candidate_windows,
     momentum_multi_window_check,
 )
+from strategy.leader_yield_momentum import parse_trigger_window_seconds
 from strategy.limit_executor import (
     LimitExecutionResult,
     execute_buy,
@@ -249,18 +248,45 @@ def _entry_type_label(entry_type: str) -> str:
     return "NORMAL"
 
 
-def _format_trigger_summary_html(td: TradeDecision) -> str:
+def _format_trigger_summary_html(td: TradeDecision, bought_title: str = "") -> str:
     """build the human-readable trigger context for a momentum BUY telegram."""
     if not td or td.entry_type == "normal" or td.trigger_window == "none":
         return ""
-    window_label = _trigger_window_label(td.trigger_window)
-    abs_pts = float(td.trigger_abs_rise or 0.0)
-    pct = float(td.trigger_pct_rise or 0.0)
-    pct_str = f"{pct * 100:.0f}%"
-    return (
-        f"⚡ Triggered by {tg_escape(window_label)} Window "
-        f"(<code>+{abs_pts:+.3f} pts / {tg_escape(pct_str)}</code>)\n"
+    tw = str(td.trigger_window or "")
+    win_human = tw
+    if tw.endswith("_win"):
+        pref = tw[:-4]
+        if pref.endswith("m"):
+            head = pref[:-1]
+            if head.isdigit():
+                win_human = f"{head} min"
+    pct_pts = float(td.trigger_pct_rise or 0.0) * 100.0
+    lw = float(td.leader_yield_window_sec or 0.0)
+    if lw <= 0 and tw.endswith("_win"):
+        pws = parse_trigger_window_seconds(tw)
+        lw = float(pws or 0.0)
+    look_m = max(1, int(round(lw / 60.0)))
+    out = (
+        f"⚡ Leader-yield momentum · trigger <code>{tg_escape(win_human)}</code> "
+        f"(~<code>{look_m}</code>m lookback)\n"
     )
+    tbuy = bought_title.strip() or "this market"
+    out += (
+        f"📈 <b>Bought YES</b> · {tg_escape(tbuy[:200])}\n"
+        f"   rise <code>{float(td.trigger_old_price):.4f}</code>→<code>{float(td.trigger_new_price):.4f}</code>"
+        f" · <code>+{float(td.trigger_abs_rise):+.4f}</code> pts"
+        f" · <code>+{pct_pts:.1f}%</code> vs window start\n"
+    )
+    if str(td.leader_fallen_market_id or "").strip():
+        ltd = tg_escape(str(td.leader_fallen_market_title or "")[:180])
+        dfp = float(td.leader_fallen_drop_frac or 0.0) * 100.0
+        out += (
+            f"📉 <b>Ex-leader fell</b> <code>{tg_escape(td.leader_fallen_market_id)}</code>\n"
+            f"   {ltd}\n"
+            f"   <code>{float(td.leader_fallen_old_yes):.4f}</code>→<code>{float(td.leader_fallen_new_yes):.4f}</code>"
+            f" (−<code>{float(td.leader_fallen_drop_pts):.4f}</code> pts / −{dfp:.1f}% vs its window start)\n"
+        )
+    return out
 
 
 def _format_band_summary_html(entry_type: str, live_price: float, settings: RuntimeSettings) -> str:
@@ -350,12 +376,22 @@ def _build_full_reason_buy(
         parts.append(
             f"prices=old={float(td.trigger_old_price):.4f},new={float(td.trigger_new_price):.4f}"
         )
+        if str(td.leader_fallen_market_id or "").strip():
+            parts.append(f"leader_fell={td.leader_fallen_market_id}")
+            parts.append(
+                f"leader_fell_px={float(td.leader_fallen_old_yes):.4f}→"
+                f"{float(td.leader_fallen_new_yes):.4f}"
+                f"|drop_pts={float(td.leader_fallen_drop_pts):.4f}"
+            )
+            parts.append(
+                f"leader_yield_win_sec={int(float(td.leader_yield_window_sec or 0))}"
+            )
     parts.append(f"exec_mode={exec_result.mode}")
     parts.append(
         f"limit_px={exec_result.limit_price:.4f}|fill_px={exec_result.fill_price:.4f}"
         f"|slip={exec_result.slippage_estimate:+.4f}"
     )
-    return " · ".join(parts)[:400]
+    return " · ".join(parts)[:520]
 
 
 def _build_full_reason_sell(
@@ -1039,6 +1075,26 @@ def place_buy(
         "execution_limit_price": round(float(exec_result.limit_price), 6),
         "execution_fill_price": round(float(exec_result.fill_price or probability), 6),
         "execution_slippage": round(float(exec_result.slippage_estimate), 6),
+        "leader_fallen_market_id": (
+            str(getattr(trade_decision, "leader_fallen_market_id", "") or "")[:64]
+            if trade_decision is not None
+            else ""
+        ),
+        "leader_fallen_old_yes": (
+            float(getattr(trade_decision, "leader_fallen_old_yes", 0.0))
+            if trade_decision is not None
+            else 0.0
+        ),
+        "leader_fallen_new_yes": (
+            float(getattr(trade_decision, "leader_fallen_new_yes", 0.0))
+            if trade_decision is not None
+            else 0.0
+        ),
+        "leader_yield_window_sec": (
+            float(getattr(trade_decision, "leader_yield_window_sec", 0.0))
+            if trade_decision is not None
+            else 0.0
+        ),
     }
     clear_trade_lock(state, "buy_market", market_id)
     if event_id:
@@ -1062,7 +1118,7 @@ def place_buy(
     et_label = _entry_type_label(entry_type)
     verbose_tg = bool(getattr(settings, "telegram_verbose_trade_reason", True))
     trigger_html = (
-        _format_trigger_summary_html(trade_decision)
+        _format_trigger_summary_html(trade_decision, str(title))
         if (verbose_tg and trade_decision is not None)
         else ""
     )
@@ -2041,7 +2097,7 @@ def process_single_market(
     if len(active_trades) >= MAX_CONCURRENT_POSITIONS:
         return
 
-    multi_windows = [60.0, 120.0, 180.0, 240.0, 300.0, 900.0, 7200.0]
+    multi_windows = momentum_entry_candidate_windows(settings)
     rise_thr = float(getattr(settings, "momentum_entry_rise", 0.15))
     rise_pct_thr = float(getattr(settings, "momentum_pct_rise", 0.35))
     mom_start_min = float(getattr(settings, "momentum_min_start_price", 0.10))

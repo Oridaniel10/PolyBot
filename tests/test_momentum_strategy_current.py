@@ -93,22 +93,23 @@ def test_peer_surge_uses_absolute_points(tmp_path, monkeypatch):
 
 def test_momentum_entry_does_not_require_rank_one(tmp_path, monkeypatch):
     monkeypatch.setattr("strategy.momentum.PRICE_SAMPLES_DIR", tmp_path)
-    add_samples("m2", [0.49, 0.56, 0.65])
+    add_samples("m1", [0.78, 0.58, 0.42])
+    add_samples("m2", [0.42, 0.55, 0.69])
     siblings = [
         {"id": "m1", "outcomePrices": "[0.80, 0.20]"},
-        {"id": "m2", "outcomePrices": "[0.65, 0.35]"},
+        {"id": "m2", "outcomePrices": "[0.69, 0.31]"},
     ]
     market = {
         "id": "m2",
         "eventId": "e1",
-        "outcomePrices": "[0.65, 0.35]",
+        "outcomePrices": "[0.69, 0.31]",
         "question": parsed_market().raw_title,
     }
 
     decision = evaluate_entry(
         parsed_market(),
         17.0,
-        0.65,
+        0.69,
         market,
         FakeEventClient(siblings),
         make_settings(),
@@ -173,12 +174,25 @@ def test_double_momentum_low_band_reaches_place_buy(tmp_path, monkeypatch):
         entry_type="double_momentum",
     )
 
+    mcc_ret = (
+        True,
+        "15m_win",
+        {
+            "std_passed": True,
+            "std_abs_rise": 0.45,
+            "std_pct_rise": 4.0,
+            "std_old_price": 0.05,
+            "std_new_price": 0.55,
+            "std_window_sec": 900.0,
+        },
+    )
     with (
         patch("strategy.trades.market_can_post_clob_orders", return_value=True),
         patch("strategy.trades.entry_time_allowed", return_value=(True, 15, "")),
         patch("strategy.trades.parse_highest_temp_title", return_value=parsed_market()),
         patch("strategy.trades.get_forecast_max_for_city_day", return_value=(None, None, 17.0)),
         patch("strategy.trades.evaluate_entry", return_value=decision),
+        patch("strategy.trades.momentum_multi_window_check", return_value=mcc_ret),
         patch("strategy.trades.place_buy") as buy_mock,
     ):
         process_single_market(
@@ -211,7 +225,7 @@ def test_synced_manual_position_has_sync_origin():
     state = sync_state_with_portfolio(Client(), {})
 
     trade = state["active_trades"]["manual"]
-    assert trade["last_action"] == "sync"
+    assert trade["last_action"] == "manual_sync_open"
     assert trade["entry_price"] == 0.42
 
 

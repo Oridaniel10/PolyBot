@@ -36,6 +36,7 @@ from strategy.decision_core import (
     effective_stop_price_for_trade,
     momentum_fast_exit_drop,
     momentum_window_sec,
+    seconds_since_entry_iso,
     trailing_stop_level,
 )
 from telegram_bot import TelegramBot
@@ -232,9 +233,26 @@ class FastExitWatcher:
             return
 
         crash_thr = float(getattr(settings, "crash_drop_pct_from_peak", 0.0))
+        crash_grace = float(
+            getattr(
+                settings,
+                "crash_from_peak_grace_sec_after_entry",
+                C.CRASH_FROM_PEAK_GRACE_SEC_AFTER_ENTRY,
+            )
+        )
         peak_live = float(trade_row.get("highest_seen_price") or 0.0)
         if crash_thr > 1e-12 and entry > 1e-12:
-            if peak_live > 1e-12 and clob_price > 1e-12 and clob_price + 1e-12 < entry:
+            skip_crash_grace = False
+            if crash_grace > 1e-12:
+                age_sec = seconds_since_entry_iso(entry_time_utc)
+                if age_sec is not None and age_sec + 1e-12 < crash_grace:
+                    skip_crash_grace = True
+            if (
+                not skip_crash_grace
+                and peak_live > 1e-12
+                and clob_price > 1e-12
+                and clob_price + 1e-12 < entry
+            ):
                 drop_frac = (peak_live - clob_price) / peak_live
                 if drop_frac + 1e-12 >= crash_thr:
                     trade_row["sl_category"] = C.SL_CATEGORY_CRASH_PEAK

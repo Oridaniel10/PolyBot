@@ -69,6 +69,8 @@ def decision_skip_telegram_category(reason: str) -> str:
         return "max_positions"
     if r.startswith("peer_surge_skip"):
         return "peer_surge_skip"
+    if r.startswith("leader_yield_blocked"):
+        return "leader_yield_blocked"
     return "other"
 
 
