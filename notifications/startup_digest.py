@@ -111,7 +111,12 @@ def _digest_rows(
     row(
         "min_lead_over_runner_up",
         settings.min_lead_over_runner_up,
-        "min probability gap #1 vs #2 (e.g. 0.15)",
+        "passed to evaluate_competition() for metadata / model branch",
+    )
+    row(
+        "min_market_yes_lead_gap_normal",
+        settings.min_market_yes_lead_gap_normal,
+        "normal BUY only: min YES lead vs runner-up (momentum skips)",
     )
 
     sec("Churn / blacklist")

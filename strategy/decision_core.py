@@ -53,6 +53,7 @@ from strategy.leader_yield_momentum import (
     market_title_by_id,
     parse_trigger_window_seconds,
 )
+from strategy.momentum import load_samples_for_market
 from strategy.probability import parse_market_probability
 from strategy.probability_engine import bucket_edge, compute_model_prob
 from strategy.research_signal import (
@@ -118,7 +119,9 @@ def seconds_since_entry_iso(
 
 
 def momentum_competitor_surge_thr(settings: RuntimeSettings) -> float:
-    s = float(getattr(settings, "momentum_competitor_surge", C.MOMENTUM_COMPETITOR_SURGE))
+    s = float(
+        getattr(settings, "momentum_competitor_surge", C.MOMENTUM_COMPETITOR_SURGE)
+    )
     return max(0.01, min(0.95, s))
 
 
@@ -133,9 +136,7 @@ def momentum_entry_pct_rise_thr(settings: RuntimeSettings) -> float:
 
 
 def double_momentum_entry_pct_rise_thr(settings: RuntimeSettings) -> float:
-    r = float(
-        getattr(settings, "double_momentum_pct_rise", C.DOUBLE_MOMENTUM_PCT_RISE)
-    )
+    r = float(getattr(settings, "double_momentum_pct_rise", C.DOUBLE_MOMENTUM_PCT_RISE))
     return max(0.01, min(10.0, r))
 
 
@@ -158,7 +159,7 @@ def momentum_multi_window_check(
         "std_old_price": 0.0,
         "std_new_price": 0.0,
     }
-    
+
     for w in sorted(windows_sec):
         w_passed, w_old, w_new, w_abs, w_pct, w_reason = momentum_entry_signal_with_pct(
             market_id=market_id,
@@ -171,17 +172,86 @@ def momentum_multi_window_check(
         )
         if w_passed and not passed:
             passed = True
-            trigger = f"{int(w//60)}m_win"
-            meta.update({
+            trigger = f"{int(w // 60)}m_win"
+            meta.update(
+                {
+                    "std_passed": True,
+                    "std_abs_rise": float(w_abs),
+                    "std_pct_rise": float(w_pct),
+                    "std_old_price": float(w_old),
+                    "std_new_price": float(w_new),
+                    "std_window_sec": float(w),
+                }
+            )
+
+    return passed, trigger, meta
+
+
+def momentum_leader_same_window_check(
+    *,
+    market_id: str,
+    event_market_ids: List[str],
+    windows_sec: List[float],
+    abs_rise_threshold: float,
+    pct_rise_threshold: float,
+    min_start_price: float,
+    min_current_price: float,
+    max_current_price: float,
+    min_leader_old_price: float,
+    min_fall_abs_pts: float,
+    min_fall_frac_of_old: float,
+    min_samples: int,
+) -> Tuple[bool, str, Dict[str, Any], Dict[str, Any]]:
+    """Smallest window (seconds) where target rise passes AND leader-yield passes — same lookback for both."""
+    empty_meta: Dict[str, Any] = {
+        "std_passed": False,
+        "std_abs_rise": 0.0,
+        "std_pct_rise": 0.0,
+        "std_old_price": 0.0,
+        "std_new_price": 0.0,
+        "std_window_sec": 0.0,
+    }
+    fail_leader: Dict[str, Any] = {"reason": "no_momentum_rise_in_grid"}
+
+    for w in sorted(windows_sec):
+        w_passed, w_old, w_new, w_abs, w_pct, _wr = momentum_entry_signal_with_pct(
+            market_id=market_id,
+            abs_rise_threshold=abs_rise_threshold,
+            pct_rise_threshold=pct_rise_threshold,
+            window_sec=w,
+            min_start_price=min_start_price,
+            min_current_price=min_current_price,
+            max_current_price=max_current_price,
+        )
+        if not w_passed:
+            continue
+        ok, lmd = leader_yield_drop_qualifies(
+            target_market_id=market_id,
+            event_market_ids=list(event_market_ids),
+            window_sec=float(w),
+            min_leader_old_price=min_leader_old_price,
+            min_fall_abs_pts=min_fall_abs_pts,
+            min_fall_frac_of_old=min_fall_frac_of_old,
+            min_samples=min_samples,
+        )
+        lmd = dict(lmd)
+        lmd["parsed_window_sec"] = float(w)
+        lmd["leader_eval_window_sec"] = float(w)
+        if ok:
+            mins = max(1, int(round(w / 60.0)))
+            trigger = f"{mins}m_win"
+            meta = {
                 "std_passed": True,
                 "std_abs_rise": float(w_abs),
                 "std_pct_rise": float(w_pct),
                 "std_old_price": float(w_old),
                 "std_new_price": float(w_new),
                 "std_window_sec": float(w),
-            })
-            
-    return passed, trigger, meta
+            }
+            return True, trigger, meta, lmd
+        fail_leader = lmd
+
+    return False, "none", empty_meta, fail_leader
 
 
 def get_recent_decisions(limit: int = 50) -> List[Dict[str, Any]]:
@@ -230,9 +300,13 @@ class TradeDecision:
 def momentum_entry_candidate_windows(settings: RuntimeSettings) -> List[float]:
     """Only short windows (≤15m by default) qualify for bot momentum entry."""
     max_sec = float(
-        getattr(settings, "momentum_entry_max_window_seconds", C.MOMENTUM_ENTRY_MAX_WINDOW_SEC)
+        getattr(
+            settings,
+            "momentum_entry_max_window_seconds",
+            C.MOMENTUM_ENTRY_MAX_WINDOW_SEC,
+        )
     )
-    grid = [60.0, 120.0, 180.0, 240.0, 300.0, 900.0]
+    grid = [60.0 * float(i) for i in range(1, 16)]
     out = [w for w in grid if w <= max_sec + 1e-9]
     return out if out else [float(min(900.0, max_sec))]
 
@@ -316,6 +390,147 @@ def _log_decision(d: TradeDecision) -> None:
             "momentum_relaxed": bool(d.momentum_relaxed_gates),
         }
     )
+
+
+MOM_DIAG_SIBLING_WINDOW_SEC = 900.0
+
+
+def emit_mom_diag(
+    *,
+    market_id: str,
+    event_id: Optional[str],
+    title: str,
+    gamma_probability: float,
+    settings: RuntimeSettings,
+    all_event_ids: List[str],
+    dbl_signal_raw: bool,
+    dbl_trigger: str,
+    dbl_meta: Dict[str, Any],
+    leader_meta_dbl: Dict[str, Any],
+    mom_signal_raw: bool,
+    mom_trigger: str,
+    mom_meta: Dict[str, Any],
+    leader_meta_mom: Dict[str, Any],
+    is_double_momentum: bool,
+    is_momentum_entry: bool,
+) -> None:
+    """emit one [mom_diag] json line per entry eval — grep-friendly.
+
+    captures effective bands, both leader-window check outputs, and per-sibling
+    sample stats inside the 15m window so we can see whether the real ex-leader
+    was silently dropped due to insufficient samples.
+    """
+    now_ts = time.time()
+    siblings_info: List[Dict[str, Any]] = []
+    for mid in all_event_ids:
+        pts = load_samples_for_market(mid, MOM_DIAG_SIBLING_WINDOW_SEC, now_ts)
+        if pts:
+            oldest_ts, oldest_yes = pts[0]
+            newest_ts, newest_yes = pts[-1]
+            siblings_info.append(
+                {
+                    "mid": mid,
+                    "n": len(pts),
+                    "oldest_ts": round(float(oldest_ts), 2),
+                    "newest_ts": round(float(newest_ts), 2),
+                    "oldest_yes": round(float(oldest_yes), 4),
+                    "newest_yes": round(float(newest_yes), 4),
+                    "age_oldest_sec": round(now_ts - float(oldest_ts), 1),
+                }
+            )
+        else:
+            siblings_info.append(
+                {
+                    "mid": mid,
+                    "n": 0,
+                    "oldest_ts": 0.0,
+                    "newest_ts": 0.0,
+                    "oldest_yes": 0.0,
+                    "newest_yes": 0.0,
+                    "age_oldest_sec": 0.0,
+                }
+            )
+
+    payload = {
+        "market_id": market_id,
+        "event_id": event_id or "",
+        "title": str(title)[:120],
+        "gamma_probability": round(float(gamma_probability), 4),
+        "double_momentum_min_price": round(
+            float(getattr(settings, "double_momentum_min_price", C.DOUBLE_MOMENTUM_MIN_PRICE)),
+            4,
+        ),
+        "double_momentum_max_price": round(
+            float(getattr(settings, "double_momentum_max_price", C.DOUBLE_MOMENTUM_MAX_PRICE)),
+            4,
+        ),
+        "momentum_min_price": round(
+            float(getattr(settings, "momentum_min_price", C.MOMENTUM_MIN_PRICE)), 4
+        ),
+        "momentum_max_entry": round(
+            float(getattr(settings, "momentum_max_entry", C.MOMENTUM_MAX_ENTRY)), 4
+        ),
+        "buy_min": round(float(getattr(settings, "buy_min", 0.80)), 4),
+        "buy_max": round(float(getattr(settings, "buy_max", 0.84)), 4),
+        "leader_yield_fall_min_abs_pts": round(
+            float(getattr(settings, "leader_yield_fall_min_abs_pts", C.LEADER_YIELD_FALL_MIN_ABS_PTS)),
+            4,
+        ),
+        "leader_yield_fall_min_frac": round(
+            float(getattr(settings, "leader_yield_fall_min_frac", C.LEADER_YIELD_FALL_MIN_FRAC)),
+            4,
+        ),
+        "leader_yield_min_leader_old_price": round(
+            float(getattr(settings, "leader_yield_min_leader_old_price", C.LEADER_YIELD_MIN_LEADER_OLD_PRICE)),
+            4,
+        ),
+        "min_samples": int(C.MOMENTUM_MIN_SAMPLE_POINTS),
+        "dbl": {
+            "signal_raw": bool(dbl_signal_raw),
+            "trigger": str(dbl_trigger),
+            "window_sec": float(dbl_meta.get("std_window_sec") or 0.0),
+            "abs_rise": round(float(dbl_meta.get("std_abs_rise") or 0.0), 4),
+            "pct_rise": round(float(dbl_meta.get("std_pct_rise") or 0.0), 4),
+            "old_price": round(float(dbl_meta.get("std_old_price") or 0.0), 4),
+            "new_price": round(float(dbl_meta.get("std_new_price") or 0.0), 4),
+        },
+        "leader_dbl": {
+            "leader_id": str(leader_meta_dbl.get("leader_id") or ""),
+            "leader_old": round(float(leader_meta_dbl.get("leader_old") or 0.0), 4),
+            "leader_new": round(float(leader_meta_dbl.get("leader_new") or 0.0), 4),
+            "drop_pts": round(float(leader_meta_dbl.get("drop_pts") or 0.0), 4),
+            "drop_frac": round(float(leader_meta_dbl.get("drop_frac") or 0.0), 4),
+            "reason": str(leader_meta_dbl.get("reason") or ""),
+            "parsed_window_sec": float(leader_meta_dbl.get("parsed_window_sec") or 0.0),
+        },
+        "mom": {
+            "signal_raw": bool(mom_signal_raw),
+            "trigger": str(mom_trigger),
+            "window_sec": float(mom_meta.get("std_window_sec") or 0.0),
+            "abs_rise": round(float(mom_meta.get("std_abs_rise") or 0.0), 4),
+            "pct_rise": round(float(mom_meta.get("std_pct_rise") or 0.0), 4),
+            "old_price": round(float(mom_meta.get("std_old_price") or 0.0), 4),
+            "new_price": round(float(mom_meta.get("std_new_price") or 0.0), 4),
+        },
+        "leader_mom": {
+            "leader_id": str(leader_meta_mom.get("leader_id") or ""),
+            "leader_old": round(float(leader_meta_mom.get("leader_old") or 0.0), 4),
+            "leader_new": round(float(leader_meta_mom.get("leader_new") or 0.0), 4),
+            "drop_pts": round(float(leader_meta_mom.get("drop_pts") or 0.0), 4),
+            "drop_frac": round(float(leader_meta_mom.get("drop_frac") or 0.0), 4),
+            "reason": str(leader_meta_mom.get("reason") or ""),
+            "parsed_window_sec": float(leader_meta_mom.get("parsed_window_sec") or 0.0),
+        },
+        "is_double_momentum": bool(is_double_momentum),
+        "is_momentum_entry": bool(is_momentum_entry),
+        "n_event_market_ids": len(all_event_ids),
+        "siblings": siblings_info,
+    }
+    try:
+        s = json.dumps(payload, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        s = repr(payload)
+    print(f"[mom_diag] {s}")
 
 
 def _momentum_eval_debug_line(payload: Dict[str, Any]) -> None:
@@ -532,9 +747,7 @@ def evaluate_entry(
     wsec = momentum_window_sec(settings)
     rank = yes_rank_by_market_prob(market_id, siblings) if siblings else 1
     peer_ids = sorted({str(x).strip() for x in ev_mids if str(x).strip()})
-    top_changes = top_price_change_peers(
-        peer_ids, window_sec=wsec, top_n=3
-    )
+    top_changes = top_price_change_peers(peer_ids, window_sec=wsec, top_n=3)
 
     min_lead_mkt = float(
         getattr(settings, "min_lead_over_runner_up", C.MIN_LEAD_OVER_RUNNER_UP)
@@ -552,18 +765,6 @@ def evaluate_entry(
     )
     mom_min = float(getattr(settings, "momentum_min_price", C.MOMENTUM_MIN_PRICE))
     mom_max = float(getattr(settings, "momentum_max_entry", C.MOMENTUM_MAX_ENTRY))
-    entry_windows = momentum_entry_candidate_windows(settings)
-    mom_signal_raw, mom_trigger, mom_meta = momentum_multi_window_check(
-        market_id=market_id,
-        abs_rise_threshold=rise_thr,
-        pct_rise_threshold=rise_pct_thr,
-        windows_sec=entry_windows,
-        min_start_price=mom_start_min,
-        min_current_price=mom_min,
-        max_current_price=mom_max,
-    )
-
-    # double momentum: abs + pct with wider price band.
     dbl_rise_thr = float(
         getattr(settings, "double_momentum_entry_rise", C.DOUBLE_MOMENTUM_ENTRY_RISE)
     )
@@ -581,7 +782,55 @@ def evaluate_entry(
     dbl_max = float(
         getattr(settings, "double_momentum_max_price", C.DOUBLE_MOMENTUM_MAX_PRICE)
     )
-    dbl_signal_raw, dbl_trigger, dbl_meta = momentum_multi_window_check(
+
+    all_event_ids = sorted({str(x).strip() for x in ev_mids if str(x).strip()})
+    min_leader_old = float(
+        getattr(
+            settings,
+            "leader_yield_min_leader_old_price",
+            C.LEADER_YIELD_MIN_LEADER_OLD_PRICE,
+        )
+    )
+    leader_fall_abs = float(
+        getattr(
+            settings, "leader_yield_fall_min_abs_pts", C.LEADER_YIELD_FALL_MIN_ABS_PTS
+        )
+    )
+    leader_fall_frac = float(
+        getattr(settings, "leader_yield_fall_min_frac", C.LEADER_YIELD_FALL_MIN_FRAC)
+    )
+
+    entry_windows = momentum_entry_candidate_windows(settings)
+    dbl_signal_raw, dbl_trigger, dbl_meta, leader_meta_dbl = momentum_leader_same_window_check(
+        market_id=market_id,
+        event_market_ids=list(all_event_ids),
+        windows_sec=entry_windows,
+        abs_rise_threshold=dbl_rise_thr,
+        pct_rise_threshold=dbl_rise_pct_thr,
+        min_start_price=dbl_start_min,
+        min_current_price=dbl_min,
+        max_current_price=dbl_max,
+        min_leader_old_price=min_leader_old,
+        min_fall_abs_pts=leader_fall_abs,
+        min_fall_frac_of_old=leader_fall_frac,
+        min_samples=C.MOMENTUM_MIN_SAMPLE_POINTS,
+    )
+    mom_signal_raw, mom_trigger, mom_meta, leader_meta_mom = momentum_leader_same_window_check(
+        market_id=market_id,
+        event_market_ids=list(all_event_ids),
+        windows_sec=entry_windows,
+        abs_rise_threshold=rise_thr,
+        pct_rise_threshold=rise_pct_thr,
+        min_start_price=mom_start_min,
+        min_current_price=mom_min,
+        max_current_price=mom_max,
+        min_leader_old_price=min_leader_old,
+        min_fall_abs_pts=leader_fall_abs,
+        min_fall_frac_of_old=leader_fall_frac,
+        min_samples=C.MOMENTUM_MIN_SAMPLE_POINTS,
+    )
+
+    dbl_rise_only, _, _ = momentum_multi_window_check(
         market_id=market_id,
         abs_rise_threshold=dbl_rise_thr,
         pct_rise_threshold=dbl_rise_pct_thr,
@@ -590,55 +839,58 @@ def evaluate_entry(
         min_current_price=dbl_min,
         max_current_price=dbl_max,
     )
-
-    all_event_ids = sorted({str(x).strip() for x in ev_mids if str(x).strip()})
-    min_leader_old = float(
-        getattr(settings, "leader_yield_min_leader_old_price", C.LEADER_YIELD_MIN_LEADER_OLD_PRICE)
-    )
-    leader_fall_abs = float(
-        getattr(settings, "leader_yield_fall_min_abs_pts", C.LEADER_YIELD_FALL_MIN_ABS_PTS)
-    )
-    leader_fall_frac = float(
-        getattr(settings, "leader_yield_fall_min_frac", C.LEADER_YIELD_FALL_MIN_FRAC)
+    mom_rise_only, _, _ = momentum_multi_window_check(
+        market_id=market_id,
+        abs_rise_threshold=rise_thr,
+        pct_rise_threshold=rise_pct_thr,
+        windows_sec=entry_windows,
+        min_start_price=mom_start_min,
+        min_current_price=mom_min,
+        max_current_price=mom_max,
     )
 
-    def _leader_gate(trigger: str) -> Tuple[bool, Dict[str, Any]]:
-        ws = parse_trigger_window_seconds(trigger)
-        if ws is None or ws <= 0:
-            return False, {"reason": "bad_trigger_window"}
-        ok, md = leader_yield_drop_qualifies(
-            target_market_id=market_id,
-            event_market_ids=list(all_event_ids),
-            window_sec=float(ws),
-            min_leader_old_price=min_leader_old,
-            min_fall_abs_pts=leader_fall_abs,
-            min_fall_frac_of_old=leader_fall_frac,
-            min_samples=C.MOMENTUM_MIN_SAMPLE_POINTS,
-        )
-        md = dict(md)
-        md["parsed_window_sec"] = float(ws)
-        return ok, md
-
-    leader_ok_dbl, leader_meta_dbl = (
-        _leader_gate(dbl_trigger) if dbl_signal_raw else (False, {"reason": "double_signal_false"})
-    )
-    leader_ok_mom, leader_meta_mom = (
-        _leader_gate(mom_trigger) if mom_signal_raw else (False, {"reason": "mom_signal_false"})
-    )
-
-    is_double_momentum = bool(dbl_signal_raw and leader_ok_dbl)
-    is_momentum_from_std = bool(mom_signal_raw and leader_ok_mom and not is_double_momentum)
+    is_double_momentum = bool(dbl_signal_raw)
+    is_momentum_from_std = bool(mom_signal_raw and not is_double_momentum)
     active_leader_meta: Dict[str, Any] = {}
     leader_yield_win_sec = 0.0
     if is_double_momentum:
         active_leader_meta = dict(leader_meta_dbl)
-        leader_yield_win_sec = float(parse_trigger_window_seconds(dbl_trigger) or 0.0)
+        leader_yield_win_sec = float(
+            leader_meta_dbl.get("leader_eval_window_sec")
+            or parse_trigger_window_seconds(dbl_trigger)
+            or 0.0
+        )
     elif is_momentum_from_std:
         active_leader_meta = dict(leader_meta_mom)
-        leader_yield_win_sec = float(parse_trigger_window_seconds(mom_trigger) or 0.0)
+        leader_yield_win_sec = float(
+            leader_meta_mom.get("leader_eval_window_sec")
+            or parse_trigger_window_seconds(mom_trigger)
+            or 0.0
+        )
 
     # standard momentum: abs + pct in tighter band + ex-leader must bleed same window.
     is_momentum_entry = bool(is_double_momentum or is_momentum_from_std)
+
+    # surgical diagnostic — single line, grep-friendly. logs every entry eval so
+    # we can see *which* gate failed when an obvious surge gets skipped.
+    emit_mom_diag(
+        market_id=market_id,
+        event_id=ev_id,
+        title=bucket,
+        gamma_probability=mkt,
+        settings=settings,
+        all_event_ids=all_event_ids,
+        dbl_signal_raw=dbl_signal_raw,
+        dbl_trigger=dbl_trigger,
+        dbl_meta=dbl_meta,
+        leader_meta_dbl=leader_meta_dbl,
+        mom_signal_raw=mom_signal_raw,
+        mom_trigger=mom_trigger,
+        mom_meta=mom_meta,
+        leader_meta_mom=leader_meta_mom,
+        is_double_momentum=is_double_momentum,
+        is_momentum_entry=is_momentum_entry,
+    )
 
     # mom_meta / dbl_meta below carry legacy std-window fields used by the
     # debug payload + finish() trigger metric extraction.
@@ -734,11 +986,15 @@ def evaluate_entry(
                 "momentum_15m_points": round(float(momentum_15m), 4),
                 "mom_trigger_window": mom_trigger,
                 "mom_std_pass": mom_meta.get("std_passed", False),
-                "mom_std_rise_points": round(float(mom_meta.get("std_abs_rise", 0.0)), 4),
+                "mom_std_rise_points": round(
+                    float(mom_meta.get("std_abs_rise", 0.0)), 4
+                ),
                 "mom_std_rise_pct": round(float(mom_meta.get("std_pct_rise", 0.0)), 4),
                 "double_trigger_window": dbl_trigger,
                 "dbl_std_pass": dbl_meta.get("std_passed", False),
-                "dbl_std_rise_points": round(float(dbl_meta.get("std_abs_rise", 0.0)), 4),
+                "dbl_std_rise_points": round(
+                    float(dbl_meta.get("std_abs_rise", 0.0)), 4
+                ),
                 "dbl_std_rise_pct": round(float(dbl_meta.get("std_pct_rise", 0.0)), 4),
                 "yes_rank": int(rank),
                 "market_lead_gap": round(float(market_lead_gap), 4),
@@ -768,6 +1024,7 @@ def evaluate_entry(
         churn_event_recent_stoploss_active,
         churn_event_unstable_active,
     )
+
     if ev_id and not churn_event_allows_buy(state, ev_id):
         return finish("SKIP", f"event_churn_cooldown active for {ev_id}")
     if ev_id and churn_event_recent_stoploss_active(state, ev_id):
@@ -801,11 +1058,11 @@ def evaluate_entry(
                 "SKIP", f"max_positions_per_event open={open_n} max={max_pos}"
             )
 
-    if (dbl_signal_raw or mom_signal_raw) and not is_momentum_entry:
+    if (dbl_rise_only or mom_rise_only) and not is_momentum_entry:
         lk = ""
-        if dbl_signal_raw:
+        if dbl_rise_only:
             lk = str(leader_meta_dbl.get("reason") or "")
-        elif mom_signal_raw:
+        elif mom_rise_only:
             lk = str(leader_meta_mom.get("reason") or "")
         if len(all_event_ids) < 2:
             skip_lk = "leader_yield_blocked_single_bucket_event"
@@ -827,7 +1084,8 @@ def evaluate_entry(
         if model_p + 1e-9 < peak_min:
             return finish("SKIP", f"model_flat {model_p:.4f} < peak_min {peak_min:.4f}")
 
-    # 7. competition filter — 15% lead required (skipped for momentum entries)
+    # 7. competition — normal BUY only: live YES lead vs runner-up (momentum bypasses).
+    # evaluate_competition still fills TradeDecision metadata (model vs market method).
     comp = evaluate_competition(
         client,
         market,
@@ -837,12 +1095,21 @@ def evaluate_entry(
         consensus_c=consensus_c,
         sigma_c_setting=float(settings.research_sigma_c),
     )
-    if settings.enable_competition_filter and not comp.passes and not is_momentum_entry:
-        return finish(
-            "SKIP",
-            f"competition_fail gap={comp.gap:.4f} < min_lead={settings.min_lead_over_runner_up:.4f}",
-            competition=comp,
+    if settings.enable_competition_filter and not is_momentum_entry:
+        min_mkt_gap = float(
+            getattr(
+                settings,
+                "min_market_yes_lead_gap_normal",
+                C.MIN_MARKET_YES_LEAD_GAP_NORMAL,
+            )
         )
+        if market_lead_gap + 1e-9 < min_mkt_gap:
+            return finish(
+                "SKIP",
+                "competition_fail "
+                f"market_gap={market_lead_gap:.4f} < min_market_yes_lead_gap_normal={min_mkt_gap:.4f}",
+                competition=comp,
+            )
 
     # 9. negative momentum — don't buy into a falling bucket
     if momentum_15m < -0.10 and not is_momentum_entry:
@@ -878,21 +1145,6 @@ def evaluate_entry(
             research=rd,
         )
 
-    if is_momentum_entry:
-        af_mkt = float(getattr(settings, "momentum_antifomo_min_mkt", 0.70))
-        af_rise = float(getattr(settings, "momentum_antifomo_min_prior_rise", 0.50))
-        biggest_rise = max(
-            float(mom_meta.get("std_abs_rise") or 0.0),
-            float(dbl_meta.get("std_abs_rise") or 0.0),
-        )
-        if mkt > af_mkt + 1e-12 and biggest_rise > af_rise + 1e-12:
-            return finish(
-                "SKIP",
-                f"momentum_too_late mkt={mkt:.3f} rise={biggest_rise:.3f}",
-                competition=comp,
-                research=rd,
-            )
-
     reason = (
         "momentum_entry_ride_the_wave" if is_momentum_entry else "passed_all_filters"
     )
@@ -912,7 +1164,9 @@ def stop_loss_bar_for_entry_type(
     """Return the stop-loss mark bar based on the entry type stored at buy time."""
     et = str(entry_type or "normal").strip()
     if et == "double_momentum":
-        return float(getattr(settings, "stop_loss_double_momentum", C.STOP_LOSS_DOUBLE_MOMENTUM))
+        return float(
+            getattr(settings, "stop_loss_double_momentum", C.STOP_LOSS_DOUBLE_MOMENTUM)
+        )
     if et == "momentum":
         return float(getattr(settings, "stop_loss_momentum", C.STOP_LOSS_MOMENTUM))
     if et in ("manual", "ui"):
@@ -1035,7 +1289,10 @@ def classify_stop_loss_breach(
     # which single component set `effective`?
     if trail is not None and float(effective) <= float(trail) + 1e-9:
         return (C.SL_CATEGORY_TRAILING, float(trail))
-    if float(effective) <= float(entry_relative) + 1e-9 and entry_relative >= hard_floor - 1e-9:
+    if (
+        float(effective) <= float(entry_relative) + 1e-9
+        and entry_relative >= hard_floor - 1e-9
+    ):
         return (C.SL_CATEGORY_RELATIVE, float(entry_relative))
     if float(effective) <= float(hard_floor) + 1e-9:
         return (C.SL_CATEGORY_ABSOLUTE, float(hard_floor))
@@ -1179,7 +1436,9 @@ def check_exits(
         trade,
         current_price=mark,
         decay_hours=float(getattr(settings, "time_decay_hours", C.TIME_DECAY_HOURS)),
-        min_gain_points=float(getattr(settings, "time_decay_min_gain", C.TIME_DECAY_MIN_GAIN)),
+        min_gain_points=float(
+            getattr(settings, "time_decay_min_gain", C.TIME_DECAY_MIN_GAIN)
+        ),
         max_price_for_decay=float(
             getattr(settings, "time_decay_max_price", C.TIME_DECAY_MAX_PRICE)
         ),

@@ -150,6 +150,109 @@ def test_normal_entry_high_band_not_blocked_by_market_prob(monkeypatch):
     assert decision.entry_type == "normal"
 
 
+def test_normal_entry_skips_when_market_lead_gap_below_configured_half():
+    market = {
+        "id": "normal",
+        "eventId": "e1",
+        "outcomePrices": "[0.86, 0.14]",
+        "question": parsed_market().raw_title,
+    }
+    siblings = [
+        market,
+        {"id": "other", "outcomePrices": "[0.45, 0.55]", "question": "other bucket"},
+    ]
+    settings = make_settings(
+        enable_competition_filter=True,
+        research_edge_gate_buy=False,
+        max_market_prob_for_buy=0.99,
+        min_market_yes_lead_gap_normal=0.5,
+    )
+    with patch("strategy.decision_core.compute_model_prob", return_value=0.95):
+        decision = evaluate_entry(
+            parsed_market(),
+            17.0,
+            0.86,
+            market,
+            FakeEventClient(siblings),
+            settings,
+            {},
+            {},
+        )
+    assert decision.decision == "SKIP"
+    assert "competition_fail" in decision.reason
+    assert "market_gap=" in decision.reason
+
+
+def test_normal_entry_passes_when_market_lead_gap_meets_half():
+    market = {
+        "id": "normal",
+        "eventId": "e1",
+        "outcomePrices": "[0.86, 0.14]",
+        "question": parsed_market().raw_title,
+    }
+    siblings = [
+        market,
+        {"id": "other", "outcomePrices": "[0.34, 0.66]", "question": "other bucket"},
+    ]
+    settings = make_settings(
+        enable_competition_filter=True,
+        research_edge_gate_buy=False,
+        max_market_prob_for_buy=0.99,
+        min_market_yes_lead_gap_normal=0.5,
+    )
+    with patch("strategy.decision_core.compute_model_prob", return_value=0.95):
+        decision = evaluate_entry(
+            parsed_market(),
+            17.0,
+            0.86,
+            market,
+            FakeEventClient(siblings),
+            settings,
+            {},
+            {},
+        )
+    assert decision.decision == "BUY"
+    assert decision.entry_type == "normal"
+
+
+def test_double_momentum_buy_skips_market_lead_gap_even_when_tight(tmp_path, monkeypatch):
+    monkeypatch.setattr("strategy.momentum.PRICE_SAMPLES_DIR", tmp_path)
+    add_samples("td_leader", [0.75, 0.55, 0.38])
+    add_samples("td_meta", [0.05, 0.30, 0.50])
+    market = {
+        "id": "td_meta",
+        "eventId": "ev_td",
+        "outcomePrices": "[0.50, 0.50]",
+        "question": parsed_market().raw_title,
+    }
+    siblings = [
+        {"id": "td_leader", "outcomePrices": "[0.38, 0.62]", "question": "leader"},
+        market.copy(),
+    ]
+
+    class FakeClient:
+        def get_markets_for_event_id(self, _eid):
+            return siblings
+
+    settings = make_settings(
+        double_momentum_min_start_price=0.05,
+        enable_competition_filter=True,
+        min_market_yes_lead_gap_normal=0.99,
+    )
+    decision = evaluate_entry(
+        parsed_market(),
+        17.0,
+        0.50,
+        market,
+        FakeClient(),
+        settings,
+        {},
+        {},
+    )
+    assert decision.decision == "BUY"
+    assert decision.entry_type == "double_momentum"
+
+
 def test_double_momentum_low_band_reaches_place_buy(tmp_path, monkeypatch):
     monkeypatch.setattr("strategy.momentum.PRICE_SAMPLES_DIR", tmp_path)
     add_samples("double", [0.01, 0.16, 0.32])

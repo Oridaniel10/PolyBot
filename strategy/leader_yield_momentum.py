@@ -71,6 +71,20 @@ def leader_yield_drop_qualifies(
         )
         if old_p > float(min_leader_old_price) + 1e-12:
             rows.append((mid, float(old_p), float(new_p)))
+            continue
+        # surgical: visibility into siblings silently dropped before the leader
+        # is picked. either insufficient samples (old_p == 0.0) or genuine low
+        # window-start price. either way, we want to see it grep'd.
+        drop_reason = (
+            "insufficient_samples_or_low_price"
+            if old_p <= 1e-12
+            else "below_min_leader_old_price"
+        )
+        print(
+            f"[leader_yield] dropped sibling mid={mid} "
+            f"old_p={float(old_p):.4f} new_p={float(new_p):.4f} "
+            f"window_sec={float(window_sec):.0f} target={tid} reason={drop_reason}"
+        )
 
     if not rows:
         meta["reason"] = "no_peer_baseline_leader"

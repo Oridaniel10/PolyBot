@@ -42,6 +42,7 @@ class RuntimeConfigUpdate(BaseModel):
     buy_disable_price_band: Optional[bool] = None
     take_profit_threshold: Optional[float] = Field(None, ge=0.01, le=0.99)
     min_lead_over_runner_up: Optional[float] = Field(None, ge=0.0, le=0.95)
+    min_market_yes_lead_gap_normal: Optional[float] = Field(None, ge=0.0, le=0.95)
     enable_competition_filter: Optional[bool] = None
     enable_momentum: Optional[bool] = None
     momentum_window_min: Optional[int] = Field(None, ge=1, le=1440)

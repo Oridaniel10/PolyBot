@@ -23,7 +23,6 @@ def default_runtime_dict() -> Dict[str, Any]:
         "buy_disable_price_band": C.BUY_DISABLE_PRICE_BAND,
         "stop_loss_normal": C.STOP_LOSS_NORMAL,
         "stop_loss_normal_entry_drop_pct": C.STOP_LOSS_NORMAL_ENTRY_DROP_PCT,
-
         # momentum: 15m entry + sell stop-loss
         # abs example: 0.30 -> 0.50 = +0.20
         # pct example: 0.03 -> 0.33 = +1000%
@@ -34,7 +33,6 @@ def default_runtime_dict() -> Dict[str, Any]:
         "momentum_max_entry": C.MOMENTUM_MAX_ENTRY,
         "stop_loss_momentum": C.STOP_LOSS_MOMENTUM,
         "stop_loss_momentum_entry_drop_pct": C.STOP_LOSS_MOMENTUM_ENTRY_DROP_PCT,
-
         # double momentum: stronger 15m entry + sell stop-loss
         # abs example: 0.30 -> 0.70 = +0.40
         # pct example: 0.02 -> 0.22 = +1000%
@@ -45,9 +43,9 @@ def default_runtime_dict() -> Dict[str, Any]:
         "double_momentum_max_price": C.DOUBLE_MOMENTUM_MAX_PRICE,
         "stop_loss_double_momentum": C.STOP_LOSS_DOUBLE_MOMENTUM,
         "stop_loss_double_momentum_entry_drop_pct": C.STOP_LOSS_DOUBLE_MOMENTUM_ENTRY_DROP_PCT,
-
         "take_profit_threshold": C.TAKE_PROFIT_THRESHOLD,
         "min_lead_over_runner_up": C.MIN_LEAD_OVER_RUNNER_UP,
+        "min_market_yes_lead_gap_normal": C.MIN_MARKET_YES_LEAD_GAP_NORMAL,
         "enable_competition_filter": C.ENABLE_COMPETITION_FILTER,
         "enable_momentum": C.ENABLE_MOMENTUM,
         "momentum_window_min": C.MOMENTUM_WINDOW_MIN,
@@ -149,8 +147,6 @@ def default_runtime_dict() -> Dict[str, Any]:
         "crash_from_peak_grace_sec_after_entry": C.CRASH_FROM_PEAK_GRACE_SEC_AFTER_ENTRY,
         "buy_escalate_notional_on_submit_fail": C.BUY_ESCALATE_NOTIONAL_ON_SUBMIT_FAIL,
         "buy_escalate_notional_step_usd": C.BUY_ESCALATE_NOTIONAL_STEP_USD,
-        "momentum_antifomo_min_mkt": C.MOMENTUM_ANTIFOMO_MIN_MKT,
-        "momentum_antifomo_min_prior_rise": C.MOMENTUM_ANTIFOMO_MIN_PRIOR_RISE,
         "momentum_entry_max_window_seconds": C.MOMENTUM_ENTRY_MAX_WINDOW_SEC,
         "leader_yield_min_leader_old_price": C.LEADER_YIELD_MIN_LEADER_OLD_PRICE,
         "leader_yield_fall_min_abs_pts": C.LEADER_YIELD_FALL_MIN_ABS_PTS,
@@ -201,6 +197,7 @@ class RuntimeSettings:
     stop_loss_double_momentum_entry_drop_pct: float
     take_profit: float
     min_lead_over_runner_up: float
+    min_market_yes_lead_gap_normal: float
     enable_competition_filter: bool
     enable_momentum: bool
     momentum_window_min: int
@@ -311,8 +308,6 @@ class RuntimeSettings:
     crash_from_peak_grace_sec_after_entry: float
     buy_escalate_notional_on_submit_fail: bool
     buy_escalate_notional_step_usd: float
-    momentum_antifomo_min_mkt: float
-    momentum_antifomo_min_prior_rise: float
     momentum_entry_max_window_seconds: float
     leader_yield_min_leader_old_price: float
     leader_yield_fall_min_abs_pts: float
@@ -428,7 +423,9 @@ class RuntimeSettings:
         dbl_fast_wsec = max(60.0, min(3600.0, dbl_fast_wsec))
         mom_drop = float(d.get("momentum_fast_exit_drop", C.MOMENTUM_FAST_EXIT_DROP))
         mom_drop = max(0.01, min(0.95, mom_drop))
-        mom_surge = float(d.get("momentum_competitor_surge", C.MOMENTUM_COMPETITOR_SURGE))
+        mom_surge = float(
+            d.get("momentum_competitor_surge", C.MOMENTUM_COMPETITOR_SURGE)
+        )
         mom_surge = max(0.01, min(0.95, mom_surge))
         mom_entry_rise = float(d.get("momentum_entry_rise", C.MOMENTUM_ENTRY_RISE))
         mom_entry_rise = max(0.01, min(0.95, mom_entry_rise))
@@ -477,7 +474,9 @@ class RuntimeSettings:
             ts_lock = max(0.0, ts_act - 0.01)
         # limit-order execution
         lo_enabled = bool(d.get("limit_orders_enabled", C.LIMIT_ORDERS_ENABLED))
-        buy_to = int(d.get("buy_limit_order_timeout_sec", C.BUY_LIMIT_ORDER_TIMEOUT_SEC))
+        buy_to = int(
+            d.get("buy_limit_order_timeout_sec", C.BUY_LIMIT_ORDER_TIMEOUT_SEC)
+        )
         buy_to = max(1, min(120, buy_to))
         sell_to = int(
             d.get("sell_limit_order_timeout_sec", C.SELL_LIMIT_ORDER_TIMEOUT_SEC)
@@ -524,6 +523,18 @@ class RuntimeSettings:
             take_profit=float(d.get("take_profit_threshold", C.TAKE_PROFIT_THRESHOLD)),
             min_lead_over_runner_up=float(
                 d.get("min_lead_over_runner_up", C.MIN_LEAD_OVER_RUNNER_UP)
+            ),
+            min_market_yes_lead_gap_normal=max(
+                0.0,
+                min(
+                    0.95,
+                    float(
+                        d.get(
+                            "min_market_yes_lead_gap_normal",
+                            C.MIN_MARKET_YES_LEAD_GAP_NORMAL,
+                        )
+                    ),
+                ),
             ),
             enable_competition_filter=bool(
                 d.get("enable_competition_filter", C.ENABLE_COMPETITION_FILTER)
@@ -705,110 +716,226 @@ class RuntimeSettings:
             telegram_verbose_trade_reason=tg_verbose,
             blacklist_market_ids=ids,
             # per-type stop-loss
-            stop_loss_normal=max(0.01, min(0.99, float(
-                d.get("stop_loss_normal", C.STOP_LOSS_NORMAL)
-            ))),
-            stop_loss_momentum=max(0.01, min(0.99, float(
-                d.get("stop_loss_momentum", C.STOP_LOSS_MOMENTUM)
-            ))),
-            stop_loss_double_momentum=max(0.01, min(0.99, float(
-                d.get("stop_loss_double_momentum", C.STOP_LOSS_DOUBLE_MOMENTUM)
-            ))),
-            stop_loss_normal_entry_drop_pct=max(0.01, min(0.95, float(
-                d.get("stop_loss_normal_entry_drop_pct", C.STOP_LOSS_NORMAL_ENTRY_DROP_PCT)
-            ))),
-            stop_loss_momentum_entry_drop_pct=max(0.01, min(0.95, float(
-                d.get("stop_loss_momentum_entry_drop_pct", C.STOP_LOSS_MOMENTUM_ENTRY_DROP_PCT)
-            ))),
-            stop_loss_double_momentum_entry_drop_pct=max(0.01, min(0.95, float(
-                d.get("stop_loss_double_momentum_entry_drop_pct", C.STOP_LOSS_DOUBLE_MOMENTUM_ENTRY_DROP_PCT)
-            ))),
+            stop_loss_normal=max(
+                0.01, min(0.99, float(d.get("stop_loss_normal", C.STOP_LOSS_NORMAL)))
+            ),
+            stop_loss_momentum=max(
+                0.01,
+                min(0.99, float(d.get("stop_loss_momentum", C.STOP_LOSS_MOMENTUM))),
+            ),
+            stop_loss_double_momentum=max(
+                0.01,
+                min(
+                    0.99,
+                    float(
+                        d.get("stop_loss_double_momentum", C.STOP_LOSS_DOUBLE_MOMENTUM)
+                    ),
+                ),
+            ),
+            stop_loss_normal_entry_drop_pct=max(
+                0.01,
+                min(
+                    0.95,
+                    float(
+                        d.get(
+                            "stop_loss_normal_entry_drop_pct",
+                            C.STOP_LOSS_NORMAL_ENTRY_DROP_PCT,
+                        )
+                    ),
+                ),
+            ),
+            stop_loss_momentum_entry_drop_pct=max(
+                0.01,
+                min(
+                    0.95,
+                    float(
+                        d.get(
+                            "stop_loss_momentum_entry_drop_pct",
+                            C.STOP_LOSS_MOMENTUM_ENTRY_DROP_PCT,
+                        )
+                    ),
+                ),
+            ),
+            stop_loss_double_momentum_entry_drop_pct=max(
+                0.01,
+                min(
+                    0.95,
+                    float(
+                        d.get(
+                            "stop_loss_double_momentum_entry_drop_pct",
+                            C.STOP_LOSS_DOUBLE_MOMENTUM_ENTRY_DROP_PCT,
+                        )
+                    ),
+                ),
+            ),
             # double momentum entry
-            double_momentum_entry_rise=max(0.05, min(1.0, float(
-                d.get("double_momentum_entry_rise", C.DOUBLE_MOMENTUM_ENTRY_RISE)
-            ))),
-            double_momentum_pct_rise=max(0.01, min(10.0, float(
-                d.get("double_momentum_pct_rise", C.DOUBLE_MOMENTUM_PCT_RISE)
-            ))),
-            double_momentum_min_start_price=max(0.0, min(0.99, float(
-                d.get("double_momentum_min_start_price", C.DOUBLE_MOMENTUM_MIN_START_PRICE)
-            ))),
-            double_momentum_min_price=max(0.01, min(0.99, float(
-                d.get("double_momentum_min_price", C.DOUBLE_MOMENTUM_MIN_PRICE)
-            ))),
-            double_momentum_max_price=max(0.01, min(0.99, float(
-                d.get("double_momentum_max_price", C.DOUBLE_MOMENTUM_MAX_PRICE)
-            ))),
+            double_momentum_entry_rise=max(
+                0.05,
+                min(
+                    1.0,
+                    float(
+                        d.get(
+                            "double_momentum_entry_rise", C.DOUBLE_MOMENTUM_ENTRY_RISE
+                        )
+                    ),
+                ),
+            ),
+            double_momentum_pct_rise=max(
+                0.01,
+                min(
+                    10.0,
+                    float(
+                        d.get("double_momentum_pct_rise", C.DOUBLE_MOMENTUM_PCT_RISE)
+                    ),
+                ),
+            ),
+            double_momentum_min_start_price=max(
+                0.0,
+                min(
+                    0.99,
+                    float(
+                        d.get(
+                            "double_momentum_min_start_price",
+                            C.DOUBLE_MOMENTUM_MIN_START_PRICE,
+                        )
+                    ),
+                ),
+            ),
+            double_momentum_min_price=max(
+                0.01,
+                min(
+                    0.99,
+                    float(
+                        d.get("double_momentum_min_price", C.DOUBLE_MOMENTUM_MIN_PRICE)
+                    ),
+                ),
+            ),
+            double_momentum_max_price=max(
+                0.01,
+                min(
+                    0.99,
+                    float(
+                        d.get("double_momentum_max_price", C.DOUBLE_MOMENTUM_MAX_PRICE)
+                    ),
+                ),
+            ),
             # event-level churn
-            churn_event_max_losses=max(1, min(20, int(
-                d.get("churn_event_max_losses", C.CHURN_EVENT_MAX_LOSSES)
-            ))),
-            churn_event_cooldown_sec=max(0, min(86400, int(
-                d.get("churn_event_cooldown_sec", C.CHURN_EVENT_COOLDOWN_SEC)
-            ))),
+            churn_event_max_losses=max(
+                1,
+                min(20, int(d.get("churn_event_max_losses", C.CHURN_EVENT_MAX_LOSSES))),
+            ),
+            churn_event_cooldown_sec=max(
+                0,
+                min(
+                    86400,
+                    int(d.get("churn_event_cooldown_sec", C.CHURN_EVENT_COOLDOWN_SEC)),
+                ),
+            ),
             churn_event_loss_1_cooldown_sec=churn_l1,
             churn_event_loss_2_cooldown_sec=churn_l2,
             leader_switch_window_sec=leader_switch_window,
             leader_switch_max_count=leader_switch_max,
             unstable_event_cooldown_sec=unstable_cd,
             # fast exit watcher
-            fast_exit_watcher_interval_sec=max(2, min(60, int(
-                d.get("fast_exit_watcher_interval_sec", C.FAST_EXIT_WATCHER_INTERVAL_SEC)
-            ))),
-            crash_drop_pct_from_peak=max(0.0, min(0.95, float(
-                d.get("crash_drop_pct_from_peak", C.CRASH_DROP_PCT_FROM_PEAK)
-            ))),
-            crash_from_peak_grace_sec_after_entry=max(0.0, min(3600.0, float(
-                d.get(
-                    "crash_from_peak_grace_sec_after_entry",
-                    C.CRASH_FROM_PEAK_GRACE_SEC_AFTER_ENTRY,
-                )
-            ))),
+            fast_exit_watcher_interval_sec=max(
+                2,
+                min(
+                    60,
+                    int(
+                        d.get(
+                            "fast_exit_watcher_interval_sec",
+                            C.FAST_EXIT_WATCHER_INTERVAL_SEC,
+                        )
+                    ),
+                ),
+            ),
+            crash_drop_pct_from_peak=max(
+                0.0,
+                min(
+                    0.95,
+                    float(
+                        d.get("crash_drop_pct_from_peak", C.CRASH_DROP_PCT_FROM_PEAK)
+                    ),
+                ),
+            ),
+            crash_from_peak_grace_sec_after_entry=max(
+                0.0,
+                min(
+                    3600.0,
+                    float(
+                        d.get(
+                            "crash_from_peak_grace_sec_after_entry",
+                            C.CRASH_FROM_PEAK_GRACE_SEC_AFTER_ENTRY,
+                        )
+                    ),
+                ),
+            ),
             buy_escalate_notional_on_submit_fail=bool(
                 d.get(
                     "buy_escalate_notional_on_submit_fail",
                     C.BUY_ESCALATE_NOTIONAL_ON_SUBMIT_FAIL,
                 )
             ),
-            buy_escalate_notional_step_usd=max(0.1, min(25.0, float(
-                d.get(
-                    "buy_escalate_notional_step_usd",
-                    C.BUY_ESCALATE_NOTIONAL_STEP_USD,
-                )
-            ))),
-            momentum_antifomo_min_mkt=max(0.5, min(0.98, float(
-                d.get("momentum_antifomo_min_mkt", C.MOMENTUM_ANTIFOMO_MIN_MKT)
-            ))),
-            momentum_antifomo_min_prior_rise=max(0.0, min(0.95, float(
-                d.get(
-                    "momentum_antifomo_min_prior_rise",
-                    C.MOMENTUM_ANTIFOMO_MIN_PRIOR_RISE,
-                )
-            ))),
-            momentum_entry_max_window_seconds=max(60.0, min(3600.0, float(
-                d.get(
-                    "momentum_entry_max_window_seconds",
-                    C.MOMENTUM_ENTRY_MAX_WINDOW_SEC,
-                )
-            ))),
-            leader_yield_min_leader_old_price=max(0.0, min(0.99, float(
-                d.get(
-                    "leader_yield_min_leader_old_price",
-                    C.LEADER_YIELD_MIN_LEADER_OLD_PRICE,
-                )
-            ))),
-            leader_yield_fall_min_abs_pts=max(0.0, min(0.95, float(
-                d.get(
-                    "leader_yield_fall_min_abs_pts",
-                    C.LEADER_YIELD_FALL_MIN_ABS_PTS,
-                )
-            ))),
-            leader_yield_fall_min_frac=max(0.0, min(0.98, float(
-                d.get(
-                    "leader_yield_fall_min_frac",
-                    C.LEADER_YIELD_FALL_MIN_FRAC,
-                )
-            ))),
+            buy_escalate_notional_step_usd=max(
+                0.1,
+                min(
+                    25.0,
+                    float(
+                        d.get(
+                            "buy_escalate_notional_step_usd",
+                            C.BUY_ESCALATE_NOTIONAL_STEP_USD,
+                        )
+                    ),
+                ),
+            ),
+            momentum_entry_max_window_seconds=max(
+                60.0,
+                min(
+                    3600.0,
+                    float(
+                        d.get(
+                            "momentum_entry_max_window_seconds",
+                            C.MOMENTUM_ENTRY_MAX_WINDOW_SEC,
+                        )
+                    ),
+                ),
+            ),
+            leader_yield_min_leader_old_price=max(
+                0.0,
+                min(
+                    0.99,
+                    float(
+                        d.get(
+                            "leader_yield_min_leader_old_price",
+                            C.LEADER_YIELD_MIN_LEADER_OLD_PRICE,
+                        )
+                    ),
+                ),
+            ),
+            leader_yield_fall_min_abs_pts=max(
+                0.0,
+                min(
+                    0.95,
+                    float(
+                        d.get(
+                            "leader_yield_fall_min_abs_pts",
+                            C.LEADER_YIELD_FALL_MIN_ABS_PTS,
+                        )
+                    ),
+                ),
+            ),
+            leader_yield_fall_min_frac=max(
+                0.0,
+                min(
+                    0.98,
+                    float(
+                        d.get(
+                            "leader_yield_fall_min_frac",
+                            C.LEADER_YIELD_FALL_MIN_FRAC,
+                        )
+                    ),
+                ),
+            ),
         )
 
 

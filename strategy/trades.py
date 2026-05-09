@@ -289,7 +289,9 @@ def _format_trigger_summary_html(td: TradeDecision, bought_title: str = "") -> s
     return out
 
 
-def _format_band_summary_html(entry_type: str, live_price: float, settings: RuntimeSettings) -> str:
+def _format_band_summary_html(
+    entry_type: str, live_price: float, settings: RuntimeSettings
+) -> str:
     lo = entry_type_min_price(entry_type, settings)
     hi = entry_type_max_price(entry_type, settings)
     label = _entry_type_label(entry_type)
@@ -427,9 +429,7 @@ def _build_full_reason_sell(
     if dd is not None:
         parts.append(f"dd={float(dd):+.4f}")
     parts.append(f"exec_mode={execution_mode}")
-    parts.append(
-        f"limit_px={limit_price:.4f}|fill_px={fill_price:.4f}"
-    )
+    parts.append(f"limit_px={limit_price:.4f}|fill_px={fill_price:.4f}")
     return " · ".join(parts)[:400]
 
 
@@ -752,15 +752,43 @@ def place_buy(
         return
     event_id = market_event_id(market)
     active_trades = state.setdefault("active_trades", {})
+
+    # surgical post-decision skip logger — only fires when evaluate_entry
+    # returned BUY but place_buy bails before submitting. grep'd downstream.
+    decision_was_buy = bool(
+        trade_decision is not None
+        and str(getattr(trade_decision, "decision", "")) == "BUY"
+    )
+    skip_entry_type = (
+        getattr(trade_decision, "entry_type", "normal") if trade_decision else "normal"
+    ) or "normal"
+
+    def emit_post_decision_skip(reason: str, **fields: Any) -> None:
+        if not decision_was_buy:
+            return
+        extras = " ".join(f"{k}={v}" for k, v in fields.items())
+        print(
+            term_wrap(
+                TERM_RED,
+                f"[buy_skip_post_decision] reason={reason} market_id={market_id} "
+                f"entry_type={skip_entry_type} {extras}".rstrip(),
+            )
+        )
+
     if active_trade_key_and_row(active_trades, market)[1] is not None:
+        emit_post_decision_skip("already_holding")
         return
     if trade_lock_active(state, "buy_market", market_id):
+        emit_post_decision_skip("buy_market_lock_active")
         return
     if event_id and trade_lock_active(state, "buy_event", event_id):
+        emit_post_decision_skip("buy_event_lock_active", event_id=event_id)
         return
     if market_id in settings.blacklist_market_ids:
+        emit_post_decision_skip("blacklist_market_id")
         return
     if not churn_allows_buy(state, market_id):
+        emit_post_decision_skip("churn_blocks_buy")
         return
 
     title = (
@@ -798,6 +826,12 @@ def place_buy(
                     f"type={entry_type} buy_allowed=false\n  {title}",
                 )
             )
+            emit_post_decision_skip(
+                "live_price_above_entry_type_max",
+                live_ask=f"{live_clob:.4f}",
+                cap=f"{max_allowed:.4f}",
+                decision_price=f"{decision_price:.4f}",
+            )
             return
         if live_clob < min_allowed - 1e-9:
             print(
@@ -807,6 +841,12 @@ def place_buy(
                     f"live={live_clob:.4f} < min={min_allowed:.4f} "
                     f"type={entry_type} buy_allowed=false\n  {title}",
                 )
+            )
+            emit_post_decision_skip(
+                "live_price_below_entry_type_min",
+                live_ask=f"{live_clob:.4f}",
+                floor=f"{min_allowed:.4f}",
+                decision_price=f"{decision_price:.4f}",
             )
             return
     if live_clob > 0:
@@ -857,6 +897,9 @@ def place_buy(
                         f"[forecast] skip buy — model contradicts bracket (max≈{cons:.1f}°C)\n  {title}",
                     )
                 )
+                emit_post_decision_skip(
+                    "forecast_contradicts_bracket", consensus_c=f"{cons:.2f}"
+                )
                 return
             if getattr(settings, "forecast_reduce_usd_if_weak", False):
                 if not forecast_supports_yes(
@@ -876,17 +919,28 @@ def place_buy(
     balance_before = client.get_portfolio_balance(force_allowance_refresh=True)
     cash = float(balance_before.get("cash") or 0)
     usd = compute_buy_usd_amount(cash, probability, settings) * forecast_usd_factor
-    
+
     # Polymarket CLOB v2 requires a minimum of 5 shares for limit orders.
     if probability > 0 and (usd / probability) < 5.05:
-        print(term_wrap(TERM_YELLOW, f"[{market_id}] Skipping buy: computed shares {(usd/probability):.2f} < 5 (minimum order size)"))
+        print(
+            term_wrap(
+                TERM_YELLOW,
+                f"[{market_id}] Skipping buy: computed shares {(usd / probability):.2f} < 5 (minimum order size)",
+            )
+        )
+        emit_post_decision_skip(
+            "min_shares_5_floor",
+            shares=f"{(usd / probability):.2f}",
+            usd=f"{usd:.2f}",
+            price=f"{probability:.4f}",
+        )
         try:
             if telegram.is_configured():
                 telegram.send_html_chunks(
                     f"{_telegram_local_clock_html()}"
                     f"⚠️ <b>BUY SKIPPED (Size too small)</b>\n"
                     f"{tg_escape(title)}\n"
-                    f"Computed shares: <code>{(usd/probability):.2f}</code> (minimum is 5).\n"
+                    f"Computed shares: <code>{(usd / probability):.2f}</code> (minimum is 5).\n"
                     f"To fix this, increase <code>max_buy_notional_usd</code> in runtime_config.json."
                 )
         except requests.RequestException:
@@ -907,6 +961,13 @@ def place_buy(
                 f"planned=${planned:.2f} min_order=${settings.min_order_notional_usd:.2f}\n"
                 f"  {title}",
             )
+        )
+        emit_post_decision_skip(
+            "sizing_zero_usd",
+            cash=f"{cash:.2f}",
+            reserve=f"{reserve_usd:.2f}",
+            tradable=f"{tradable:.2f}",
+            planned=f"{planned:.2f}",
         )
         return
     set_trade_lock(state, "buy_market", market_id, TRADE_BUY_LOCK_TTL_SEC)
@@ -955,6 +1016,7 @@ def place_buy(
                 )
         except requests.RequestException:
             pass
+        emit_post_decision_skip("buy_failed_poly_api", err=str(err)[:160])
         return
     except Exception as err:
         clear_trade_lock(state, "buy_market", market_id)
@@ -969,6 +1031,7 @@ def place_buy(
                 )
         except requests.RequestException:
             pass
+        emit_post_decision_skip("buy_failed_exception", err=repr(err)[:160])
         return
 
     # log execution outcome before deciding whether to record state
@@ -991,6 +1054,13 @@ def place_buy(
                 f"(mode={exec_result.mode})\n  {title}",
             )
         )
+        emit_post_decision_skip(
+            "buy_unfilled_in_timeout",
+            mode=str(exec_result.mode),
+            limit_px=f"{exec_result.limit_price:.4f}",
+            timeout_sec=str(exec_result.timeout_sec),
+            live_ask=f"{float(exec_result.live_clob_price_before_order or 0.0):.4f}",
+        )
         try:
             if telegram.is_configured() and exec_result.mode != "limit_filled":
                 live_px = float(exec_result.live_clob_price_before_order or 0.0)
@@ -1000,9 +1070,10 @@ def place_buy(
                     else f"(n/a, decision {exec_result.decision_price:.4f})"
                 )
                 err_tail = ""
-                if exec_result.mode == "limit_failed" and (
-                    exec_result.error or ""
-                ).strip():
+                if (
+                    exec_result.mode == "limit_failed"
+                    and (exec_result.error or "").strip()
+                ):
                     err_tail = f"\n<pre>{tg_escape(exec_result.error[:280])}</pre>"
                 telegram.send_html_chunks(
                     f"{_telegram_local_clock_html()}"
@@ -1017,9 +1088,13 @@ def place_buy(
             pass
         return
 
-    order = exec_result.market_response if exec_result.market_response else {
-        "orderID": exec_result.order_id,
-    }
+    order = (
+        exec_result.market_response
+        if exec_result.market_response
+        else {
+            "orderID": exec_result.order_id,
+        }
+    )
     fill_price = float(exec_result.fill_price or probability)
     if fill_price > 0:
         probability = fill_price
@@ -1040,7 +1115,9 @@ def place_buy(
     active_trades = state.setdefault("active_trades", {})
     active_trades[market_id] = {
         "market_id": market_id,
-        "condition_id": str(market.get("conditionId") or market.get("condition_id") or ""),
+        "condition_id": str(
+            market.get("conditionId") or market.get("condition_id") or ""
+        ),
         "position_title": str(title).strip(),
         "shares": shares,
         "last_action": "buy",
@@ -1243,11 +1320,15 @@ def place_buy(
             else "none"
         ),
         "trigger_abs_rise": round(
-            float(getattr(trade_decision, "trigger_abs_rise", 0.0)) if trade_decision else 0.0,
+            float(getattr(trade_decision, "trigger_abs_rise", 0.0))
+            if trade_decision
+            else 0.0,
             6,
         ),
         "trigger_pct_rise": round(
-            float(getattr(trade_decision, "trigger_pct_rise", 0.0)) if trade_decision else 0.0,
+            float(getattr(trade_decision, "trigger_pct_rise", 0.0))
+            if trade_decision
+            else 0.0,
             6,
         ),
         "decision_price": round(decision_price, 6),
@@ -1716,7 +1797,9 @@ def close_position(
             "positions_mtm": round(mtm_after, 2),
             "total_value": round(cash_after + mtm_after, 2),
             "sl_category": str(trade.get("sl_category") or ""),
-            "highest_seen_price": round(float(trade.get("highest_seen_price") or 0.0), 6),
+            "highest_seen_price": round(
+                float(trade.get("highest_seen_price") or 0.0), 6
+            ),
             "execution_mode": str(sell_exec_mode or "market"),
             "execution_fill_price": round(float(probability), 6),
             "execution_limit_price": round(float(result.get("limit_price") or 0.0), 6),
@@ -2266,9 +2349,7 @@ def process_single_market(
                 settings,
                 step_label="switch completed",
                 target_title=str(_title),
-                held_title=str(
-                    sw[0].get("question") or sw[0].get("title") or sw[1]
-                ),
+                held_title=str(sw[0].get("question") or sw[0].get("title") or sw[1]),
             )
         else:
             _bucket_switch_log(

@@ -61,7 +61,7 @@ Respect Polymarket limits; see **[POLY_RATE_LIMITS.MD](POLY_RATE_LIMITS.MD)** an
 | **Probability model** | `strategy/probability_engine.py` — Gaussian P(YES) per bucket |
 | **Momentum engine** | `strategy/momentum_engine.py` — fast exit helpers, competitor surge, entry signal |
 | **Pair reversal** | `strategy/pair_reversal.py` — sibling-drop + target-rise divergence (`detect_pair_reversal`) |
-| **Competition filter** | `strategy/competition_filter.py` — 15% lead gap requirement |
+| **Competition filter** | `strategy/competition_filter.py` + `decision_core.py` — **normal BUY only**: min market YES lead vs runner-up (`min_market_yes_lead_gap_normal`, default 0.50); momentum/double skip |
 | **Time filter** | `strategy/time_filter.py` — entry window (14:00-24:00) + time-decay exit |
 | **Fast exit watcher** | `strategy/fast_exit_watcher.py` — daemon thread polling **live CLOB orderbook** (`get_clob_yes_price_live`) every 2s for per-type SL + momentum fast exit + trailing stop; **caches Gamma market dicts for 5min** (`_MARKET_CACHE_TTL_SEC=300`) to avoid redundant API calls; updates `highest_seen_price` and `sl_category`; bypasses Gamma `bestAsk` cache |
 | **Limit-order executor** | `strategy/limit_executor.py` — `execute_buy` posts GTC limit, polls fill, cancels on timeout; emergency reasons (`EMERGENCY_SELL_REASONS`) may fall back to market |

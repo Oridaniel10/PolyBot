@@ -83,11 +83,13 @@ Entry when price is in the band (0.80–0.84 by default) and the candidate passe
 | `STOP_LOSS_MOMENTUM` | **0.20** | `config/constants.py` |
 | `STOP_LOSS_MOMENTUM_ENTRY_DROP_PCT` | **0.50** | `config/constants.py` |
 
-Entry when YES rose by **absolute** rise OR **fractional percent** rise in **any** of the sampled windows on the entry grid (**1m, 2m, 3m, 4m, 5m, 15m** — each window length is capped by `momentum_entry_max_window_seconds`, default **900s**, so **no 2h window for bot momentum entry**) (`momentum_multi_window_check` + `momentum_entry_candidate_windows()` in `decision_core.py`). All windows share the same guardrails: `momentum_min_start_price`, `momentum_min_price`, `momentum_max_entry`.
+Entry when YES rose by **absolute** rise OR **fractional percent** rise **and** leader-yield passes on the **same** lookback length `W`, where `W` runs over the entry grid **1m, 2m, …, 15m** (60s steps up to `momentum_entry_max_window_seconds`, default **900s**) via `momentum_entry_candidate_windows()` + `momentum_leader_same_window_check()` in `decision_core.py`. The bot picks the **smallest** such `W` where **both** legs pass. All windows share the same guardrails: `momentum_min_start_price`, `momentum_min_price`, `momentum_max_entry`.
 
-**Mandatory extra gate — leader yield:** in the **same Gamma event** and **same time window that triggered** the rise signal (e.g. `15m_win`), the sibling bucket that had the **highest “old” YES** at **window start** (oldest sample in that window among peers with old YES above `leader_yield_min_leader_old_price`) must **fall** by **`leader_yield_fall_min_abs_pts` absolute points** OR by **`leader_yield_fall_min_frac`** of its old YES. The **candidate you buy cannot be that leader at window start** (if the rising bucket was the leader at start, the gate fails). A deep drop on a **non‑leader** sibling alone does **not** qualify — only bleed from the **ex‑#1-at-window-start** counts. Implemented in `strategy/leader_yield_momentum.py::leader_yield_drop_qualifies`. Events with **one** YES bucket cannot satisfy this → momentum-class entries are skipped with `leader_yield_blocked…`.
+**Mandatory extra gate — leader yield (same `W`):** same **Gamma event**. On that **same** `W`, the sibling with the **highest “old” YES** at **window start** (oldest sample in `[now−W, now]`, among peers with old YES above `leader_yield_min_leader_old_price`) must **fall** by **`leader_yield_fall_min_abs_pts`** OR **`leader_yield_fall_min_frac`** of that old YES. The buy target cannot be that leader at window start. Implemented in `strategy/leader_yield_momentum.py::leader_yield_drop_qualifies` (called from `momentum_leader_same_window_check`). Events with **one** YES bucket cannot satisfy this → momentum-class entries are skipped with `leader_yield_blocked…`.
 
-Bypasses model/edge/competition gates when the full momentum path (rise + leader yield + band) passes. **Anti‑FOMO** (`momentum_antifomo_*`) still applies.
+So a setup that only lines up on a **15m** horizon waits until `W=900` qualifies both rise and ex-leader bleed; a setup that lines up in **1m** can enter on `W=60` when both pass there first.
+
+Bypasses model/edge/competition gates when the full momentum path (rise + leader yield + band) passes. **No separate “anti‑FOMO” price gate** — the only YES band limits for momentum buys are `momentum_min_price` / `momentum_max_entry` (and the double band when applicable), from constants + `runtime_config.json`.
 
 Rank and runner-up gap are logged for context but are **not** substitutes for leader yield.
 
@@ -103,36 +105,36 @@ Rank and runner-up gap are logged for context but are **not** substitutes for le
 | `STOP_LOSS_DOUBLE_MOMENTUM` | **0.20** | `config/constants.py` |
 | `STOP_LOSS_DOUBLE_MOMENTUM_ENTRY_DROP_PCT` | **0.50** | `config/constants.py` |
 
-Same **leader-yield gate** as standard momentum (evaluated on the **double momentum** trigger window). Same sampled window grid and **900s max** (`momentum_entry_max_window_seconds`) as normal momentum entry.
+Same **aligned-window** rule as standard momentum: smallest grid `W` where double rise **and** leader-yield both pass, with thresholds/band from `double_momentum_*`.
 
-Entry when YES rose at least the configured absolute OR fractional percent threshold on **some** inspected window **and** the live YES is inside `[double_momentum_min_price, double_momentum_max_price]`.
+Entry when YES rose at least the configured absolute OR fractional percent threshold **on that same `W`** **and** the live YES is inside `[double_momentum_min_price, double_momentum_max_price]`.
 
-**Precedence:** if **double momentum** passes its rise thresholds **and** leader yield on **that path’s trigger window**, `entry_type = double_momentum`. Otherwise if **standard** momentum passes rise **and** leader yield on **its** window, `entry_type = momentum`.
+**Precedence:** try **double** aligned pass first → `entry_type = double_momentum`. Else if **standard** aligned pass → `entry_type = momentum`.
 
 ### How entry_type is determined
 
-At buy time, `evaluate_entry()` in `decision_core.py` sets `TradeDecision.entry_type` from `momentum_multi_window_check` **plus** the **leader-yield** check on the **same** trigger window:
+At buy time, `evaluate_entry()` sets `TradeDecision.entry_type` using **`momentum_leader_same_window_check`** (double path first, then standard): smallest `W` in the 1m…15m grid (capped by `momentum_entry_max_window_seconds`) where **both** target rise and leader-yield pass.
 
-- `"double_momentum"` → double thresholds pass in some window **and** `leader_yield_drop_qualifies` passes for that window **and** current YES in the double band.
-- `"momentum"` → standard momentum thresholds pass in some window **and** leader yield passes for that window **and** current YES in the momentum band — **and** double path did not win first.
+- `"double_momentum"` → double thresholds + leader-yield on the **same** winning `W`, and current YES in the double band.
+- `"momentum"` → standard thresholds + leader-yield on the **same** winning `W`, and current YES in the momentum band — **only if** double aligned path did not fire first.
 - `"normal"` → passes the normal price band + competition (+ optional model gates). No leader-yield requirement.
 
-If the **raw** rise signal fires (standard or double) but **leader yield fails** (or the event has &lt;2 buckets), the bot returns **`SKIP`** with `leader_yield_blocked…` instead of falling through to a **normal** BUY.
+If **rise-alone** would pass on some window (`momentum_multi_window_check`) but **no** `W` has both rise + leader-yield (or the event has &lt;2 buckets), the bot returns **`SKIP`** `leader_yield_blocked…`.
 
-The `TradeDecision` carries `trigger_window` (e.g. `15m_win`), `trigger_abs_rise`, `trigger_pct_rise`, `trigger_old_price` / `trigger_new_price` for the **bought** bucket, plus **ex-leader bleed** fields: `leader_fallen_market_id`, `leader_fallen_market_title`, `leader_fallen_old_yes`, `leader_fallen_new_yes`, `leader_fallen_drop_pts`, `leader_fallen_drop_frac`, `leader_yield_window_sec`. Telegram BUY and `full_reason` (CSV) include this context when verbose logging is on.
+The `TradeDecision` carries `trigger_window` (e.g. `7m_win`), `trigger_*` for the **bought** bucket on that `W`, plus **`leader_fallen_*`** from the **same** `W`; `leader_yield_window_sec` equals `W`.
 
 ### Leader-yield parameters (runtime + constants)
 
 | Key / constant | Default | Meaning |
 |----------------|---------|---------|
-| `momentum_entry_max_window_seconds` / `MOMENTUM_ENTRY_MAX_WINDOW_SEC` | **900** | Max length (seconds) of any **entry** momentum window on the grid (1m…15m). |
-| `leader_yield_min_leader_old_price` / `LEADER_YIELD_MIN_LEADER_OLD_PRICE` | **0.05** | Peers with window-start YES ≤ this are ignored when picking the “leader at start”. |
-| `leader_yield_fall_min_abs_pts` / `LEADER_YIELD_FALL_MIN_ABS_PTS` | **0.30** | Ex-leader must drop by at least this many YES **points** (old − new) in-window. |
+| `momentum_entry_max_window_seconds` / `MOMENTUM_ENTRY_MAX_WINDOW_SEC` | **900** | Max **W** on the grid (1m…15m in 60s steps). |
+| `leader_yield_min_leader_old_price` / `LEADER_YIELD_MIN_LEADER_OLD_PRICE` | **0.05** | Peers with window-start YES ≤ this are ignored when picking the ex-leader. |
+| `leader_yield_fall_min_abs_pts` / `LEADER_YIELD_FALL_MIN_ABS_PTS` | **0.30** | Ex-leader must drop by at least this many YES **points** (old − new) over **W**. |
 | `leader_yield_fall_min_frac` / `LEADER_YIELD_FALL_MIN_FRAC` | **0.50** | **Or** drop ≥ this **fraction** of the ex-leader’s window-start YES (e.g. 0.5 = halved). |
 
 ### Legacy: `pair_reversal.py`
 
-The older **pair-reversal** path (`strategy/pair_reversal.py`) is **no longer wired** into `evaluate_entry()`. Momentum-class entries use **leader yield** instead (stricter: falling leg must be the **#1 at window start**, same window as the rise trigger).
+The older **pair-reversal** path (`strategy/pair_reversal.py`) is **no longer wired** into `evaluate_entry()`. Momentum-class entries use **leader yield** on the **same** window `W` as the rise (`momentum_leader_same_window_check`).
 
 ### Buy notional escalation (submit failures only)
 
@@ -167,7 +169,7 @@ A buy is executed only when **ALL** conditions pass, checked in order:
 | 10 | **Market prob ceiling** | market_yes ≤ max (skipped for momentum) | `MAX_MARKET_PROB_FOR_BUY = 0.99` | `config/constants.py` |
 | 11 | **Model prob floor** | model_prob ≥ min (skipped for momentum) — **default 0.0 in runtime, effectively off** | `MIN_MODEL_PROB_FOR_BUY = 0.10` (constant) / `0.0` (runtime) | `config/constants.py`, `data/runtime_config.json` |
 | 12 | **Not flat distribution** | model peak gate (skipped for momentum) — **default 0.0 in runtime, effectively off** | `DECISION_MIN_MODEL_PEAK_PROB = 0.12` (constant) / `0.0` (runtime) | `config/constants.py`, `data/runtime_config.json` |
-| 13 | **Momentum entry** ⚡ | Standard **or** double (**abs OR fractional pct** rise in an inspected window **≤ `momentum_entry_max_window_seconds`**) **and** **leader-yield** (ex-#1-at-window-start sibling bleeds in the **same** window) | `momentum_*`, `double_momentum_*`, `leader_yield_*`, `momentum_entry_max_window_seconds` | `decision_core.py::momentum_multi_window_check`, `leader_yield_momentum.py` |
+| 13 | **Momentum entry** ⚡ | Smallest grid window **W** (≤ `momentum_entry_max_window_seconds`) where **both** standard or double rise **and** leader-yield pass on **that same W** | `momentum_*`, `double_momentum_*`, `leader_yield_*` | `decision_core.py::momentum_leader_same_window_check` |
 | 13a | **Leader yield block** | If a raw momentum/double rise shows but leader yield fails (or single-bucket event) → **SKIP** `leader_yield_blocked…` | same | `decision_core.py::evaluate_entry` |
 | 13b | **Momentum switch** 🔁 | hold A; B is #1 with momentum + gap → sell A, **wait for fill**, then buy B atomically (`_execute_bucket_switch_sell`) | `MOMENTUM_SWITCH_ABOVE_HELD_GAP = 0.15` | `strategy/decision_core.py`, `strategy/trades.py` |
 | 14 | **Competition** | gap vs runner-up ≥ `min_lead` (skipped for momentum entry) | `MIN_LEAD_OVER_RUNNER_UP = 0.15` | `strategy/competition_filter.py` |
@@ -471,7 +473,7 @@ Every trade (buy/sell/claim) and every scheduled report sends a rich portfolio m
 | **Decision engine** | `strategy/decision_core.py` — entry/exit orchestrator, `stop_loss_bar_for_entry_type()` |
 | **Probability model** | `strategy/probability_engine.py`, `research/probability_from_forecast.py` |
 | **Momentum engine** | `strategy/momentum_engine.py` — absolute fast exit, competitor surge, entry signal |
-| **Leader-yield momentum gate** | `strategy/leader_yield_momentum.py` — ex-#1-at-window-start must bleed (same window as rise trigger) |
+| **Leader-yield momentum gate** | `strategy/leader_yield_momentum.py` + `decision_core.py::momentum_leader_same_window_check` — rise + ex-leader bleed on the **same** `W` |
 | **Competition filter** | `strategy/competition_filter.py` |
 | **Time filter** | `strategy/time_filter.py` |
 | **Trade execution** | `strategy/trades.py` — stores `entry_type` at buy, uses per-type SL at exit |
@@ -517,14 +519,12 @@ Every trade (buy/sell/claim) and every scheduled report sends a rich portfolio m
 | Key | Default | Description |
 |-----|---------|-------------|
 | `momentum_window_seconds` | 900 | Rolling window for peer surge, fast-exit drawdown, and other exit logic (seconds) |
-| `momentum_entry_max_window_seconds` | 900 | **Cap** on momentum **entry** window length; entry grid is 1m–15m clipped to this |
+| `momentum_entry_max_window_seconds` | 900 | Max aligned window **W** (seconds); grid is 60…900 in steps of 60 |
 | `momentum_entry_rise` | 0.20 | Min **absolute** YES rise for standard momentum entry (any qualifying window) |
 | `momentum_pct_rise` | 2.0 | Min **fractional** YES rise alternative (+200%) |
 | `momentum_min_start_price` | 0.0 | Floor on *old* price for pct gate (0 = allow e.g. 0.05 → 0.15 on pct) |
 | `momentum_min_price` / `momentum_max_entry` | 0.40 / 0.85 | Live-price band at decision time |
 | `momentum_fast_exit_drop` | 0.30 | Min **absolute** peak-to-trough drop inside the window for momentum fast exit |
-| `momentum_antifomo_min_mkt` | 0.70 | Above this YES, reject late chase if inferred rise huge |
-| `momentum_antifomo_min_prior_rise` | 0.50 | Min inferred abs rise (pts) with rich mkt → `SKIP momentum_too_late` |
 | `crash_drop_pct_from_peak` | 0.50 | Fractional drop from `highest_seen_price` triggering crash exit (0 = off) |
 | `buy_escalate_notional_on_submit_fail` | `true` | Ladder buys after submit-side limit failure |
 | `buy_escalate_notional_step_usd` | 1.0 | USD increment per escalation step |
@@ -534,7 +534,7 @@ Every trade (buy/sell/claim) and every scheduled report sends a rich portfolio m
 | Key | Default | Description |
 |-----|---------|-------------|
 | `leader_yield_min_leader_old_price` | 0.05 | Ignore peers at/below this window-start YES when picking ex-leader |
-| `leader_yield_fall_min_abs_pts` | 0.30 | Ex-leader must drop by this many YES **points** in-window (or frac leg) |
+| `leader_yield_fall_min_abs_pts` | 0.30 | Ex-leader must drop by this many YES **points** over **W** (or frac leg) |
 | `leader_yield_fall_min_frac` | 0.50 | **Or** drop ≥ this fraction of ex-leader’s window-start YES |
 
 ### Time decay (runtime) 🆕

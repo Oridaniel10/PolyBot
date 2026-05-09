@@ -570,6 +570,48 @@ def test_parse_trigger_window_seconds_maps_nm_win():
     assert parse_trigger_window_seconds("none") is None
 
 
+def test_leader_yield_short_window_misses_peak_long_window_sees_it(tmp_path, monkeypatch):
+    """Without anchor trick: last 60s only shows tail of crash; 15m includes peak."""
+    monkeypatch.setattr("strategy.momentum.PRICE_SAMPLES_DIR", tmp_path)
+    from strategy.momentum import _price_ring, _price_ring_lock
+
+    with _price_ring_lock:
+        _price_ring.pop("ex_L", None)
+        _price_ring.pop("buy_B", None)
+    now = time.time()
+    L, B = "ex_L", "buy_B"
+    # peak old; mid-crash before last 60s (anchor for 60s window); last-minute tail
+    append_price_sample(L, 0.64, ts=now - 800)
+    append_price_sample(L, 0.32, ts=now - 120)
+    append_price_sample(L, 0.35, ts=now - 45)
+    append_price_sample(L, 0.26, ts=now - 8)
+    append_price_sample(B, 0.08, ts=now - 40)
+    append_price_sample(B, 0.12, ts=now - 7)
+    ok_60, _ = leader_yield_drop_qualifies(
+        target_market_id=B,
+        event_market_ids=[L, B],
+        window_sec=60.0,
+        min_leader_old_price=0.05,
+        min_fall_abs_pts=0.30,
+        min_fall_frac_of_old=0.50,
+        min_samples=2,
+        now_ts=now,
+    )
+    ok_900, m900 = leader_yield_drop_qualifies(
+        target_market_id=B,
+        event_market_ids=[L, B],
+        window_sec=900.0,
+        min_leader_old_price=0.05,
+        min_fall_abs_pts=0.30,
+        min_fall_frac_of_old=0.50,
+        min_samples=2,
+        now_ts=now,
+    )
+    assert ok_60 is False
+    assert ok_900 is True
+    assert m900.get("leader_id") == L
+
+
 def test_leader_yield_ok_when_ex_leader_bleeds_in_window(tmp_path, monkeypatch):
     monkeypatch.setattr("strategy.momentum.PRICE_SAMPLES_DIR", tmp_path)
     spacing = 120.0

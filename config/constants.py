@@ -51,13 +51,13 @@ SELL_BELOW_MIN_TELEGRAM_COOLDOWN_SEC = 1800
 # example: 0.82 is inside 0.80..0.84 so normal entry can pass this gate.
 # upper bound lowered from 0.91 to 0.84 — at 0.88-0.92 upside is tiny while
 # downside risk on a missed bracket is large.
-BUY_MIN_THRESHOLD = 0.93
-BUY_MAX_THRESHOLD = 0.96
+BUY_MIN_THRESHOLD = 1.1
+BUY_MAX_THRESHOLD = 1.1
 BUY_DISABLE_PRICE_BAND = False
 
 # hard stop for normal.
 # example: if entry was 0.82, any live price below 0.50 is always a sell.
-STOP_LOSS_NORMAL = 0.65
+STOP_LOSS_NORMAL = 0.20
 # relative stop for normal.
 # example: entry 0.80 with 30% drop => relative stop is 0.56.
 # effective stop = max(0.50, 0.56) = 0.56.
@@ -73,16 +73,16 @@ STOP_LOSS_MANUAL_ENTRY_DROP_PCT = 0.30
 # ─── MOMENTUM: buy on 15m surge + sell stop-loss ──────────────────────
 # absolute rise trigger (any window).
 # example: 0.30 -> 0.45 is +0.15 so this trigger passes.
-MOMENTUM_ENTRY_RISE = 0.20
+MOMENTUM_ENTRY_RISE = 0.15
 # percent rise trigger (fractional, not percent points).
 # example: 3.0 means +300%; 0.05 -> 0.15 passes on pct gate.
-MOMENTUM_PCT_RISE = 2.0
+MOMENTUM_PCT_RISE = 1.0
 # floor on *old* YES in window below which we reject the pct gate (noise).
 # 0.0 = allow any positive baseline; merged runtime still clamps ≥0 via settings.
-MOMENTUM_MIN_START_PRICE = 0.0
+MOMENTUM_MIN_START_PRICE = 0.0001
 # live price band for momentum entry (current YES must fall in band at decision time).
-MOMENTUM_MIN_PRICE = 0.40
-MOMENTUM_MAX_ENTRY = 0.85
+MOMENTUM_MIN_PRICE = 0.20
+MOMENTUM_MAX_ENTRY = 0.90
 # hard floor for momentum SL (effective = max(floor, entry*(1-drop_pct), trailing…)).
 STOP_LOSS_MOMENTUM = 0.20
 # entry-relative leg: e.g. entry 0.56 → mark must stay above 0.28 before exit.
@@ -91,14 +91,14 @@ STOP_LOSS_MOMENTUM_ENTRY_DROP_PCT = 0.50
 # ─── DOUBLE MOMENTUM: stronger 15m surge + wider band + sell stop-loss ─
 # absolute 15m rise trigger.
 # example: 0.30 -> 0.70 is +0.40 so this trigger passes.
-DOUBLE_MOMENTUM_ENTRY_RISE = 0.40
+DOUBLE_MOMENTUM_ENTRY_RISE = 0.30
 # percent rise trigger (fractional). 4.0 = +400%.
-DOUBLE_MOMENTUM_PCT_RISE = 4.0
+DOUBLE_MOMENTUM_PCT_RISE = 2.0
 # same pct noise floor as standard momentum — 0 allows low-start pct moves.
-DOUBLE_MOMENTUM_MIN_START_PRICE = 0.0
+DOUBLE_MOMENTUM_MIN_START_PRICE = 0.0001
 # wider entry band for larger surges only.
-DOUBLE_MOMENTUM_MIN_PRICE = 0.40
-DOUBLE_MOMENTUM_MAX_PRICE = 0.85
+DOUBLE_MOMENTUM_MIN_PRICE = 0.20
+DOUBLE_MOMENTUM_MAX_PRICE = 0.90
 STOP_LOSS_DOUBLE_MOMENTUM = 0.20
 STOP_LOSS_DOUBLE_MOMENTUM_ENTRY_DROP_PCT = 0.50
 
@@ -106,7 +106,7 @@ STOP_LOSS_DOUBLE_MOMENTUM_ENTRY_DROP_PCT = 0.50
 # EXIT THRESHOLDS
 # ═══════════════════════════════════════════════════════════════════════
 
-TAKE_PROFIT_THRESHOLD = 0.99
+TAKE_PROFIT_THRESHOLD = 0.96
 # float slack vs gamma/mark rounding; also helps when take_profit is 0.99 and mark is 0.988
 TAKE_PROFIT_COMPARE_SLACK = 0.002
 
@@ -175,13 +175,16 @@ FAST_EXIT_WATCHER_INTERVAL_SEC = 2
 # ═══════════════════════════════════════════════════════════════════════
 
 # earliest local hour to place new buys (city local TZ from title; 0–23)
-BUY_EARLIEST_HOUR = 15
+BUY_EARLIEST_HOUR = 11
 # skip new buys when title event date is after today's date in Asia/Jerusalem (report TZ)
 BUY_BLOCK_EVENT_DATE_AFTER_ISRAEL_TODAY = True
 # max open positions at once — limits total portfolio risk
 MAX_CONCURRENT_POSITIONS = 7
 
 MIN_LEAD_OVER_RUNNER_UP = 0.15
+# normal BUY only (when enable_competition_filter): min (candidate YES − runner-up YES).
+# momentum / double_momentum skip this gate entirely.
+MIN_MARKET_YES_LEAD_GAP_NORMAL = 0.50
 ENABLE_COMPETITION_FILTER = True
 
 # cold momentum: rank 1 by market YES + lead vs runner-up ≥ min_lead_over_runner_up
@@ -230,10 +233,6 @@ CRASH_FROM_PEAK_GRACE_SEC_AFTER_ENTRY = 180.0
 # unfilled-timeout (cancel) does not escalate — only submit-side failure.
 BUY_ESCALATE_NOTIONAL_ON_SUBMIT_FAIL = True
 BUY_ESCALATE_NOTIONAL_STEP_USD = 1.0
-
-# late momentum chase: skip if bucket already jumped and price rich — anti-FOMO.
-MOMENTUM_ANTIFOMO_MIN_MKT = 0.70
-MOMENTUM_ANTIFOMO_MIN_PRIOR_RISE = 0.50
 
 # ═══════════════════════════════════════════════════════════════════════
 # SIZING
