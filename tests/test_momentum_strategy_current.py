@@ -1,12 +1,13 @@
 import time
+from collections import deque
 from datetime import date
 from unittest.mock import patch
 
 from config.settings import RuntimeSettings, default_runtime_dict
 from forecast.parse_title import BracketKind, ParsedTempMarket
 from strategy.decision_core import TradeDecision, evaluate_entry
-from strategy.momentum import append_price_sample
-from strategy.momentum_engine import momentum_entry_signal, peer_surge_detected
+from strategy.momentum import append_price_sample, load_samples_for_market, _price_ring, _price_ring_lock
+from strategy.momentum_engine import momentum_entry_signal, peer_surge_detected, price_change_in_window
 from strategy.sync_portfolio import sync_state_with_portfolio
 from strategy.trades import close_position, place_buy, process_single_market, set_trade_lock
 
@@ -54,6 +55,9 @@ def parsed_market() -> ParsedTempMarket:
 
 def add_samples(market_id: str, prices: list[float]) -> None:
     now = time.time()
+    # clear ring buffer for this market so tests are isolated
+    with _price_ring_lock:
+        _price_ring[market_id] = deque(maxlen=480)
     for index, price in enumerate(prices):
         append_price_sample(market_id, price, ts=now - (len(prices) - index - 1) * 60)
 
@@ -244,3 +248,86 @@ def test_buy_and_sell_locks_prevent_duplicate_orders():
         "stop-loss",
         make_settings(),
     )
+
+
+def test_ring_buffer_momentum_1m_5m_15m_2h(tmp_path, monkeypatch):
+    """Verify all momentum windows return correct non-zero values from ring buffer."""
+    monkeypatch.setattr("strategy.momentum.PRICE_SAMPLES_DIR", tmp_path)
+    mid = "ring_test_1"
+    now = time.time()
+
+    # clear ring
+    with _price_ring_lock:
+        _price_ring[mid] = deque(maxlen=480)
+
+    # add samples spanning 2h: price rising from 0.30 to 0.60
+    for i in range(121):  # 0..120 minutes ago
+        t = now - (120 - i) * 60
+        price = 0.30 + (i / 120.0) * 0.30  # linear 0.30 → 0.60
+        append_price_sample(mid, price, ts=t)
+
+    # 1m window: should see ~0.0025 absolute change (small)
+    _, _, m1 = price_change_in_window(mid, 60.0, now)
+    assert m1 != 0.0, f"1m momentum should be non-zero, got {m1}"
+
+    # 5m window
+    _, _, m5 = price_change_in_window(mid, 300.0, now)
+    assert m5 != 0.0, f"5m momentum should be non-zero, got {m5}"
+
+    # 15m window
+    _, _, m15 = price_change_in_window(mid, 900.0, now)
+    assert m15 != 0.0, f"15m momentum should be non-zero, got {m15}"
+
+    # 2h window: should see ~100% rise (0.30 → 0.60)
+    _, _, m2h = price_change_in_window(mid, 7200.0, now)
+    assert abs(m2h - 1.0) < 0.1, f"2h momentum should be ~100%, got {m2h}"
+
+
+def test_ring_buffer_load_samples_window_boundary(tmp_path, monkeypatch):
+    """Verify load_samples_for_market returns correct window slices from ring buffer."""
+    monkeypatch.setattr("strategy.momentum.PRICE_SAMPLES_DIR", tmp_path)
+    mid = "ring_boundary"
+    now = time.time()
+
+    with _price_ring_lock:
+        _price_ring[mid] = deque(maxlen=480)
+
+    # sample at 10m ago, 5m ago, 1m ago, now
+    for offset_min, price in [(10, 0.50), (5, 0.55), (1, 0.58), (0, 0.60)]:
+        append_price_sample(mid, price, ts=now - offset_min * 60)
+
+    # 3m window should get the anchor (5m ago) + 1m ago + now = 3 points
+    pts = load_samples_for_market(mid, 180.0, now)
+    assert len(pts) >= 2, f"Expected ≥2 points in 3m window, got {len(pts)}"
+    # oldest should be anchor from ~5m ago
+    assert pts[0][1] == 0.55, f"Anchor should be 0.55, got {pts[0][1]}"
+    assert pts[-1][1] == 0.60, f"Latest should be 0.60, got {pts[-1][1]}"
+
+
+def test_ring_buffer_cold_start_from_disk(tmp_path, monkeypatch):
+    """Verify warm_ring_buffer_from_disk loads JSONL into ring buffer."""
+    import json
+    from strategy.momentum import warm_ring_buffer_from_disk, _price_ring, _price_ring_lock
+
+    monkeypatch.setattr("strategy.momentum.PRICE_SAMPLES_DIR", tmp_path)
+    monkeypatch.setattr("strategy.momentum._ring_warmed", False)
+
+    # write a JSONL file to disk
+    now = time.time()
+    jsonl_path = tmp_path / "2026-05-03.jsonl"
+    with jsonl_path.open("w") as f:
+        for i in range(10):
+            row = {"market_id": "cold_start", "ts": now - (10 - i) * 30, "yes": 0.50 + i * 0.02}
+            f.write(json.dumps(row) + "\n")
+
+    # clear ring buffer
+    with _price_ring_lock:
+        if "cold_start" in _price_ring:
+            del _price_ring["cold_start"]
+
+    loaded = warm_ring_buffer_from_disk()
+    assert loaded >= 10, f"Expected ≥10 samples loaded, got {loaded}"
+
+    with _price_ring_lock:
+        ring = _price_ring.get("cold_start")
+        assert ring is not None and len(ring) >= 10

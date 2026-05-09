@@ -43,10 +43,12 @@ from strategy.momentum_engine import (
     momentum_entry_signal,
     momentum_entry_signal_with_pct,
     peer_surge_detected,
+    should_fast_exit,
     should_fast_exit_since_ts,
     top_price_change_peers,
     yes_rank_by_market_prob,
 )
+from strategy.pair_reversal import detect_pair_reversal
 from strategy.probability import parse_market_probability
 from strategy.probability_engine import bucket_edge, compute_model_prob
 from strategy.research_signal import (
@@ -111,70 +113,48 @@ def double_momentum_entry_pct_rise_thr(settings: RuntimeSettings) -> float:
     return max(0.01, min(10.0, r))
 
 
-def momentum_dual_window_check(
+def momentum_multi_window_check(
     *,
     market_id: str,
     abs_rise_threshold: float,
     pct_rise_threshold: float,
-    std_window_sec: float,
-    fast_window_sec: float,
+    windows_sec: List[float],
     min_start_price: float,
     min_current_price: float,
     max_current_price: float,
 ) -> Tuple[bool, str, Dict[str, Any]]:
-    """run momentum_entry_signal_with_pct on both 15m and fast windows.
-
-    returns:
-    - (passed, trigger_window, metadata) where trigger_window is "15m_std",
-      "5m_fast", "both", or "none". metadata carries each window's metrics.
-    """
-    std_passed, std_old, std_new, std_abs, std_pct, std_reason = (
-        momentum_entry_signal_with_pct(
-            market_id=market_id,
-            abs_rise_threshold=abs_rise_threshold,
-            pct_rise_threshold=pct_rise_threshold,
-            window_sec=std_window_sec,
-            min_start_price=min_start_price,
-            min_current_price=min_current_price,
-            max_current_price=max_current_price,
-        )
-    )
-    fast_passed, fast_old, fast_new, fast_abs, fast_pct, fast_reason = (
-        momentum_entry_signal_with_pct(
-            market_id=market_id,
-            abs_rise_threshold=abs_rise_threshold,
-            pct_rise_threshold=pct_rise_threshold,
-            window_sec=fast_window_sec,
-            min_start_price=min_start_price,
-            min_current_price=min_current_price,
-            max_current_price=max_current_price,
-        )
-    )
-    if std_passed and fast_passed:
-        trigger = "both"
-    elif std_passed:
-        trigger = "15m_std"
-    elif fast_passed:
-        trigger = "5m_fast"
-    else:
-        trigger = "none"
+    passed = False
+    trigger = "none"
     meta = {
-        "std_window_sec": float(std_window_sec),
-        "fast_window_sec": float(fast_window_sec),
-        "std_passed": bool(std_passed),
-        "std_abs_rise": float(std_abs),
-        "std_pct_rise": float(std_pct),
-        "std_old_price": float(std_old),
-        "std_new_price": float(std_new),
-        "std_reason": str(std_reason),
-        "fast_passed": bool(fast_passed),
-        "fast_abs_rise": float(fast_abs),
-        "fast_pct_rise": float(fast_pct),
-        "fast_old_price": float(fast_old),
-        "fast_new_price": float(fast_new),
-        "fast_reason": str(fast_reason),
+        "std_passed": False,
+        "std_abs_rise": 0.0,
+        "std_pct_rise": 0.0,
+        "std_old_price": 0.0,
+        "std_new_price": 0.0,
     }
-    return std_passed or fast_passed, trigger, meta
+    
+    for w in sorted(windows_sec):
+        w_passed, w_old, w_new, w_abs, w_pct, w_reason = momentum_entry_signal_with_pct(
+            market_id=market_id,
+            abs_rise_threshold=abs_rise_threshold,
+            pct_rise_threshold=pct_rise_threshold,
+            window_sec=w,
+            min_start_price=min_start_price,
+            min_current_price=min_current_price,
+            max_current_price=max_current_price,
+        )
+        if w_passed and not passed:
+            passed = True
+            trigger = f"{int(w//60)}m_win"
+            meta.update({
+                "std_passed": True,
+                "std_abs_rise": float(w_abs),
+                "std_pct_rise": float(w_pct),
+                "std_old_price": float(w_old),
+                "std_new_price": float(w_new),
+            })
+            
+    return passed, trigger, meta
 
 
 def get_recent_decisions(limit: int = 50) -> List[Dict[str, Any]]:
@@ -527,13 +507,12 @@ def evaluate_entry(
     )
     mom_min = float(getattr(settings, "momentum_min_price", C.MOMENTUM_MIN_PRICE))
     mom_max = float(getattr(settings, "momentum_max_entry", C.MOMENTUM_MAX_ENTRY))
-    fast_wsec = momentum_fast_window_sec(settings)
-    mom_signal, mom_trigger, mom_meta = momentum_dual_window_check(
+    multi_windows = [60.0, 120.0, 180.0, 240.0, 300.0, 900.0, 7200.0]
+    mom_signal, mom_trigger, mom_meta = momentum_multi_window_check(
         market_id=market_id,
         abs_rise_threshold=rise_thr,
         pct_rise_threshold=rise_pct_thr,
-        std_window_sec=wsec,
-        fast_window_sec=fast_wsec,
+        windows_sec=multi_windows,
         min_start_price=mom_start_min,
         min_current_price=mom_min,
         max_current_price=mom_max,
@@ -557,21 +536,36 @@ def evaluate_entry(
     dbl_max = float(
         getattr(settings, "double_momentum_max_price", C.DOUBLE_MOMENTUM_MAX_PRICE)
     )
-    dbl_fast_wsec = double_momentum_fast_window_sec(settings)
-    dbl_signal, dbl_trigger, dbl_meta = momentum_dual_window_check(
+    dbl_signal, dbl_trigger, dbl_meta = momentum_multi_window_check(
         market_id=market_id,
         abs_rise_threshold=dbl_rise_thr,
         pct_rise_threshold=dbl_rise_pct_thr,
-        std_window_sec=wsec,
-        fast_window_sec=dbl_fast_wsec,
+        windows_sec=multi_windows,
         min_start_price=dbl_start_min,
         min_current_price=dbl_min,
         max_current_price=dbl_max,
     )
     is_double_momentum = bool(dbl_signal)
 
+    peer_ids_for_reversal = sorted(
+        {m for m in (str(x).strip() for x in ev_mids) if m and m != market_id}
+    )
+    pair_signal, pair_meta = detect_pair_reversal(
+        market_id,
+        peer_ids_for_reversal,
+        window_sec=600.0,
+        min_target_rise=0.06,
+        min_sibling_drop=0.06,
+        min_target_pct=0.40,
+        min_sibling_drop_pct=0.25,
+        min_target_current=0.05,
+        max_target_current=0.85,
+    )
+    is_pair_reversal = bool(pair_signal)
+
     # standard momentum: abs + pct in tighter band — either window may trigger.
-    is_momentum_entry = bool(is_double_momentum or mom_signal)
+    # pair reversal counts as momentum-class for gates (not double).
+    is_momentum_entry = bool(is_double_momentum or mom_signal or is_pair_reversal)
 
     # mom_meta / dbl_meta below carry legacy std-window fields used by the
     # debug payload + finish() trigger metric extraction.
@@ -602,54 +596,29 @@ def evaluate_entry(
         # pick which window's metrics to expose: prefer the path that triggered.
         if etype == "double_momentum":
             tr_window = dbl_trigger
-            tr_abs = (
-                dbl_meta["fast_abs_rise"]
-                if tr_window == "5m_fast"
-                else dbl_meta["std_abs_rise"]
-            )
-            tr_pct = (
-                dbl_meta["fast_pct_rise"]
-                if tr_window == "5m_fast"
-                else dbl_meta["std_pct_rise"]
-            )
-            tr_old = (
-                dbl_meta["fast_old_price"]
-                if tr_window == "5m_fast"
-                else dbl_meta["std_old_price"]
-            )
-            tr_new = (
-                dbl_meta["fast_new_price"]
-                if tr_window == "5m_fast"
-                else dbl_meta["std_new_price"]
-            )
+            tr_abs = dbl_meta.get("std_abs_rise", 0.0)
+            tr_pct = dbl_meta.get("std_pct_rise", 0.0)
+            tr_old = dbl_meta.get("std_old_price", 0.0)
+            tr_new = dbl_meta.get("std_new_price", 0.0)
         elif etype == "momentum":
-            tr_window = mom_trigger
-            tr_abs = (
-                mom_meta["fast_abs_rise"]
-                if tr_window == "5m_fast"
-                else mom_meta["std_abs_rise"]
-            )
-            tr_pct = (
-                mom_meta["fast_pct_rise"]
-                if tr_window == "5m_fast"
-                else mom_meta["std_pct_rise"]
-            )
-            tr_old = (
-                mom_meta["fast_old_price"]
-                if tr_window == "5m_fast"
-                else mom_meta["std_old_price"]
-            )
-            tr_new = (
-                mom_meta["fast_new_price"]
-                if tr_window == "5m_fast"
-                else mom_meta["std_new_price"]
-            )
+            if is_pair_reversal and not mom_signal and not is_double_momentum:
+                tr_window = "pair_reversal"
+                tr_abs = float(pair_meta.get("target_change_pts") or 0.0)
+                tr_pct = float(pair_meta.get("target_change_pct") or 0.0)
+                tr_old = float(pair_meta.get("target_old") or 0.0)
+                tr_new = float(pair_meta.get("target_new") or 0.0)
+            else:
+                tr_window = mom_trigger
+                tr_abs = mom_meta.get("std_abs_rise", 0.0)
+                tr_pct = mom_meta.get("std_pct_rise", 0.0)
+                tr_old = mom_meta.get("std_old_price", 0.0)
+                tr_new = mom_meta.get("std_new_price", 0.0)
         else:
             tr_window = "none"
             tr_abs = 0.0
             tr_pct = 0.0
-            tr_old = mom_meta["std_old_price"]
-            tr_new = mom_meta["std_new_price"]
+            tr_old = mom_meta.get("std_old_price", 0.0)
+            tr_new = mom_meta.get("std_new_price", 0.0)
         td = TradeDecision(
             city=city,
             date_iso=date_iso,
@@ -680,19 +649,13 @@ def evaluate_entry(
                 "city": city,
                 "momentum_15m_points": round(float(momentum_15m), 4),
                 "mom_trigger_window": mom_trigger,
-                "mom_std_pass": mom_meta["std_passed"],
-                "mom_std_rise_points": round(float(mom_meta["std_abs_rise"]), 4),
-                "mom_std_rise_pct": round(float(mom_meta["std_pct_rise"]), 4),
-                "mom_fast_pass": mom_meta["fast_passed"],
-                "mom_fast_rise_points": round(float(mom_meta["fast_abs_rise"]), 4),
-                "mom_fast_rise_pct": round(float(mom_meta["fast_pct_rise"]), 4),
+                "mom_std_pass": mom_meta.get("std_passed", False),
+                "mom_std_rise_points": round(float(mom_meta.get("std_abs_rise", 0.0)), 4),
+                "mom_std_rise_pct": round(float(mom_meta.get("std_pct_rise", 0.0)), 4),
                 "double_trigger_window": dbl_trigger,
-                "dbl_std_pass": dbl_meta["std_passed"],
-                "dbl_std_rise_points": round(float(dbl_meta["std_abs_rise"]), 4),
-                "dbl_std_rise_pct": round(float(dbl_meta["std_pct_rise"]), 4),
-                "dbl_fast_pass": dbl_meta["fast_passed"],
-                "dbl_fast_rise_points": round(float(dbl_meta["fast_abs_rise"]), 4),
-                "dbl_fast_rise_pct": round(float(dbl_meta["fast_pct_rise"]), 4),
+                "dbl_std_pass": dbl_meta.get("std_passed", False),
+                "dbl_std_rise_points": round(float(dbl_meta.get("std_abs_rise", 0.0)), 4),
+                "dbl_std_rise_pct": round(float(dbl_meta.get("std_pct_rise", 0.0)), 4),
                 "yes_rank": int(rank),
                 "market_lead_gap": round(float(market_lead_gap), 4),
                 "runner_up_yes": round(float(runner_up_yes), 4),
@@ -706,6 +669,8 @@ def evaluate_entry(
                 "momentum_relaxed_buy": relaxed,
                 "entry_type": etype,
                 "is_double_momentum": is_double_momentum,
+                "pair_reversal": is_pair_reversal,
+                "pair_meta_reason": str(pair_meta.get("reason") or ""),
                 "active_trigger_window": td.trigger_window,
                 "active_abs_rise": round(float(td.trigger_abs_rise), 4),
                 "active_pct_rise": round(float(td.trigger_pct_rise), 4),
@@ -817,8 +782,26 @@ def evaluate_entry(
             research=rd,
         )
 
+    if is_momentum_entry:
+        af_mkt = float(getattr(settings, "momentum_antifomo_min_mkt", 0.70))
+        af_rise = float(getattr(settings, "momentum_antifomo_min_prior_rise", 0.50))
+        biggest_rise = max(
+            float(mom_meta.get("std_abs_rise") or 0.0),
+            float(dbl_meta.get("std_abs_rise") or 0.0),
+            float(pair_meta.get("target_change_pts") or 0.0) if is_pair_reversal else 0.0,
+        )
+        if mkt > af_mkt + 1e-12 and biggest_rise > af_rise + 1e-12:
+            return finish(
+                "SKIP",
+                f"momentum_too_late mkt={mkt:.3f} rise={biggest_rise:.3f}",
+                competition=comp,
+                research=rd,
+            )
+
     reason = (
-        "momentum_entry_ride_the_wave" if is_momentum_entry else "passed_all_filters"
+        "pair_reversal_crowd_shift"
+        if is_pair_reversal
+        else ("momentum_entry_ride_the_wave" if is_momentum_entry else "passed_all_filters")
     )
     return finish(
         "BUY",
@@ -839,6 +822,8 @@ def stop_loss_bar_for_entry_type(
         return float(getattr(settings, "stop_loss_double_momentum", C.STOP_LOSS_DOUBLE_MOMENTUM))
     if et == "momentum":
         return float(getattr(settings, "stop_loss_momentum", C.STOP_LOSS_MOMENTUM))
+    if et in ("manual", "ui"):
+        return float(getattr(settings, "stop_loss_manual", C.STOP_LOSS_MANUAL))
     return float(getattr(settings, "stop_loss_normal", C.STOP_LOSS_NORMAL))
 
 
@@ -861,6 +846,14 @@ def stop_loss_entry_drop_pct_for_entry_type(
                 settings,
                 "stop_loss_momentum_entry_drop_pct",
                 C.STOP_LOSS_MOMENTUM_ENTRY_DROP_PCT,
+            )
+        )
+    if et in ("manual", "ui"):
+        return float(
+            getattr(
+                settings,
+                "stop_loss_manual_entry_drop_pct",
+                C.STOP_LOSS_MANUAL_ENTRY_DROP_PCT,
             )
         )
     return float(
@@ -979,27 +972,48 @@ def check_exits(
     entry = float(trade.get("entry_price") or 0)
     entry_time_utc = str(trade.get("entry_time_utc") or "").strip()
 
-    # 1. fast stop-loss: absolute price drop since entry, capped by the 15m window
+    # 1. fast stop-loss: absolute drop from rolling peak — since entry if known,
+    # otherwise legacy window anchored to earliest sample (e.g. manual trades).
     wsec = momentum_window_sec(settings)
     fast_exit = False
     dd = 0.0
+    entry_ts = 0.0
     if entry_time_utc:
         try:
             entry_ts = datetime.fromisoformat(entry_time_utc).timestamp()
-        except ValueError:
+        except (ValueError, TypeError):
             entry_ts = 0.0
-        if entry_ts > 0:
-            fast_exit, dd = should_fast_exit_since_ts(
-                market_id,
-                since_ts=entry_ts,
-                drop_threshold=momentum_fast_exit_drop(settings),
-                window_sec=wsec,
-            )
+    drop_thr = momentum_fast_exit_drop(settings)
+    if entry_ts > 0:
+        fast_exit, dd = should_fast_exit_since_ts(
+            market_id,
+            since_ts=entry_ts,
+            drop_threshold=drop_thr,
+            window_sec=wsec,
+        )
+    else:
+        fast_exit, dd = should_fast_exit(
+            market_id,
+            drop_threshold=drop_thr,
+            window_sec=wsec,
+        )
     if fast_exit and mark < entry:
         # tag SL category so close_position can label it in logs/telegram.
         trade["sl_category"] = C.SL_CATEGORY_MOMENTUM
         trade["sl_drawdown_points"] = round(float(dd), 6)
         return "momentum-stop-loss", gamma_prob
+
+    crash_thr = float(getattr(settings, "crash_drop_pct_from_peak", 0.0))
+    if crash_thr > 1e-12 and entry > 1e-12:
+        peak_px = float(trade.get("highest_seen_price") or 0.0)
+        mark_now = float(trade.get("last_price") or gamma_prob)
+        if peak_px > 1e-12 and mark_now > 1e-12 and mark_now + 1e-12 < entry:
+            drop_pct_from_peak = (peak_px - mark_now) / peak_px
+            if drop_pct_from_peak + 1e-12 >= crash_thr:
+                trade["sl_category"] = C.SL_CATEGORY_CRASH_PEAK
+                trade["sl_level"] = round(float(mark_now), 6)
+                trade["crash_drop_pct_from_peak"] = round(float(drop_pct_from_peak), 6)
+                return "stop-loss", gamma_prob
 
     # 2. trailing stop / per-type SL breach (live mark vs effective stop)
     entry_type = str(trade.get("entry_type") or "normal").strip()

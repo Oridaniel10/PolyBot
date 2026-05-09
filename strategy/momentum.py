@@ -1,11 +1,24 @@
+"""Price sample storage with in-memory ring buffer for instant momentum reads.
+
+Architecture:
+- Every price sample is written to BOTH an in-memory ring buffer (fast reads)
+  and a JSONL file on disk (persistence across restarts).
+- Reads always come from the ring buffer — O(N) where N ≤ 480 per market.
+- On startup, `warm_ring_buffer_from_disk()` pre-loads today's JSONL into the
+  ring buffer so momentum calculations work immediately after restart.
+- The JSONL files are trimmed periodically for disk hygiene but never re-read
+  after warm-up.
+"""
+
 import json
 import tempfile
+import threading
 import time
-from collections import defaultdict
+from collections import defaultdict, deque
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Set, Tuple
+from typing import Any, Deque, Dict, List, Optional, Set, Tuple
 
 from config.constants import (
     PRICE_SAMPLE_MAX_ENTRIES_PER_MARKET,
@@ -25,8 +38,23 @@ PRICE_SAMPLE_WINDOW_SECONDS = 2 * 60 * 60
 PRICE_SAMPLE_TRIM_INTERVAL_SECONDS = 120
 PRICE_SAMPLE_ENOSPC_RETRY_SECONDS = 60
 
+# Ring buffer: max entries per market.  2h window at ~30s intervals = 240 points.
+# 480 gives 2× headroom for faster tick rates / multi-source writes.
+RING_BUFFER_MAX_PER_MARKET = 480
+
 _last_trim_ts = 0.0
 _writes_blocked_until_ts = 0.0
+
+# ═══════════════════════════════════════════════════════════════════════
+# IN-MEMORY RING BUFFER — the core performance fix.
+# All momentum reads hit this instead of scanning JSONL files.
+# ═══════════════════════════════════════════════════════════════════════
+
+_price_ring: Dict[str, Deque[Tuple[float, float]]] = defaultdict(
+    lambda: deque(maxlen=RING_BUFFER_MAX_PER_MARKET)
+)
+_price_ring_lock = threading.Lock()
+_ring_warmed = False
 
 
 @dataclass(frozen=True)
@@ -65,6 +93,59 @@ def _sample_path_for_now() -> Path:
     return PRICE_SAMPLES_DIR / f"{d}.jsonl"
 
 
+# ── warm-up: load disk → ring buffer once at startup ─────────────────
+
+def warm_ring_buffer_from_disk() -> int:
+    """Pre-load recent JSONL samples into the ring buffer.
+
+    Called once at startup so momentum calculations work immediately.
+    Returns the number of samples loaded.
+    """
+    global _ring_warmed
+    if _ring_warmed:
+        return 0
+    now_ts = time.time()
+    cutoff = now_ts - float(PRICE_SAMPLE_WINDOW_SECONDS)
+    loaded = 0
+    PRICE_SAMPLES_DIR.mkdir(parents=True, exist_ok=True)
+    # load from sorted files (oldest first) so deque ordering is correct
+    for p in sorted(PRICE_SAMPLES_DIR.glob("*.jsonl")):
+        try:
+            with p.open("r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        o = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    ts = float(o.get("ts") or 0)
+                    if ts < cutoff:
+                        continue
+                    mid = str(o.get("market_id") or "").strip()
+                    if not mid:
+                        continue
+                    yes = float(o.get("yes") or 0)
+                    with _price_ring_lock:
+                        ring = _price_ring[mid]
+                        # avoid duplicates (same ts already in ring)
+                        if not ring or ring[-1][0] < ts - 0.01:
+                            ring.append((ts, yes))
+                            loaded += 1
+        except OSError:
+            continue
+    _ring_warmed = True
+    n_markets = len(_price_ring)
+    print(
+        f"[momentum] ring buffer warmed: {loaded} samples across {n_markets} markets "
+        f"(cutoff {PRICE_SAMPLE_WINDOW_SECONDS}s)"
+    )
+    return loaded
+
+
+# ── append: write to ring buffer + disk ───────────────────────────────
+
 def append_price_sample(
     market_id: str, yes_price: float, ts: float | None = None
 ) -> None:
@@ -74,6 +155,12 @@ def append_price_sample(
     t = ts if ts is not None else time.time()
     if t < _writes_blocked_until_ts:
         return
+
+    # 1. ring buffer (instant — no I/O)
+    with _price_ring_lock:
+        _price_ring[market_id].append((t, float(yes_price)))
+
+    # 2. disk (append-only JSONL — runs in caller thread but is a single write)
     row = {"market_id": market_id, "ts": t, "yes": float(yes_price)}
     path = _sample_path_for_now()
     try:
@@ -90,32 +177,39 @@ def append_price_sample(
             raise
 
 
+# ── read: always from ring buffer ─────────────────────────────────────
+
 def load_samples_for_market(
     market_id: str, window_sec: float, now_ts: float | None = None
 ) -> List[Tuple[float, float]]:
+    """Return (ts, price) pairs for market_id within [now - window_sec, now].
+
+    Reads from the in-memory ring buffer (instant).  Includes one point
+    before the cutoff as the "anchor" so rise calculations have an old price.
+    """
     now_ts = now_ts if now_ts is not None else time.time()
     cutoff = now_ts - window_sec
+
+    with _price_ring_lock:
+        ring = _price_ring.get(market_id)
+        if not ring:
+            return []
+        # snapshot under lock (deque iteration is not thread-safe)
+        snapshot = list(ring)
+
     out: List[Tuple[float, float]] = []
-    PRICE_SAMPLES_DIR.mkdir(parents=True, exist_ok=True)
-    for p in sorted(PRICE_SAMPLES_DIR.glob("*.jsonl")):
-        try:
-            with p.open("r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        o = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if str(o.get("market_id") or "") != market_id:
-                        continue
-                    ts = float(o.get("ts") or 0)
-                    yes = float(o.get("yes") or 0)
-                    if ts >= cutoff:
-                        out.append((ts, yes))
-        except OSError:
-            continue
+    last_before_cutoff: Optional[Tuple[float, float]] = None
+
+    for ts, price in snapshot:
+        if ts >= cutoff:
+            out.append((ts, price))
+        else:
+            if last_before_cutoff is None or ts > last_before_cutoff[0]:
+                last_before_cutoff = (ts, price)
+
+    if last_before_cutoff is not None:
+        out.insert(0, last_before_cutoff)
+
     out.sort(key=lambda x: x[0])
     return out
 

@@ -114,7 +114,7 @@ def tracked_trade_still_open(
 
 
 def sync_state_with_portfolio(
-    client: PolymarketClient, state: Dict[str, Any]
+    client: PolymarketClient, state: Dict[str, Any], telegram: Any = None
 ) -> Dict[str, Any]:
     positions = client.get_open_positions()
     normalized_positions = normalize_positions(positions)
@@ -184,6 +184,15 @@ def sync_state_with_portfolio(
                     pnl_usd=0.0,
                 )
             )
+            if telegram and hasattr(telegram, "is_configured") and telegram.is_configured():
+                try:
+                    telegram.send_html_chunks(
+                        f"⚡ <b>MANUAL BUY DETECTED</b>\n"
+                        f"{pos_title}\n"
+                        f"shares <code>{size:.4f}</code> · avg <code>{avg_px:.4f}</code>"
+                    )
+                except Exception:
+                    pass
         bmin = float(prev.get("_below_min_order_size") or 0)
         until = float(prev.get("_skip_sell_below_min_until") or 0)
         if bmin > 1e-9 and size + 1e-6 < bmin and until > time.time():
@@ -201,15 +210,14 @@ def sync_state_with_portfolio(
             row["pending_limit_sell_order_id"] = pend
             if prev.get("pending_limit_sell_price") is not None:
                 row["pending_limit_sell_price"] = prev.get("pending_limit_sell_price")
-        # preserve entry metadata through sync
-        if prev.get("entry_type"):
-            row["entry_type"] = prev["entry_type"]
-        if prev.get("entry_time_utc"):
-            row["entry_time_utc"] = prev["entry_time_utc"]
-        if prev.get("tp_exit_bar"):
-            row["tp_exit_bar"] = prev["tp_exit_bar"]
-        if prev.get("sl_mark_bar"):
-            row["sl_mark_bar"] = prev["sl_mark_bar"]
+        for key in [
+            "entry_type", "entry_time_utc", "tp_exit_bar", "sl_mark_bar",
+            "trigger_window", "trigger_abs_rise", "trigger_pct_rise",
+            "execution_mode", "execution_limit_price", "execution_fill_price", "execution_slippage",
+            "highest_seen_price"
+        ]:
+            if prev.get(key) is not None:
+                row[key] = prev[key]
         if not row.get("entry_type"):
             row["entry_type"] = "manual"
         active_trades[state_key] = row
@@ -237,6 +245,15 @@ def sync_state_with_portfolio(
                 pnl_usd=((mark - entry) * shares) if mark > 0 and entry > 0 else 0.0,
             )
         )
+        if telegram and hasattr(telegram, "is_configured") and telegram.is_configured():
+            try:
+                telegram.send_html_chunks(
+                    f"⚡ <b>MANUAL SELL DETECTED</b>\n"
+                    f"{title}\n"
+                    f"closed <code>{shares:.4f}</code> shares"
+                )
+            except Exception:
+                pass
 
     state["active_trades"] = active_trades
     state["last_sync_at"] = now_in_report_timezone().isoformat()

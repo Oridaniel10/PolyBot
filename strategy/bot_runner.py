@@ -42,7 +42,7 @@ from notifications.terminal import (
 from polymarket_client import PolymarketClient, PolymarketConfig
 from state.store import load_env_file, read_state, write_state
 from strategy.fingerprint import portfolio_snapshot_fingerprint
-from strategy.momentum import prune_old_price_sample_files
+from strategy.momentum import prune_old_price_sample_files, warm_ring_buffer_from_disk
 from forecast.digest_runner import (
     run_forecast_digest_once,
     start_forecast_digest_background,
@@ -60,6 +60,7 @@ from notifications.openrouter_advisor import (
 )
 
 _ADVISOR_LAST_MONO = 0.0
+_TELEGRAM_POLL_INTERVAL_SEC = 2
 
 
 def build_config() -> PolymarketConfig:
@@ -79,6 +80,19 @@ def build_config() -> PolymarketConfig:
     )
 
 
+def _safe_send_portfolio_telegram(*args, **kwargs):
+    telegram = args[0] if args else kwargs.get("telegram")
+    try:
+        send_portfolio_telegram(*args, **kwargs)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        if telegram:
+            try:
+                telegram.send_message(f"🔴 Error generating report: {e!r}")
+            except Exception:
+                pass
+
 def dispatch_telegram_commands(
     telegram: TelegramBot,
     client: PolymarketClient,
@@ -97,7 +111,7 @@ def dispatch_telegram_commands(
                 )
                 _bl = get_effective_settings().blacklist_market_ids
                 threading.Thread(
-                    target=send_portfolio_telegram,
+                    target=_safe_send_portfolio_telegram,
                     args=(telegram, client, "on-demand status report"),
                     kwargs={
                         "headline_html": (
@@ -207,9 +221,24 @@ def log_settings_on_startup() -> None:
     print(f"{TERM_BOLD}└{sep}┘{TERM_RESET}\n", flush=True)
 
 
+def _telegram_command_poller(
+    telegram: TelegramBot,
+    client: PolymarketClient,
+    state: dict,
+) -> None:
+    """Dedicated thread polling Telegram every 2s for instant command response."""
+    while True:
+        try:
+            dispatch_telegram_commands(telegram, client, state)
+        except Exception:
+            pass
+        time.sleep(_TELEGRAM_POLL_INTERVAL_SEC)
+
+
 def run_bot() -> None:
     load_env_file(ENV_FILE)
     prune_old_price_sample_files()
+    warm_ring_buffer_from_disk()
     log_settings_on_startup()
     get_effective_settings()
     config = build_config()
@@ -220,7 +249,7 @@ def run_bot() -> None:
     client = PolymarketClient(config)
     state = read_state()
     try:
-        state = sync_state_with_portfolio(client, state)
+        state = sync_state_with_portfolio(client, state, telegram=telegram)
         write_state(state)
     except Exception as err:
         print(term_wrap(TERM_RED, f"[startup sync failed] {err!r}"))
@@ -277,12 +306,19 @@ def run_bot() -> None:
     )
     _fast_watcher.start()
 
+    # dedicated Telegram polling thread — responds to /report /ask within 2s
+    threading.Thread(
+        target=_telegram_command_poller,
+        args=(telegram, client, state),
+        daemon=True,
+        name="telegram_poller",
+    ).start()
+
     while True:
-        dispatch_telegram_commands(telegram, client, state)
         now = now_in_report_timezone()
         interrupted = False
         try:
-            state = sync_state_with_portfolio(client, state)
+            state = sync_state_with_portfolio(client, state, telegram=telegram)
             prev_fp = str(state.get("last_portfolio_fingerprint") or "")
             fp = portfolio_snapshot_fingerprint(client, previous_on_error=prev_fp)
             tracked_count = len(state.get("active_trades", {}))
@@ -293,7 +329,6 @@ def run_bot() -> None:
                 and prev_fp
                 and fp
                 and fp != prev_fp
-                and tracked_count > 0
             ):
                 threading.Thread(
                     target=send_portfolio_telegram,
@@ -381,7 +416,7 @@ def run_bot() -> None:
                 print(term_wrap(TERM_RED, f"[persist state failed] {err!r}"))
         if interrupted:
             return
-        dispatch_telegram_commands(telegram, client, state)
+        # telegram commands now handled by dedicated polling thread
         try:
             if maybe_send_portfolio_status_heartbeat(telegram, client, state):
                 write_state(state)

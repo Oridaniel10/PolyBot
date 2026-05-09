@@ -231,62 +231,7 @@ def _held_vs_model_lines(
             "<i>(not parsed as temp bracket)</i>"
         )
 
-    if p:
-        lines.append(_temp_om_cal_one_line(p, om, cons))
-
-    if model_max_f is not None:
-        st_fc = get_effective_settings()
-        margin = float(st_fc.forecast_contradict_margin_c)
-        exact_slack = float(st_fc.forecast_exact_bucket_support_slack_c)
-        if p:
-            if forecast_contradicts_strongly(model_max_f, p, margin):
-                lines.append("      ⚠️ <u>model vs YES</u> · <b>contradicts</b>")
-            elif forecast_supports_yes(
-                model_max_f, p, exact_slack_c=exact_slack,
-            ):
-                lines.append("      ✓ <u>model vs YES</u> · <b>consistent</b>")
-            else:
-                lines.append("      ○ <u>model vs YES</u> · neutral")
-        if (
-            p
-            and mark_yes is not None
-            and float(mark_yes) > 1e-9
-        ):
-            rd = research_edge_decision(
-                p,
-                float(model_max_f),
-                float(mark_yes),
-                sigma_c=float(st_fc.research_sigma_c),
-                min_edge=float(st_fc.research_min_edge),
-                min_edge_after_fees_add=float(st_fc.research_min_edge_after_fees_add),
-                fee_rate_for_drag=float(st_fc.research_weather_taker_fee_rate),
-                gate_enabled=bool(st_fc.research_edge_gate_buy),
-                soft_match_enabled=bool(st_fc.research_crowd_soft_match),
-                soft_band=float(st_fc.research_crowd_soft_band),
-                soft_edge_factor=float(st_fc.research_crowd_soft_edge_factor),
-                disagree_extra_edge=float(st_fc.research_crowd_disagree_extra_edge),
-                disagree_gap=float(st_fc.research_crowd_disagree_gap),
-                implied_soft_floor=float(st_fc.research_edge_implied_soft_floor),
-                implied_soft_boost_mult=float(st_fc.research_edge_implied_soft_boost),
-            )
-            gate_lbl = "on" if st_fc.research_edge_gate_buy else "off"
-            soft_note = ""
-            if rd.edge_soft_boost > 1e-9:
-                soft_note = (
-                    f" · rawΔ<code>{rd.edge_raw * 100:+.1f}pp</code>"
-                    f" · soft+<code>{rd.edge_soft_boost * 100:.1f}pp</code>"
-                )
-            lines.append(
-                "      <b>Research</b> "
-                f"gate <code>{gate_lbl}</code> σ<code>{st_fc.research_sigma_c:g}</code> · "
-                f"P≈<code>{rd.implied_yes:.1%}</code> "
-                f"· Δ<code>{rd.edge * 100:+.1f}pp</code>{soft_note} "
-                f"· bar≥<code>{rd.required_edge * 100:.1f}pp</code> · "
-                f"fee≈<code>{rd.fee_drag * 100:.1f}pp</code>"
-            )
-    else:
-        if not p:
-            lines.append("      <i>no °C model row</i>")
+    # OM, Cal, and Research gates removed per user request
     return lines
 
 
@@ -310,14 +255,7 @@ def _fc_block_for_group(
     ]
     if held_mid:
         lines.extend(_held_vs_model_lines(g, held_mid, held_title, mark_yes))
-    else:
-        cons = g.get("consensus_c")
-        om = g.get("open_meteo_c")
-        val = cons if cons is not None else om
-        if val is not None:
-            lines.append(f"      Open-Meteo (calibrated) <b>~{float(val):.1f}°C</b>")
-        else:
-            lines.append("      <i>no °C from model (geocode or API)</i>")
+
     return "\n".join(lines)
 
 

@@ -51,8 +51,8 @@ SELL_BELOW_MIN_TELEGRAM_COOLDOWN_SEC = 1800
 # example: 0.82 is inside 0.80..0.84 so normal entry can pass this gate.
 # upper bound lowered from 0.91 to 0.84 — at 0.88-0.92 upside is tiny while
 # downside risk on a missed bracket is large.
-BUY_MIN_THRESHOLD = 0.81
-BUY_MAX_THRESHOLD = 0.87
+BUY_MIN_THRESHOLD = 0.90
+BUY_MAX_THRESHOLD = 0.92
 BUY_DISABLE_PRICE_BAND = False
 
 # hard stop for normal.
@@ -63,23 +63,29 @@ STOP_LOSS_NORMAL = 0.60
 # effective stop = max(0.50, 0.56) = 0.56.
 STOP_LOSS_NORMAL_ENTRY_DROP_PCT = 0.30
 
+# ─── MANUAL / UI: custom stop loss for user trades ───────────────────
+# hard stop for manual trades.
+STOP_LOSS_MANUAL = 0.40
+# relative stop for manual trades.
+STOP_LOSS_MANUAL_ENTRY_DROP_PCT = 0.30
+
+
 # ─── MOMENTUM: buy on 15m surge + sell stop-loss ──────────────────────
 # absolute rise trigger (any window).
 # example: 0.30 -> 0.50 is +0.20 so this trigger passes.
-MOMENTUM_ENTRY_RISE = 0.20
+MOMENTUM_ENTRY_RISE = 0.15
 # percent rise trigger (fractional, not percent points).
-# example: 6.0 means +600%; 0.05 -> 0.35 (+600%) passes.
-MOMENTUM_PCT_RISE = 6.0
-# ignore tiny start prices for pct math noise.
-# example: 0.001 -> 0.011 is also +1000%, but start 0.001 is below this floor.
-MOMENTUM_MIN_START_PRICE = 0.55
-# live price band for momentum entry.
-# example: current price 0.65 passes, current price 0.85 fails.
-MOMENTUM_MIN_PRICE = 0.61
-MOMENTUM_MAX_ENTRY = 0.80
+# example: 1.0 means +100%; 0.05 -> 0.10 passes on pct gate.
+MOMENTUM_PCT_RISE = 1.0
+# floor on *old* YES in window below which we reject the pct gate (noise).
+# 0.0 = allow any positive baseline; merged runtime still clamps ≥0 via settings.
+MOMENTUM_MIN_START_PRICE = 0.0
+# live price band for momentum entry (current YES must fall in band at decision time).
+MOMENTUM_MIN_PRICE = 0.20
+MOMENTUM_MAX_ENTRY = 0.85
 # hard stop for momentum.
 # example: entry 0.70, any live price below 0.45 is always a sell.
-STOP_LOSS_MOMENTUM = 0.45
+STOP_LOSS_MOMENTUM = 0.50
 # relative stop for momentum.
 # example: entry 0.70 with 30% drop => relative stop is 0.49.
 # effective stop = max(0.45, 0.49) = 0.49.
@@ -88,19 +94,17 @@ STOP_LOSS_MOMENTUM_ENTRY_DROP_PCT = 0.40
 # ─── DOUBLE MOMENTUM: stronger 15m surge + wider band + sell stop-loss ─
 # absolute 15m rise trigger.
 # example: 0.30 -> 0.70 is +0.40 so this trigger passes.
-DOUBLE_MOMENTUM_ENTRY_RISE = 0.40
-# percent 15m rise trigger.
-# example: 0.02 -> 0.22 is +1000%, so pct trigger passes.
-DOUBLE_MOMENTUM_PCT_RISE = 10.0
-# ignore tiny start prices for pct math noise.
-DOUBLE_MOMENTUM_MIN_START_PRICE = 0.25
-# wider entry band.
-# example: current price 0.25 passes, current price 0.90 fails.
+DOUBLE_MOMENTUM_ENTRY_RISE = 0.25
+# percent rise trigger (fractional). 5.0 = +500%.
+DOUBLE_MOMENTUM_PCT_RISE = 5.0
+# same pct noise floor as standard momentum — 0 allows low-start pct moves.
+DOUBLE_MOMENTUM_MIN_START_PRICE = 0.0
+# wider entry band for larger surges only.
 DOUBLE_MOMENTUM_MIN_PRICE = 0.10
-DOUBLE_MOMENTUM_MAX_PRICE = 0.80
+DOUBLE_MOMENTUM_MAX_PRICE = 0.85
 # hard stop for double momentum.
 # example: entry 0.32, any live price below 0.20 is always a sell.
-STOP_LOSS_DOUBLE_MOMENTUM = 0.20
+STOP_LOSS_DOUBLE_MOMENTUM = 0.50
 # relative stop for double momentum.
 # example: entry 0.60 with 30% drop => relative stop is 0.42.
 # effective stop = max(0.20, 0.42) = 0.42.
@@ -110,7 +114,7 @@ STOP_LOSS_DOUBLE_MOMENTUM_ENTRY_DROP_PCT = 0.40
 # EXIT THRESHOLDS
 # ═══════════════════════════════════════════════════════════════════════
 
-TAKE_PROFIT_THRESHOLD = 0.97
+TAKE_PROFIT_THRESHOLD = 0.98
 # float slack vs gamma/mark rounding; also helps when take_profit is 0.99 and mark is 0.988
 TAKE_PROFIT_COMPARE_SLACK = 0.002
 
@@ -171,7 +175,7 @@ FAST_EXIT_WATCHER_INTERVAL_SEC = 2
 # ═══════════════════════════════════════════════════════════════════════
 
 # earliest local hour to place new buys (city local TZ from title; 0–23)
-BUY_EARLIEST_HOUR = 14
+BUY_EARLIEST_HOUR = 15
 # skip new buys when title event date is after today's date in Asia/Jerusalem (report TZ)
 BUY_BLOCK_EVENT_DATE_AFTER_ISRAEL_TODAY = True
 # max open positions at once — limits total portfolio risk
@@ -214,17 +218,31 @@ SL_CATEGORY_ABSOLUTE = "SL_ABSOLUTE"
 SL_CATEGORY_RELATIVE = "SL_RELATIVE"
 SL_CATEGORY_TRAILING = "SL_TRAILING"
 SL_CATEGORY_MOMENTUM = "SL_MOMENTUM"
+# crash-from-running-peak vs entry (fraction of peak lost); orthogonal to SL bar.
+SL_CATEGORY_CRASH_PEAK = "SL_CRASH_PEAK"
+
+# drop from highest_seen_price vs peak; 0 disables. catches cliff when window DD thin.
+CRASH_DROP_PCT_FROM_PEAK = 0.50
+
+# on limit submit/network failure before a fillable order id exists, bump notional (+step) up to max.
+# unfilled-timeout (cancel) does not escalate — only submit-side failure.
+BUY_ESCALATE_NOTIONAL_ON_SUBMIT_FAIL = True
+BUY_ESCALATE_NOTIONAL_STEP_USD = 1.0
+
+# late momentum chase: skip if bucket already jumped and price rich — anti-FOMO.
+MOMENTUM_ANTIFOMO_MIN_MKT = 0.70
+MOMENTUM_ANTIFOMO_MIN_PRIOR_RISE = 0.50
 
 # ═══════════════════════════════════════════════════════════════════════
 # SIZING
 # ═══════════════════════════════════════════════════════════════════════
 
-DEFAULT_ORDER_SIZE = 10.0
+DEFAULT_ORDER_SIZE = 1.0
 MAX_TRADE_FRACTION_OF_CASH = 0.90
-MAX_BUY_NOTIONAL_USD = 2.0
+MAX_BUY_NOTIONAL_USD = 5.0
 MIN_ORDER_NOTIONAL_USD = 1.0
 # never allocate buys from this portion of free cash (runtime + UI override)
-CASH_RESERVE_USD = 10.0
+CASH_RESERVE_USD = 0.0
 
 # ═══════════════════════════════════════════════════════════════════════
 # LEGACY MOMENTUM (kept for backward compat with price sample infra)

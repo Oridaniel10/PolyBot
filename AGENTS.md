@@ -8,9 +8,10 @@ Polymarket migrated the exchange to **CLOB v2** on **2026-04-28**. The bot uses 
 
 Decisions are **price-driven** (band, momentum, competition, SL, TP, time-decay). The forecast/research/calibration model still runs and is shown for context, but the runtime gates `research_edge_gate_buy`, `min_model_prob_for_buy`, and `decision_min_model_peak_prob` default to **off / 0.0** in `data/runtime_config.json`. A market with no forecast still trades through price-based gates.
 
-Momentum now supports **absolute OR percentage rise** checks **across two windows** with start/current price guards. The dual-window check (`strategy/decision_core.py::momentum_dual_window_check`) qualifies if **either** the standard 15-minute window or the new 5-minute fast window passes the rise gate **and** the live price sits inside the entry-type band.
-- normal momentum: `momentum_entry_rise=0.20` OR `momentum_pct_rise=6.0` (+600%); price band `momentum_min_price..momentum_max_entry`
-- double momentum: `double_momentum_entry_rise=0.40` OR `double_momentum_pct_rise=10.0` (+1000%); price band `double_momentum_min_price..double_momentum_max_price`
+Momentum uses **absolute OR fractional percentage rise** across **multiple sampled windows** (1–15m grid + 2h) via `momentum_multi_window_check` in `strategy/decision_core.py`, plus **pair reversal** (`strategy/pair_reversal.py::detect_pair_reversal`): a sibling YES falls while the target rises in a short window → momentum-class BUY with reason `pair_reversal_crowd_shift`. **`momentum_min_start_price`** (default **0**) gates only the pct leg against a tiny “old price” baseline; **`crash_drop_pct_from_peak`** exits on cliffs vs `highest_seen_price`; **`buy_escalate_notional_on_submit_fail`** steps USD **only after submit failures**, not unfilled-timeout.
+- normal momentum defaults: `momentum_entry_rise=0.15` OR `momentum_pct_rise=1.0` (+100%); band `momentum_min_price..momentum_max_entry` (defaults **0.20–0.85** — override live in `data/runtime_config.json`)
+- double momentum: `double_momentum_entry_rise=0.25` OR `double_momentum_pct_rise=2.0` (+200%); band **`0.10–0.85`**
+- manual / UI: trades placed manually track a specific `stop_loss_manual` and `stop_loss_manual_entry_drop_pct` to avoid immediately exiting on normal constraints.
 - normal entries: `buy_max_threshold=0.84` (lowered from 0.91); a re-fetched live CLOB best ask is enforced before submit, otherwise skip with `live_price_above_entry_type_max`
 
 Stop-loss now uses an **effective stop**:
@@ -19,12 +20,13 @@ Stop-loss now uses an **effective stop**:
 - plus **trailing stop** when `highest_seen_price ≥ entry + trailing_stop_activation_gain` (lock at `entry + trailing_stop_lock_gain`)
 - effective stop = `max(hard_floor, entry_price * (1 − drop_pct), trailing_stop_level_if_active)`
 
-Stop-loss breaches are **categorized** (`SL_ABSOLUTE` / `SL_RELATIVE` / `SL_TRAILING` / `SL_MOMENTUM`) by `decision_core.classify_stop_loss_breach`. The fast-exit watcher and the main loop both populate `trade["sl_category"]` / `trade["sl_level"]` so the trade ledger and Telegram show the exact breach reason.
+Stop-loss breaches are **categorized** (`SL_ABSOLUTE` / `SL_RELATIVE` / `SL_TRAILING` / `SL_MOMENTUM` / `SL_CRASH_PEAK`) by `decision_core.classify_stop_loss_breach` and the standalone crash-from-peak path in `check_exits`. The fast-exit watcher and the main loop both populate `trade["sl_category"]` / `trade["sl_level"]` so the trade ledger and Telegram show the exact breach reason.
 
 **Order execution is limit-first**:
 - `place_buy` re-fetches CLOB best ask, snaps to tick, posts a GTC limit; cancels and skips if not filled inside `buy_limit_order_timeout_sec`.
 - Non-emergency sells try a limit first; emergency reasons (stop-loss, fast-exit, bucket switch, time-decay) may fall back to market when `emergency_exit_allow_market_order=true`.
 - Slippage and fill metadata land in both `state.json` and the trade CSV.
+- Submit-fail buy sizing: runtime `buy_escalate_notional_on_submit_fail` + `buy_escalate_notional_step_usd` retries larger USD after `limit_failed` / `limit_unsupported`; does not escalate `limit_cancelled` (timeout).
 
 **Bucket switching is now atomic** (`strategy/trades.py::_execute_bucket_switch_sell`): sell first, confirm fill, only then buy the new bucket. Each step emits structured logs (`switch_candidate_detected`, `switch_sell_started`, `switch_sell_failed_skip_buy`, `switch_sell_success_buy_new`, `switch_buy_failed_after_sell`, `switch_completed`) and matching Telegram updates.
 
@@ -39,6 +41,8 @@ Event churn is stricter:
 
 - **Anchor:** trading flow stays `run_bot` → `sync_state_with_portfolio` → `run_once` → `process_single_market` → `place_buy` / `close_position` / `claim_position` in `strategy/trades.py` and `strategy/loop.py`.
 - **Decision layer:** `strategy/decision_core.py` is the central orchestrator. It calls `probability_engine`, `momentum_engine`, `competition_filter`, and `time_filter` to produce BUY/SKIP decisions. All entry decisions flow through `evaluate_entry()`, all exit checks through `check_exits()`.
+- **Price samples:** `strategy/momentum.py` uses an **in-memory ring buffer** (`_price_ring`) for instant momentum reads (O(1) per market). Samples are written to both the ring buffer and disk JSONL. On startup, `warm_ring_buffer_from_disk()` pre-loads the 2h window from today's JSONL. JSONL files are trimmed periodically but never re-read after warm-up.
+- **Telegram commands:** a dedicated polling thread (`_telegram_command_poller`, 2s interval) runs in `bot_runner.py` so `/report`, `/ask`, `/forecast` respond within 2–4 seconds, independent of the main loop scan interval.
 - **Config:** defaults in `config/constants.py` (grouped by entry type); live overrides in `data/runtime_config.json` (merged each tick via `get_effective_settings()` in `config/settings.py`).
 - **State:** `state.json` at repo root (paths in `config/constants.py`); churn counters in `state["churn_by_market"]` and `state["churn_by_event"]`. Active trades include `entry_time_utc` (time-decay), `entry_type` (`normal`/`momentum`/`double_momentum`) for per-type stop-loss, `highest_seen_price` (trailing stop), and `execution_*` metadata (limit/market mode, fill price, slippage).
 - **Trade CSV:** `data/trade_log_YYYY-MM-DD.csv` via `state/pnl_ledger.py` — bot report clock `local_hhmm` plus `city_local_hhmm`, `entry_type`, `decision_reason` (BUY), `reason` (exit / claim), and the new rich-logging columns: `trigger_window`, `trigger_abs_rise`, `trigger_pct_rise`, `decision_price`, `live_clob_price_before_order`, `execution_mode`, `execution_limit_price`, `execution_fill_price`, `execution_slippage`, `sl_category`, `highest_seen_price`, `full_reason` (toggled by `trade_log_full_reason_enabled`).
@@ -53,18 +57,19 @@ Respect Polymarket limits; see **[POLY_RATE_LIMITS.MD](POLY_RATE_LIMITS.MD)** an
 
 | Area | Location |
 |------------|----------|
-| **Decision engine** | `strategy/decision_core.py` — central entry/exit orchestrator, `momentum_dual_window_check`, `trailing_stop_level`, `classify_stop_loss_breach`, `stop_loss_bar_for_entry_type` |
+| **Decision engine** | `strategy/decision_core.py` — orchestrator; `momentum_multi_window_check`, pair reversal hooks, `trailing_stop_level`, `classify_stop_loss_breach`, `stop_loss_bar_for_entry_type` |
 | **Probability model** | `strategy/probability_engine.py` — Gaussian P(YES) per bucket |
-| **Momentum engine** | `strategy/momentum_engine.py` — absolute 0.15 fast exit, competitor surge, entry signal |
+| **Momentum engine** | `strategy/momentum_engine.py` — fast exit helpers, competitor surge, entry signal |
+| **Pair reversal** | `strategy/pair_reversal.py` — sibling-drop + target-rise divergence (`detect_pair_reversal`) |
 | **Competition filter** | `strategy/competition_filter.py` — 15% lead gap requirement |
 | **Time filter** | `strategy/time_filter.py` — entry window (14:00-24:00) + time-decay exit |
-| **Fast exit watcher** | `strategy/fast_exit_watcher.py` — daemon thread polling **live CLOB orderbook** (`get_clob_yes_price_live_by_id`) every 2s for per-type SL + momentum fast exit + trailing stop; updates `highest_seen_price` and `sl_category`; bypasses Gamma `bestAsk` cache |
+| **Fast exit watcher** | `strategy/fast_exit_watcher.py` — daemon thread polling **live CLOB orderbook** (`get_clob_yes_price_live`) every 2s for per-type SL + momentum fast exit + trailing stop; **caches Gamma market dicts for 5min** (`_MARKET_CACHE_TTL_SEC=300`) to avoid redundant API calls; updates `highest_seen_price` and `sl_category`; bypasses Gamma `bestAsk` cache |
 | **Limit-order executor** | `strategy/limit_executor.py` — `execute_buy` posts GTC limit, polls fill, cancels on timeout; emergency reasons (`EMERGENCY_SELL_REASONS`) may fall back to market |
 | **Telegram dedup** | `strategy/telegram_dedup.py` — `(market_id, exit_reason, error_category)` cooldown for failed exits; cleared on success |
 | Thresholds | `config/settings.py`, `data/runtime_config.json` (incl. `cash_reserve_usd`, sizing, limit-order toggles, trailing stop, telegram dedup) |
 | Gates / CLOB | `strategy/gates.py`, `polymarket_client` (`get_clob_best_ask_yes`, `get_clob_best_bid_yes`, `place_limit_buy_yes`, `cancel_order`, `get_order_state`, `align_price_to_tick_buy`) |
 | Probabilities (parse/TP/SL) | `strategy/probability.py` |
-| Price samples infra | `strategy/momentum.py`, `data/price_samples/` |
+| Price samples infra | `strategy/momentum.py` (in-memory ring buffer + JSONL persistence), `data/price_samples/` |
 | Anti-churn | `strategy/churn.py` — per-market + **per-event** churn (2 losses → 30 min block) |
 | Telegram HTML | `notifications/telegram_fmt.py`, portfolio shell in `notifications/portfolio.py`; rich BUY/SELL templates in `strategy/trades.py` (entry-type header, trigger window/metric, SL category) |
 | Gamma helpers | `polymarket_client.gamma_event_ids_for_market` |
@@ -73,8 +78,8 @@ Respect Polymarket limits; see **[POLY_RATE_LIMITS.MD](POLY_RATE_LIMITS.MD)** an
 | Dashboard UI | `ui/src/App.tsx` — tabs: Positions, Trade History, Decisions, Settings |
 | **Telegram OpenRouter advisor** | `notifications/openrouter_advisor.py` — optional Q&A in a **separate `multiprocessing` process**; context includes `STRATEGY_LOGIC.md` + **`MODEL_PROBABILITY_AND_CALIBRATION.md`** (forecast→calibrated μ→σ→P(YES)). Set `OPENROUTER_API_KEY` (or `OPENROUTER` / `openrouter`), trigger with `/ask …` or messages containing `bot` / `BOT`; optional `ADVISOR_CATCHALL_NON_COMMANDS=1`. Tries `OPENROUTER_FREE_MODELS` in order until one succeeds; `OPENROUTER_MODEL` forces a single model. CLI: `ping`, `test`, `context`, `ask "…"` |
 
-## Deprecated (kept for reference / tests)
+## Deprecated (removed)
 
-- `strategy/decision_engine.py` — replaced by `decision_core.py`
-- `strategy/competition.py` — replaced by `competition_filter.py`
+- `strategy/decision_engine.py` — replaced by `decision_core.py` (deleted)
+- `strategy/competition.py` — replaced by `competition_filter.py` (deleted)
 - `strategy/flow_sampling.py`, `strategy/flow_signals.py` — removed (flow signals were not effective)

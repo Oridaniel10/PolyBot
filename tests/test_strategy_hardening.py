@@ -24,9 +24,11 @@ from config.settings import RuntimeSettings, default_runtime_dict
 from strategy.decision_core import (
     classify_stop_loss_breach,
     effective_stop_price_for_trade,
-    momentum_dual_window_check,
+    momentum_multi_window_check,
     trailing_stop_level,
 )
+
+_MOM_TEST_WINDOWS_SEC = [60.0, 120.0, 180.0, 240.0, 300.0, 900.0, 7200.0]
 from strategy.momentum import append_price_sample
 from strategy.limit_executor import (
     LimitExecutionResult,
@@ -60,22 +62,20 @@ def add_samples(market_id: str, prices: List[float], spacing_sec: float = 60.0) 
 
 def test_momentum_pct_rise_passes_when_absolute_low(tmp_path, monkeypatch):
     monkeypatch.setattr("strategy.momentum.PRICE_SAMPLES_DIR", tmp_path)
-    # 0.10 -> 0.78 = +680% in 15m; clears the 600% pct gate even when abs is
-    # held below threshold.
+    # 0.10 -> 0.78 = +680% in 15m; pct gate dominates when abs gate is unreachable.
     add_samples("pct_only", [0.10, 0.30, 0.50, 0.78])
-    s = make_settings(momentum_min_start_price=0.10)
-    passed, trigger, meta = momentum_dual_window_check(
+    s = make_settings(momentum_pct_rise=6.0, momentum_min_start_price=0.10)
+    passed, trigger, meta = momentum_multi_window_check(
         market_id="pct_only",
-        abs_rise_threshold=0.99,  # force pct path (abs rise here is +0.68)
-        pct_rise_threshold=s.momentum_pct_rise,  # 6.0 default → +600%
-        std_window_sec=s.momentum_window_seconds,
-        fast_window_sec=s.momentum_fast_window_seconds,
+        abs_rise_threshold=0.99,
+        pct_rise_threshold=s.momentum_pct_rise,
+        windows_sec=_MOM_TEST_WINDOWS_SEC,
         min_start_price=s.momentum_min_start_price,
         min_current_price=0.05,
         max_current_price=0.80,
     )
     assert passed is True
-    assert trigger in ("15m_std", "5m_fast", "both")
+    assert trigger.endswith("m_win") and trigger != "none"
     assert meta["std_pct_rise"] >= 6.0
 
 
@@ -83,37 +83,38 @@ def test_momentum_blocked_by_min_start_price(tmp_path, monkeypatch):
     monkeypatch.setattr("strategy.momentum.PRICE_SAMPLES_DIR", tmp_path)
     # 0.001 -> 0.011 is +1000% but start price is below 0.10 floor.
     add_samples("noise", [0.001, 0.005, 0.011])
-    s = make_settings()
-    passed, trigger, meta = momentum_dual_window_check(
+    s = make_settings(
+        momentum_min_start_price=0.10,
+        momentum_pct_rise=6.0,
+    )
+    passed, _, meta = momentum_multi_window_check(
         market_id="noise",
         abs_rise_threshold=s.momentum_entry_rise,
         pct_rise_threshold=s.momentum_pct_rise,
-        std_window_sec=s.momentum_window_seconds,
-        fast_window_sec=s.momentum_fast_window_seconds,
+        windows_sec=_MOM_TEST_WINDOWS_SEC,
         min_start_price=s.momentum_min_start_price,
         min_current_price=0.005,
         max_current_price=0.80,
     )
     assert passed is False
-    assert meta["std_reason"] == "start_price_too_low"
+    assert meta.get("std_passed") is not True
 
 
 def test_momentum_blocked_by_max_current_price(tmp_path, monkeypatch):
     monkeypatch.setattr("strategy.momentum.PRICE_SAMPLES_DIR", tmp_path)
     # 0.70 -> 0.91 — current price above momentum_max_entry (0.80).
     add_samples("over_max", [0.70, 0.80, 0.91])
-    passed, _, meta = momentum_dual_window_check(
+    passed, _, meta = momentum_multi_window_check(
         market_id="over_max",
         abs_rise_threshold=0.20,
         pct_rise_threshold=6.0,
-        std_window_sec=900,
-        fast_window_sec=300,
+        windows_sec=_MOM_TEST_WINDOWS_SEC,
         min_start_price=0.10,
         min_current_price=0.61,
         max_current_price=0.80,
     )
     assert passed is False
-    assert meta["std_reason"] == "current_price_too_high"
+    assert meta.get("std_passed") is not True
 
 
 def test_fast_window_qualifies_when_std_window_does_not(tmp_path, monkeypatch):
@@ -129,19 +130,19 @@ def test_fast_window_qualifies_when_std_window_does_not(tmp_path, monkeypatch):
     ]
     for ts, px in series:
         append_price_sample("fastonly", px, ts=ts)
-    passed, trigger, meta = momentum_dual_window_check(
+    passed, trigger, meta = momentum_multi_window_check(
         market_id="fastonly",
         abs_rise_threshold=0.20,
-        pct_rise_threshold=10.0,  # block pct path
-        std_window_sec=900,
-        fast_window_sec=300,
+        pct_rise_threshold=10.0,
+        windows_sec=_MOM_TEST_WINDOWS_SEC,
         min_start_price=0.10,
         min_current_price=0.61,
         max_current_price=0.80,
     )
     assert passed is True
-    assert trigger == "5m_fast"
-    assert meta["fast_passed"] is True
+    # first matching window in sorted grid can be 2m or 5m for this synthetic path
+    assert trigger in ("2m_win", "3m_win", "4m_win", "5m_win")
+    assert meta["std_passed"] is True
 
 
 # ─── trailing stop + sl categorization ───────────────────────────────
@@ -366,7 +367,7 @@ def test_trade_decision_carries_trigger_metadata(tmp_path, monkeypatch):
         {},
     )
     assert decision.entry_type == "double_momentum"
-    assert decision.trigger_window in ("15m_std", "5m_fast", "both")
+    assert decision.trigger_window.endswith("m_win") and decision.trigger_window != "none"
     assert decision.trigger_abs_rise > 0
 
 

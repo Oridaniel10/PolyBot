@@ -80,20 +80,24 @@ def _mom_plain_pct(change: float) -> str:
     return f"{change * 100.0:+.1f}%"
 
 
-def _momentum_two_windows_html(market_id: str) -> str:
-    """15m + rolling 2h YES change from local price_samples (display only)."""
+def _momentum_multi_windows_html(market_id: str) -> str:
+    """1m, 5m, 15m + rolling 2h YES change from local price_samples."""
     mid = str(market_id or "").strip()
     if not mid:
         return ""
     try:
         from strategy.momentum_engine import price_change_in_window
 
-        _, _, m15 = price_change_in_window(mid, C.MOMENTUM_WINDOW_SECONDS)
+        _, _, m1 = price_change_in_window(mid, 60.0)
+        _, _, m5 = price_change_in_window(mid, 300.0)
+        _, _, m15 = price_change_in_window(mid, 900.0)
         _, _, m2h = price_change_in_window(mid, C.PORTFOLIO_TELEGRAM_MOMENTUM_LONG_SEC)
     except Exception:
         return ""
     return (
-        f"   ⚡ <b>Momentum</b> 15m {_momentum_label(m15)} · "
+        f"   ⚡ <b>Momentum</b> 1m {_momentum_label(m1)} · "
+        f"5m {_momentum_label(m5)} · "
+        f"15m {_momentum_label(m15)} · "
         f"2h roll {_momentum_label(m2h)}"
     )
 
@@ -338,11 +342,13 @@ def build_full_portfolio_html(
         else:
             lt_html = ""
 
+        tr = _trade_row_for_market(state, mid)
+        et = tr.get("entry_type", "normal") if tr else "normal"
         if index > 1:
             parts.append("─────────────────────")
         parts.append(f"<u><b>{index}.</b> {title}{unmapped}</u>")
         parts.append(
-            f"   📦 <code>{size:.3f}</code>{oc} · entry <code>{entry:.3f}</code>"
+            f"   📦 <code>{size:.3f}</code>{oc} · [<b>{tg_escape(et.upper())}</b>] · entry <code>{entry:.3f}</code>"
             f" · mark <code>{mark:.3f}</code>"
         )
         parts.append(f"   {pnl_html} {pnl_pct_html}{lt_html}")
@@ -370,7 +376,7 @@ def build_full_portfolio_html(
             parts.append(board_html)
         else:
             if mid:
-                mom_line = _momentum_two_windows_html(mid)
+                mom_line = _momentum_multi_windows_html(mid)
                 if mom_line:
                     parts.append(mom_line)
         tr = _trade_row_for_market(state, mid)

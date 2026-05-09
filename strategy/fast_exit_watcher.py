@@ -1,12 +1,16 @@
 """Fast exit watcher — daemon thread polling CLOB price every ~2 seconds.
 
 Monitors open positions for:
-1. Stop-loss (per-type SL bar: mark < SL threshold)
-2. Momentum fast exit (absolute price drop from peak in 15m window)
+1. Stop-loss (per-type SL bar: mark below effective stop / trailing)
+2. Momentum fast exit (absolute drawdown since entry in window vs peak)
+3. Crash-from-peak (fractional drop vs highest_seen_price when configured)
 
 Uses CLOB /book endpoint directly (live best-ask / midpoint, NOT Gamma bestAsk
-which can be stale). At default 2s interval and ~7 positions, this is
-~35 req/10s — well within CLOB rate limits.
+which can be stale). Gamma market dicts are cached for 5 minutes since token IDs
+rarely change.
+
+At default 2s interval and ~7 positions, this is ~35 CLOB req/10s (well within
+the 1500/10s limit) and only ~7 Gamma req/5min (negligible).
 """
 
 import json
@@ -16,7 +20,7 @@ import time
 import traceback
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Optional, Tuple
 
 # ensure repo root is on sys.path (same pattern as bot_runner.py)
 if not __package__:
@@ -35,6 +39,9 @@ from strategy.decision_core import (
     trailing_stop_level,
 )
 from telegram_bot import TelegramBot
+
+# cache Gamma market dicts for this long (token IDs rarely change)
+_MARKET_CACHE_TTL_SEC = 300
 
 
 def _log(msg: str) -> None:
@@ -61,6 +68,8 @@ class FastExitWatcher:
         self._sell_lock = threading.Lock()
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
+        # Gamma market dict cache: {market_id: (cached_ts, market_dict)}
+        self._market_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -80,6 +89,17 @@ class FastExitWatcher:
     def sell_lock(self) -> threading.Lock:
         """Expose lock so main loop can use it to prevent double-sells."""
         return self._sell_lock
+
+    def _get_cached_market(self, market_id: str) -> Optional[Dict[str, Any]]:
+        """Return Gamma market dict from cache, refreshing if stale."""
+        now = time.time()
+        cached = self._market_cache.get(market_id)
+        if cached and now - cached[0] < _MARKET_CACHE_TTL_SEC:
+            return cached[1]
+        market = self._client.get_market_by_id(market_id)
+        if market:
+            self._market_cache[market_id] = (now, market)
+        return market
 
     def _run_loop(self) -> None:
         tick = 0
@@ -133,10 +153,15 @@ class FastExitWatcher:
         if entry <= 1e-9:
             return
 
+        # resolve Gamma market from cache (avoids Gamma API call every 2s)
+        market = self._get_cached_market(market_id)
+        if not market:
+            return
+
         # always-fresh CLOB price (best ask / midpoint) — bypasses Gamma bestAsk
         # which can be stale by tens of seconds and miss real price drops.
         try:
-            clob_price = self._client.get_clob_yes_price_live_by_id(market_id)
+            clob_price = self._client.get_clob_yes_price_live(market)
         except Exception:
             return
         if clob_price <= 0:
@@ -157,12 +182,6 @@ class FastExitWatcher:
             entry_type, entry, settings, highest_seen_price=peak
         )
         trail_lvl = trailing_stop_level(entry, peak, settings)
-        _log(
-            f"watch market={market_id} live={clob_price:.4f} entry={entry:.4f} "
-            f"peak={peak:.4f} effective_sl={sl_bar:.4f} "
-            f"trail_level={'-' if trail_lvl is None else f'{trail_lvl:.4f}'} "
-            f"type={entry_type}"
-        )
         breach = classify_stop_loss_breach(
             entry_type,
             entry,
@@ -211,10 +230,25 @@ class FastExitWatcher:
                 market_id, trade_row, clob_price, "momentum-stop-loss", settings
             )
             return
-        _log(
-            f"hold market={market_id} no-trigger dd={dd:.4f} "
-            f"need_dd={momentum_fast_exit_drop(settings):.4f}"
-        )
+
+        crash_thr = float(getattr(settings, "crash_drop_pct_from_peak", 0.0))
+        peak_live = float(trade_row.get("highest_seen_price") or 0.0)
+        if crash_thr > 1e-12 and entry > 1e-12:
+            if peak_live > 1e-12 and clob_price > 1e-12 and clob_price + 1e-12 < entry:
+                drop_frac = (peak_live - clob_price) / peak_live
+                if drop_frac + 1e-12 >= crash_thr:
+                    trade_row["sl_category"] = C.SL_CATEGORY_CRASH_PEAK
+                    trade_row["sl_level"] = round(float(clob_price), 6)
+                    trade_row["crash_drop_pct_from_peak"] = round(float(drop_frac), 6)
+                    _log(
+                        f"{C.SL_CATEGORY_CRASH_PEAK} market={market_id} "
+                        f"peak={peak_live:.4f} clob={clob_price:.4f} entry={entry:.4f} "
+                        f"drop_frac={drop_frac:.4f}"
+                    )
+                    self._trigger_exit(
+                        market_id, trade_row, clob_price, "stop-loss", settings
+                    )
+                    return
 
     def _trigger_exit(
         self,
@@ -241,8 +275,8 @@ class FastExitWatcher:
                 f"price={price:.4f} entry={entry:.4f} title={title[:80]}"
             )
 
-            # resolve gamma market for close_position
-            market = self._client.get_market_by_id(market_id)
+            # resolve gamma market for close_position (use cache)
+            market = self._get_cached_market(market_id)
             if not market:
                 _log(f"cannot resolve market {market_id} — skipping exit")
                 return
@@ -283,6 +317,7 @@ if __name__ == "__main__":
     print(f"  SL normal:               {s.stop_loss_normal}")
     print(f"  SL momentum:             {s.stop_loss_momentum}")
     print(f"  SL double_momentum:      {s.stop_loss_double_momentum}")
+    print(f"  Gamma cache TTL:         {_MARKET_CACHE_TTL_SEC}s")
     print("─" * 60)
     print("  ✅ Module loads OK.")
     print("  ℹ️  This runs automatically as a daemon thread inside bot_runner.py.")

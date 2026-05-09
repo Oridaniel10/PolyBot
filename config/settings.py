@@ -145,6 +145,11 @@ def default_runtime_dict() -> Dict[str, Any]:
         "telegram_failed_exit_cooldown_sec": C.TELEGRAM_FAILED_EXIT_COOLDOWN_SEC,
         "trade_log_full_reason_enabled": C.TRADE_LOG_FULL_REASON_ENABLED,
         "telegram_verbose_trade_reason": C.TELEGRAM_VERBOSE_TRADE_REASON,
+        "crash_drop_pct_from_peak": C.CRASH_DROP_PCT_FROM_PEAK,
+        "buy_escalate_notional_on_submit_fail": C.BUY_ESCALATE_NOTIONAL_ON_SUBMIT_FAIL,
+        "buy_escalate_notional_step_usd": C.BUY_ESCALATE_NOTIONAL_STEP_USD,
+        "momentum_antifomo_min_mkt": C.MOMENTUM_ANTIFOMO_MIN_MKT,
+        "momentum_antifomo_min_prior_rise": C.MOMENTUM_ANTIFOMO_MIN_PRIOR_RISE,
     }
 
 
@@ -297,6 +302,11 @@ class RuntimeSettings:
     telegram_failed_exit_cooldown_sec: int
     trade_log_full_reason_enabled: bool
     telegram_verbose_trade_reason: bool
+    crash_drop_pct_from_peak: float
+    buy_escalate_notional_on_submit_fail: bool
+    buy_escalate_notional_step_usd: float
+    momentum_antifomo_min_mkt: float
+    momentum_antifomo_min_prior_rise: float
     blacklist_market_ids: Set[str] = field(default_factory=set)
 
     @classmethod
@@ -417,7 +427,7 @@ class RuntimeSettings:
         mom_min_start = float(
             d.get("momentum_min_start_price", C.MOMENTUM_MIN_START_PRICE)
         )
-        mom_min_start = max(0.001, min(0.99, mom_min_start))
+        mom_min_start = max(0.0, min(0.99, mom_min_start))
         td_hours = float(d.get("time_decay_hours", C.TIME_DECAY_HOURS))
         td_hours = max(0.25, min(48.0, td_hours))
         td_min_gain = float(d.get("time_decay_min_gain", C.TIME_DECAY_MIN_GAIN))
@@ -710,7 +720,7 @@ class RuntimeSettings:
             double_momentum_pct_rise=max(0.01, min(10.0, float(
                 d.get("double_momentum_pct_rise", C.DOUBLE_MOMENTUM_PCT_RISE)
             ))),
-            double_momentum_min_start_price=max(0.001, min(0.99, float(
+            double_momentum_min_start_price=max(0.0, min(0.99, float(
                 d.get("double_momentum_min_start_price", C.DOUBLE_MOMENTUM_MIN_START_PRICE)
             ))),
             double_momentum_min_price=max(0.01, min(0.99, float(
@@ -734,6 +744,30 @@ class RuntimeSettings:
             # fast exit watcher
             fast_exit_watcher_interval_sec=max(2, min(60, int(
                 d.get("fast_exit_watcher_interval_sec", C.FAST_EXIT_WATCHER_INTERVAL_SEC)
+            ))),
+            crash_drop_pct_from_peak=max(0.0, min(0.95, float(
+                d.get("crash_drop_pct_from_peak", C.CRASH_DROP_PCT_FROM_PEAK)
+            ))),
+            buy_escalate_notional_on_submit_fail=bool(
+                d.get(
+                    "buy_escalate_notional_on_submit_fail",
+                    C.BUY_ESCALATE_NOTIONAL_ON_SUBMIT_FAIL,
+                )
+            ),
+            buy_escalate_notional_step_usd=max(0.1, min(25.0, float(
+                d.get(
+                    "buy_escalate_notional_step_usd",
+                    C.BUY_ESCALATE_NOTIONAL_STEP_USD,
+                )
+            ))),
+            momentum_antifomo_min_mkt=max(0.5, min(0.98, float(
+                d.get("momentum_antifomo_min_mkt", C.MOMENTUM_ANTIFOMO_MIN_MKT)
+            ))),
+            momentum_antifomo_min_prior_rise=max(0.0, min(0.95, float(
+                d.get(
+                    "momentum_antifomo_min_prior_rise",
+                    C.MOMENTUM_ANTIFOMO_MIN_PRIOR_RISE,
+                )
             ))),
         )
 

@@ -22,6 +22,7 @@ from config.constants import (
     SELL_BELOW_MIN_TELEGRAM_COOLDOWN_SEC,
     SELL_BYPASS_MIN_COOLDOWN_REASONS,
     SL_CATEGORY_ABSOLUTE,
+    SL_CATEGORY_CRASH_PEAK,
     SL_CATEGORY_MOMENTUM,
     SL_CATEGORY_RELATIVE,
     SL_CATEGORY_TRAILING,
@@ -86,7 +87,7 @@ from strategy.decision_core import (
     momentum_window_sec,
     momentum_fast_window_sec,
     double_momentum_fast_window_sec,
-    momentum_dual_window_check,
+    momentum_multi_window_check,
 )
 from strategy.limit_executor import (
     LimitExecutionResult,
@@ -135,31 +136,7 @@ def _trade_headline_with_forecast_html(
     market: Dict[str, Any],
     headline_html: str,
 ) -> str:
-    snap = ""
-    try:
-        from forecast.trade_snapshot import temp_market_trade_context_html
-
-        snap = temp_market_trade_context_html(client, market) or ""
-    except Exception:
-        pass
-    if not snap:
-        try:
-            from notifications.forecast_cache_fmt import (
-                portfolio_position_forecast_html,
-            )
-
-            snap = (
-                portfolio_position_forecast_html(
-                    str(market.get("id") or ""),
-                    str(market.get("question") or market.get("title") or ""),
-                    None,
-                )
-                or ""
-            )
-        except Exception:
-            pass
-    if snap:
-        return f"{headline_html}\n{snap}"
+    # the forecast context is now unused, return the headline as is.
     return headline_html
 
 
@@ -306,7 +283,33 @@ def _sl_category_human(category: str) -> str:
         return "Hard Floor Stop"
     if category == SL_CATEGORY_MOMENTUM:
         return "Momentum Drawdown"
+    if category == SL_CATEGORY_CRASH_PEAK:
+        return "Crash From Peak"
     return ""
+
+
+def buy_notional_attempts_for_submit_retries(
+    base_usd: float,
+    settings: RuntimeSettings,
+) -> List[float]:
+    """Ordered notionals when retrying buys after submit-side limit failures."""
+    max_n = float(settings.max_buy_notional_usd)
+    min_n = float(settings.min_order_notional_usd)
+    base_clamped = max(min_n, min(max(0.0, base_usd), max_n))
+    if not bool(getattr(settings, "buy_escalate_notional_on_submit_fail", False)):
+        return [base_clamped]
+    step = float(getattr(settings, "buy_escalate_notional_step_usd", 1.0))
+    step = max(0.1, min(25.0, step))
+    out: List[float] = []
+    cur = base_clamped
+    guard = 0
+    while cur <= max_n + 1e-9 and guard < 48:
+        guard += 1
+        rounded = round(float(cur), 2)
+        if not out or out[-1] + 0.005 < rounded:
+            out.append(rounded)
+        cur += step
+    return out or [base_clamped]
 
 
 def _sell_header_label(reason: str) -> str:
@@ -837,6 +840,25 @@ def place_buy(
     balance_before = client.get_portfolio_balance(force_allowance_refresh=True)
     cash = float(balance_before.get("cash") or 0)
     usd = compute_buy_usd_amount(cash, probability, settings) * forecast_usd_factor
+    
+    # Polymarket CLOB v2 requires a minimum of 5 shares for limit orders.
+    if probability > 0 and (usd / probability) < 5.05:
+        print(term_wrap(TERM_YELLOW, f"[{market_id}] Skipping buy: computed shares {(usd/probability):.2f} < 5 (minimum order size)"))
+        try:
+            if telegram.is_configured():
+                telegram.send_html_chunks(
+                    f"{_telegram_local_clock_html()}"
+                    f"⚠️ <b>BUY SKIPPED (Size too small)</b>\n"
+                    f"{tg_escape(title)}\n"
+                    f"Computed shares: <code>{(usd/probability):.2f}</code> (minimum is 5).\n"
+                    f"To fix this, increase <code>max_buy_notional_usd</code> in runtime_config.json."
+                )
+        except requests.RequestException:
+            pass
+        clear_trade_lock(state, "buy_market", market_id)
+        if event_id:
+            clear_trade_lock(state, "buy_event", event_id)
+        return
     if usd <= 0:
         frac, cap_hard, planned, reserve_usd, tradable = planned_buy_cap_lines(
             cash, settings
@@ -857,13 +879,33 @@ def place_buy(
     require_fill = bool(getattr(settings, "require_fill_before_state_buy", True))
     exec_result: Optional[LimitExecutionResult] = None
     try:
-        exec_result = execute_buy(
-            client=client,
-            market=market,
-            usd_amount=usd,
-            settings=settings,
-            decision_price=float(probability),
-        )
+        notionals = buy_notional_attempts_for_submit_retries(usd, settings)
+        for att_i, attempt_usd in enumerate(notionals):
+            if att_i > 0:
+                print(
+                    term_wrap(
+                        TERM_DIM,
+                        f"[buy_retry] escalate notional=${attempt_usd:.2f} "
+                        f"after submit failure (attempt {att_i + 1}/{len(notionals)})\n"
+                        f"  {title}",
+                    )
+                )
+            exec_result = execute_buy(
+                client=client,
+                market=market,
+                usd_amount=attempt_usd,
+                settings=settings,
+                decision_price=float(probability),
+            )
+            if exec_result is None:
+                break
+            if exec_result.filled:
+                break
+            if exec_result.mode == "limit_cancelled":
+                break
+            if exec_result.mode in ("limit_failed", "limit_unsupported"):
+                continue
+            break
     except PolyApiException as err:
         clear_trade_lock(state, "buy_market", market_id)
         if event_id:
@@ -962,6 +1004,7 @@ def place_buy(
     active_trades = state.setdefault("active_trades", {})
     active_trades[market_id] = {
         "market_id": market_id,
+        "condition_id": str(market.get("conditionId") or market.get("condition_id") or ""),
         "position_title": str(title).strip(),
         "shares": shares,
         "last_action": "buy",
@@ -1998,20 +2041,19 @@ def process_single_market(
     if len(active_trades) >= MAX_CONCURRENT_POSITIONS:
         return
 
-    wsec = momentum_window_sec(settings)
-    fast_wsec = momentum_fast_window_sec(settings)
+    multi_windows = [60.0, 120.0, 180.0, 240.0, 300.0, 900.0, 7200.0]
     rise_thr = float(getattr(settings, "momentum_entry_rise", 0.15))
     rise_pct_thr = float(getattr(settings, "momentum_pct_rise", 0.35))
     mom_start_min = float(getattr(settings, "momentum_min_start_price", 0.10))
     mom_lo = float(getattr(settings, "momentum_min_price", MOMENTUM_MIN_PRICE))
     mom_hi = float(getattr(settings, "momentum_max_entry", MOMENTUM_MAX_ENTRY))
+
     # check both 15m and 5m windows — either passing qualifies the bucket
-    mom_sig, _mom_trigger, _mom_meta = momentum_dual_window_check(
+    mom_sig, _mom_trigger, _mom_meta = momentum_multi_window_check(
         market_id=market_id,
         abs_rise_threshold=rise_thr,
         pct_rise_threshold=rise_pct_thr,
-        std_window_sec=wsec,
-        fast_window_sec=fast_wsec,
+        windows_sec=multi_windows,
         min_start_price=mom_start_min,
         min_current_price=mom_lo,
         max_current_price=mom_hi,
@@ -2027,13 +2069,11 @@ def process_single_market(
     )
     dbl_pct_rise = float(getattr(settings, "double_momentum_pct_rise", 0.80))
     dbl_start_min = float(getattr(settings, "double_momentum_min_start_price", 0.05))
-    dbl_fast_wsec = double_momentum_fast_window_sec(settings)
-    dbl_sig, _dbl_trigger, _dbl_meta = momentum_dual_window_check(
+    dbl_sig, _dbl_trigger, _dbl_meta = momentum_multi_window_check(
         market_id=market_id,
         abs_rise_threshold=dbl_rise,
         pct_rise_threshold=dbl_pct_rise,
-        std_window_sec=wsec,
-        fast_window_sec=dbl_fast_wsec,
+        windows_sec=multi_windows,
         min_start_price=dbl_start_min,
         min_current_price=dbl_min,
         max_current_price=dbl_max,
