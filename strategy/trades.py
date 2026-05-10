@@ -38,6 +38,7 @@ from config.constants import (
 )
 from config.settings import RuntimeSettings, get_effective_settings
 from notifications.portfolio import send_portfolio_telegram
+from notifications.post_buy_plot import schedule_post_buy_event_chart
 from notifications.research_trade_fmt import (
     format_decision_engine_html,
     format_decision_skip_html,
@@ -1370,6 +1371,12 @@ def place_buy(
         )
     except Exception as err:
         print(term_wrap(TERM_RED, f"buy ok but telegram failed: {err!r}"))
+    schedule_post_buy_event_chart(
+        client,
+        telegram,
+        market_id,
+        context=str(et_label),
+    )
 
 
 def close_position(

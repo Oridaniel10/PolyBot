@@ -1,4 +1,20 @@
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Set
+
+# dedupe stale-outcome warnings per process so logs stay one line per market_id.
+_STALE_OUTCOME_LOGGED: Set[str] = set()
+
+
+def _best_ask_from_market(market: Dict[str, Any]) -> Optional[float]:
+    v = market.get("bestAsk")
+    if v is None:
+        return None
+    try:
+        x = float(v)
+        if x <= 0:
+            return None
+        return x if x <= 1 else x / 100.0
+    except (TypeError, ValueError):
+        return None
 
 
 def stop_loss_mark_bar_for_entry(
@@ -34,6 +50,7 @@ def stop_loss_mark_bar_for_entry(
 
 
 def parse_market_probability(market: Dict[str, Any]) -> float:
+    mid = str(market.get("id") or "").strip()
     # prefer outcomePrices (YES element) — most accurate gamma signal
     op = market.get("outcomePrices")
     if op:
@@ -43,6 +60,19 @@ def parse_market_probability(market: Dict[str, Any]) -> float:
             if isinstance(prices, list) and prices:
                 val = float(prices[0])
                 if 0 < val <= 1:
+                    ba = _best_ask_from_market(market)
+                    if (
+                        mid
+                        and mid not in _STALE_OUTCOME_LOGGED
+                        and val <= 0.01
+                        and ba is not None
+                        and ba >= 0.10
+                    ):
+                        print(
+                            "[stale_outcome_prices] "
+                            f"mid={mid} outcomePrices_yes={val:.4f} bestAsk={ba:.4f}"
+                        )
+                        _STALE_OUTCOME_LOGGED.add(mid)
                     return val
         except (TypeError, ValueError):
             pass

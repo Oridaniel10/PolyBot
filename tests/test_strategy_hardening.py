@@ -169,7 +169,7 @@ def test_trailing_stop_disabled_returns_none():
 
 
 def test_effective_stop_combines_floor_and_trailing():
-    s = make_settings()
+    s = make_settings(stop_loss_normal=0.65)
     # entry 0.50 normal: floor=0.65, drop_pct=0.30 -> entry_relative=0.35
     # base = max(0.65, 0.35) = 0.65. peak 0.70 → trail=0.60. final = max(0.65,0.60)=0.65.
     assert effective_stop_price_for_trade(
@@ -183,7 +183,7 @@ def test_effective_stop_combines_floor_and_trailing():
 
 
 def test_classify_sl_categories_distinct():
-    s = make_settings()
+    s = make_settings(stop_loss_normal=0.65)
     # SL_ABSOLUTE: live below floor only
     breach = classify_stop_loss_breach("normal", 0.55, 0.59, s)
     # entry 0.55 → entry_relative=0.385. live=0.59 < floor 0.65 → absolute breach.
@@ -635,9 +635,10 @@ def test_leader_yield_ok_when_ex_leader_bleeds_in_window(tmp_path, monkeypatch):
     assert ok is True
     assert meta.get("leader_id") == "L"
     assert meta.get("reason") == "ok"
+    assert meta.get("pass_condition") == "A"
 
 
-def test_leader_yield_fails_when_only_non_leader_sibling_drops(tmp_path, monkeypatch):
+def test_leader_yield_passes_when_any_single_sibling_drops_enough(tmp_path, monkeypatch):
     monkeypatch.setattr("strategy.momentum.PRICE_SAMPLES_DIR", tmp_path)
     spacing = 120.0
     now = time.time()
@@ -657,6 +658,119 @@ def test_leader_yield_fails_when_only_non_leader_sibling_drops(tmp_path, monkeyp
         min_samples=2,
         now_ts=now,
     )
+    assert ok is True
+    assert meta.get("leader_id") == "Y"
+    assert meta.get("pass_condition") == "A"
+    assert meta.get("reason") == "ok"
+
+
+def test_leader_yield_fails_when_target_not_rising(tmp_path, monkeypatch):
+    monkeypatch.setattr("strategy.momentum.PRICE_SAMPLES_DIR", tmp_path)
+    from strategy.momentum import _price_ring, _price_ring_lock
+
+    with _price_ring_lock:
+        _price_ring.pop("L", None)
+        _price_ring.pop("T", None)
+    spacing = 120.0
+    now = time.time()
+    peer_drop = [0.70, 0.62, 0.55, 0.45, 0.25]
+    target_falling = [0.14, 0.13, 0.12, 0.11, 0.10]
+    for mid, series in (("L", peer_drop), ("T", target_falling)):
+        for i, pr in enumerate(series):
+            append_price_sample(mid, pr, ts=now - (len(series) - i - 1) * spacing)
+    ok, meta = leader_yield_drop_qualifies(
+        target_market_id="T",
+        event_market_ids=["L", "T"],
+        window_sec=900.0,
+        min_leader_old_price=0.05,
+        min_fall_abs_pts=0.30,
+        min_fall_frac_of_old=0.40,
+        min_samples=2,
+        now_ts=now,
+    )
     assert ok is False
-    assert meta.get("leader_id") == "X"
-    assert meta.get("reason") == "leader_fall_below_threshold"
+    assert meta.get("reason") == "target_not_rising"
+
+
+def test_leader_yield_passes_via_collective_when_no_single_faller(tmp_path, monkeypatch):
+    monkeypatch.setattr("strategy.momentum.PRICE_SAMPLES_DIR", tmp_path)
+    spacing = 120.0
+    now = time.time()
+    tgt = [0.10, 0.12, 0.15, 0.18, 0.35]
+    srow = [0.25, 0.24, 0.22, 0.18, 0.15]
+    for i, pr in enumerate(tgt):
+        append_price_sample("T", pr, ts=now - (5 - i - 1) * spacing)
+    for mid in ("S1", "S2", "S3", "S4"):
+        for i, pr in enumerate(srow):
+            append_price_sample(mid, pr, ts=now - (5 - i - 1) * spacing)
+    ok, meta = leader_yield_drop_qualifies(
+        target_market_id="T",
+        event_market_ids=["S1", "S2", "S3", "S4", "T"],
+        window_sec=900.0,
+        min_leader_old_price=0.05,
+        min_fall_abs_pts=0.30,
+        min_fall_frac_of_old=0.50,
+        min_samples=2,
+        collective_fall_min_abs_pts=0.30,
+        collective_fall_min_frac=0.30,
+        now_ts=now,
+    )
+    assert ok is True
+    assert meta.get("pass_condition") == "B"
+    assert float(meta.get("collective_total_drop_pts") or 0.0) >= 0.39
+
+
+def test_leader_yield_fails_when_neither_condition_holds(tmp_path, monkeypatch):
+    monkeypatch.setattr("strategy.momentum.PRICE_SAMPLES_DIR", tmp_path)
+    from strategy.momentum import _price_ring, _price_ring_lock
+
+    with _price_ring_lock:
+        _price_ring.pop("T", None)
+        _price_ring.pop("P", None)
+    spacing = 120.0
+    now = time.time()
+    tgt = [0.10, 0.11, 0.12, 0.13, 0.14]
+    peer = [0.40, 0.399, 0.398, 0.397, 0.396]
+    for i, pr in enumerate(tgt):
+        append_price_sample("T", pr, ts=now - (5 - i - 1) * spacing)
+    for i, pr in enumerate(peer):
+        append_price_sample("P", pr, ts=now - (5 - i - 1) * spacing)
+    ok, meta = leader_yield_drop_qualifies(
+        target_market_id="T",
+        event_market_ids=["P", "T"],
+        window_sec=900.0,
+        min_leader_old_price=0.05,
+        min_fall_abs_pts=0.30,
+        min_fall_frac_of_old=0.50,
+        min_samples=2,
+        collective_fall_min_abs_pts=0.30,
+        collective_fall_min_frac=0.30,
+        now_ts=now,
+    )
+    assert ok is False
+    assert str(meta.get("reason") or "").endswith("no_qualifying_fall")
+
+
+def test_leader_yield_picks_largest_individual_faller_for_meta(tmp_path, monkeypatch):
+    monkeypatch.setattr("strategy.momentum.PRICE_SAMPLES_DIR", tmp_path)
+    spacing = 120.0
+    now = time.time()
+    tgt = [0.08, 0.10, 0.15, 0.22, 0.38]
+    a_series = [0.80, 0.75, 0.65, 0.50, 0.40]
+    b_series = [0.70, 0.68, 0.65, 0.45, 0.38]
+    for mid, series in (("T", tgt), ("A", a_series), ("B", b_series)):
+        for i, pr in enumerate(series):
+            append_price_sample(mid, pr, ts=now - (len(series) - i - 1) * spacing)
+    ok, meta = leader_yield_drop_qualifies(
+        target_market_id="T",
+        event_market_ids=["A", "B", "T"],
+        window_sec=900.0,
+        min_leader_old_price=0.05,
+        min_fall_abs_pts=0.30,
+        min_fall_frac_of_old=0.40,
+        min_samples=2,
+        now_ts=now,
+    )
+    assert ok is True
+    assert meta.get("leader_id") == "A"
+    assert meta.get("pass_condition") == "A"

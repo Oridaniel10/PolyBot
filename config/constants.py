@@ -84,7 +84,7 @@ MOMENTUM_MIN_START_PRICE = 0.0001
 MOMENTUM_MIN_PRICE = 0.20
 MOMENTUM_MAX_ENTRY = 0.90
 # hard floor for momentum SL (effective = max(floor, entry*(1-drop_pct), trailing…)).
-STOP_LOSS_MOMENTUM = 0.20
+STOP_LOSS_MOMENTUM = 0.10
 # entry-relative leg: e.g. entry 0.56 → mark must stay above 0.28 before exit.
 STOP_LOSS_MOMENTUM_ENTRY_DROP_PCT = 0.50
 
@@ -99,7 +99,7 @@ DOUBLE_MOMENTUM_MIN_START_PRICE = 0.0001
 # wider entry band for larger surges only.
 DOUBLE_MOMENTUM_MIN_PRICE = 0.20
 DOUBLE_MOMENTUM_MAX_PRICE = 0.90
-STOP_LOSS_DOUBLE_MOMENTUM = 0.20
+STOP_LOSS_DOUBLE_MOMENTUM = 0.10
 STOP_LOSS_DOUBLE_MOMENTUM_ENTRY_DROP_PCT = 0.50
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -121,12 +121,18 @@ MOMENTUM_MIN_SAMPLE_POINTS = 2
 
 # bot momentum entry: only sample windows ≤ this length (seconds). 900 = 15m.
 MOMENTUM_ENTRY_MAX_WINDOW_SEC = 900.0
-# ex-leader at window-start must bleed vs current YES inside the same window.
-# leader picked as max(old_yes) among siblings with old_yes > min_leader_old_price.
+# --- leader yield (אותו חלון W כמו מומנטום) ---
+# מינימום "old_yes" לבucket אח בכדי שייחשב ל-sibling לבדיקת נפילה (מסנן 0/רעש).
+# מקביל ב-runtime: leader_yield_min_leader_old_price (data/runtime_config.json)
 LEADER_YIELD_MIN_LEADER_OLD_PRICE = 0.05
-LEADER_YIELD_FALL_MIN_ABS_PTS = 0.30
-# fractional drop vs leader's window-start YES (e.g. 0.50 = halves or −50%).
-LEADER_YIELD_FALL_MIN_FRAC = 0.50
+# תנאי (A): לפחות אחד מהאחים יורד בנקודות או באחוז מ-yes הישן שלו.
+# מקביל: leader_yield_fall_min_abs_pts, leader_yield_fall_min_frac
+LEADER_YIELD_FALL_MIN_ABS_PTS = 0.25
+LEADER_YIELD_FALL_MIN_FRAC = 0.45
+# תנאי (B) קולקטיבי: סכום נפילות (בנקודות) או שבר משוקלל מסכום old_yes של כל האחים המתאימים.
+# מקביל: collective_fall_min_abs_pts, collective_fall_min_frac
+COLLECTIVE_FALL_MIN_ABS_PTS = 0.25
+COLLECTIVE_FALL_MIN_FRAC = 0.45
 
 # fast (short) momentum window — runs alongside the 15m window.
 # either window passing = momentum signal qualifies.
@@ -251,7 +257,7 @@ CASH_RESERVE_USD = 0.0
 
 ENABLE_MOMENTUM = True
 MOMENTUM_WINDOW_MIN = 10
-MOMENTUM_RISE = 0.25
+MOMENTUM_RISE = 0.15
 MOMENTUM_PEER_DROP = 0.10
 PRICE_SAMPLE_RETENTION_DAYS = 7
 PRICE_SAMPLE_MAX_ENTRIES_PER_MARKET = 240
@@ -395,6 +401,15 @@ TRADE_LOG_FULL_REASON_ENABLED = True
 # when true, BUY/SELL telegram messages include explicit category + trigger
 # context (e.g. "Triggered by 5m Fast Window (+0.25 / 700%)").
 TELEGRAM_VERBOSE_TRADE_REASON = True
+
+# לאחר כל BUY (בוט או זיהוי MANUAL בסנכרון): PNG של כל bracket באירוע ה-Gamma (כמו plot_recent_prices)
+# ושליחה ל-Telegram ברקע (sendPhoto). כיבוי: post_buy_plot_enabled=false ב-runtime_config.json
+POST_BUY_PLOT_ENABLED = True
+# חלון זמן לגרף בדקות; מקביל: post_buy_plot_window_min
+POST_BUY_PLOT_WINDOW_MIN = 15.0
+# נושא (forum thread) בקבוצת טלגרם — מספר >0 כמו ב-Telegram UI; 0 = צ'אט ראשי / ללא message_thread_id
+# מקביל: telegram_message_thread_id (אפשר גם TELEGRAM_MESSAGE_THREAD_ID ב-env אם נוסיף ב-bot_runner)
+TELEGRAM_MESSAGE_THREAD_ID = 0
 
 # ═══════════════════════════════════════════════════════════════════════
 # EXCHANGE / CLOB

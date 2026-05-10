@@ -85,9 +85,14 @@ Entry when price is in the band (0.80–0.84 by default) and the candidate passe
 
 Entry when YES rose by **absolute** rise OR **fractional percent** rise **and** leader-yield passes on the **same** lookback length `W`, where `W` runs over the entry grid **1m, 2m, …, 15m** (60s steps up to `momentum_entry_max_window_seconds`, default **900s**) via `momentum_entry_candidate_windows()` + `momentum_leader_same_window_check()` in `decision_core.py`. The bot picks the **smallest** such `W` where **both** legs pass. All windows share the same guardrails: `momentum_min_start_price`, `momentum_min_price`, `momentum_max_entry`.
 
-**Mandatory extra gate — leader yield (same `W`):** same **Gamma event**. On that **same** `W`, the sibling with the **highest “old” YES** at **window start** (oldest sample in `[now−W, now]`, among peers with old YES above `leader_yield_min_leader_old_price`) must **fall** by **`leader_yield_fall_min_abs_pts`** OR **`leader_yield_fall_min_frac`** of that old YES. The buy target cannot be that leader at window start. Implemented in `strategy/leader_yield_momentum.py::leader_yield_drop_qualifies` (called from `momentum_leader_same_window_check`). Events with **one** YES bucket cannot satisfy this → momentum-class entries are skipped with `leader_yield_blocked…`.
+**Mandatory extra gate — leader yield (same `W`):** same **Gamma event**. Target must be **rising** on this `W`. Then **either**:
 
-So a setup that only lines up on a **15m** horizon waits until `W=900` qualifies both rise and ex-leader bleed; a setup that lines up in **1m** can enter on `W=60` when both pass there first.
+- **(A)** Any sibling (excluding the target) with **old YES** above `leader_yield_min_leader_old_price` **fell** by **`leader_yield_fall_min_abs_pts`** OR by **`leader_yield_fall_min_frac`** of **its own** old YES; **or**
+- **(B)** The qualifying siblings **collectively** dropped by at least **`collective_fall_min_abs_pts`** in summed points **or** by **`collective_fall_min_frac`** of their **summed** old YES (a **weighted** drop fraction: total drop points ÷ sum of old YES).
+
+The target may itself have been the highest-priced bucket at window start — what matters is that the bot can see probability flowing **out** of other buckets while the target rises. Implemented in `strategy/leader_yield_momentum.py::leader_yield_drop_qualifies` (called from `momentum_leader_same_window_check`). Events with **one** YES bucket cannot satisfy this → momentum-class entries are skipped with `leader_yield_blocked…`.
+
+So a setup that only lines up on a **15m** horizon waits until `W=900` qualifies both rise and sibling bleed (conditions **A** or **B**); a setup that lines up in **1m** can enter on `W=60` when both pass there first.
 
 Bypasses model/edge/competition gates when the full momentum path (rise + leader yield + band) passes. **No separate “anti‑FOMO” price gate** — the only YES band limits for momentum buys are `momentum_min_price` / `momentum_max_entry` (and the double band when applicable), from constants + `runtime_config.json`.
 
@@ -128,9 +133,11 @@ The `TradeDecision` carries `trigger_window` (e.g. `7m_win`), `trigger_*` for th
 | Key / constant | Default | Meaning |
 |----------------|---------|---------|
 | `momentum_entry_max_window_seconds` / `MOMENTUM_ENTRY_MAX_WINDOW_SEC` | **900** | Max **W** on the grid (1m…15m in 60s steps). |
-| `leader_yield_min_leader_old_price` / `LEADER_YIELD_MIN_LEADER_OLD_PRICE` | **0.05** | Peers with window-start YES ≤ this are ignored when picking the ex-leader. |
-| `leader_yield_fall_min_abs_pts` / `LEADER_YIELD_FALL_MIN_ABS_PTS` | **0.30** | Ex-leader must drop by at least this many YES **points** (old − new) over **W**. |
-| `leader_yield_fall_min_frac` / `LEADER_YIELD_FALL_MIN_FRAC` | **0.50** | **Or** drop ≥ this **fraction** of the ex-leader’s window-start YES (e.g. 0.5 = halved). |
+| `leader_yield_min_leader_old_price` / `LEADER_YIELD_MIN_LEADER_OLD_PRICE` | **0.05** | Peers with window-start YES ≤ this are ignored as qualifying siblings (noise floor). |
+| `leader_yield_fall_min_abs_pts` / `LEADER_YIELD_FALL_MIN_ABS_PTS` | **0.30** | Condition **(A)**: a qualifying sibling must drop by at least this many YES **points** (old − new) over **W**, **or** meet the frac leg below vs **its own** old YES. |
+| `leader_yield_fall_min_frac` / `LEADER_YIELD_FALL_MIN_FRAC` | **0.50** | Condition **(A)**: **or** drop ≥ this **fraction** of **that sibling’s** window-start YES (e.g. 0.5 = halved). |
+| `collective_fall_min_abs_pts` / `COLLECTIVE_FALL_MIN_ABS_PTS` | **0.30** | Condition **(B)**: sum of drops (old − new, clipped at 0) across qualifying siblings ≥ this many **points** total. Tunable via `runtime_config.json`. |
+| `collective_fall_min_frac` / `COLLECTIVE_FALL_MIN_FRAC` | **0.30** | Condition **(B)**: **or** weighted fraction — total drop points ÷ sum(old YES of qualifying siblings) ≥ this. Tunable via `runtime_config.json`. |
 
 ### Legacy: `pair_reversal.py`
 
@@ -473,7 +480,7 @@ Every trade (buy/sell/claim) and every scheduled report sends a rich portfolio m
 | **Decision engine** | `strategy/decision_core.py` — entry/exit orchestrator, `stop_loss_bar_for_entry_type()` |
 | **Probability model** | `strategy/probability_engine.py`, `research/probability_from_forecast.py` |
 | **Momentum engine** | `strategy/momentum_engine.py` — absolute fast exit, competitor surge, entry signal |
-| **Leader-yield momentum gate** | `strategy/leader_yield_momentum.py` + `decision_core.py::momentum_leader_same_window_check` — rise + ex-leader bleed on the **same** `W` |
+| **Leader-yield momentum gate** | `strategy/leader_yield_momentum.py` + `decision_core.py::momentum_leader_same_window_check` — target rise + sibling bleed (**A** or **B**) on the **same** `W` |
 | **Competition filter** | `strategy/competition_filter.py` |
 | **Time filter** | `strategy/time_filter.py` |
 | **Trade execution** | `strategy/trades.py` — stores `entry_type` at buy, uses per-type SL at exit |
@@ -533,9 +540,11 @@ Every trade (buy/sell/claim) and every scheduled report sends a rich portfolio m
 ### Leader-yield (runtime) 🆕
 | Key | Default | Description |
 |-----|---------|-------------|
-| `leader_yield_min_leader_old_price` | 0.05 | Ignore peers at/below this window-start YES when picking ex-leader |
-| `leader_yield_fall_min_abs_pts` | 0.30 | Ex-leader must drop by this many YES **points** over **W** (or frac leg) |
-| `leader_yield_fall_min_frac` | 0.50 | **Or** drop ≥ this fraction of ex-leader’s window-start YES |
+| `leader_yield_min_leader_old_price` | 0.05 | Ignore peers at/below this window-start YES when evaluating sibling drops |
+| `leader_yield_fall_min_abs_pts` | 0.30 | Condition **(A)**: min absolute YES **points** dropped by **some** qualifying sibling (or frac leg vs its old YES) |
+| `leader_yield_fall_min_frac` | 0.50 | Condition **(A)**: **or** fractional drop vs **that sibling’s** old YES |
+| `collective_fall_min_abs_pts` | 0.30 | Condition **(B)**: min **sum** of sibling drops in YES **points** (qualifying siblings only) |
+| `collective_fall_min_frac` | 0.30 | Condition **(B)**: **or** total drop points ÷ sum of siblings’ old YES (weighted fraction) |
 
 ### Time decay (runtime) 🆕
 | Key | Default | Description |

@@ -151,6 +151,11 @@ def default_runtime_dict() -> Dict[str, Any]:
         "leader_yield_min_leader_old_price": C.LEADER_YIELD_MIN_LEADER_OLD_PRICE,
         "leader_yield_fall_min_abs_pts": C.LEADER_YIELD_FALL_MIN_ABS_PTS,
         "leader_yield_fall_min_frac": C.LEADER_YIELD_FALL_MIN_FRAC,
+        "collective_fall_min_abs_pts": C.COLLECTIVE_FALL_MIN_ABS_PTS,
+        "collective_fall_min_frac": C.COLLECTIVE_FALL_MIN_FRAC,
+        "post_buy_plot_enabled": C.POST_BUY_PLOT_ENABLED,
+        "post_buy_plot_window_min": C.POST_BUY_PLOT_WINDOW_MIN,
+        "telegram_message_thread_id": C.TELEGRAM_MESSAGE_THREAD_ID,
     }
 
 
@@ -312,6 +317,11 @@ class RuntimeSettings:
     leader_yield_min_leader_old_price: float
     leader_yield_fall_min_abs_pts: float
     leader_yield_fall_min_frac: float
+    collective_fall_min_abs_pts: float
+    collective_fall_min_frac: float
+    post_buy_plot_enabled: bool
+    post_buy_plot_window_min: float
+    telegram_message_thread_id: int
     blacklist_market_ids: Set[str] = field(default_factory=set)
 
     @classmethod
@@ -932,6 +942,57 @@ class RuntimeSettings:
                         d.get(
                             "leader_yield_fall_min_frac",
                             C.LEADER_YIELD_FALL_MIN_FRAC,
+                        )
+                    ),
+                ),
+            ),
+            collective_fall_min_abs_pts=max(
+                0.0,
+                min(
+                    2.0,
+                    float(
+                        d.get(
+                            "collective_fall_min_abs_pts",
+                            C.COLLECTIVE_FALL_MIN_ABS_PTS,
+                        )
+                    ),
+                ),
+            ),
+            collective_fall_min_frac=max(
+                0.0,
+                min(
+                    1.0,
+                    float(
+                        d.get(
+                            "collective_fall_min_frac",
+                            C.COLLECTIVE_FALL_MIN_FRAC,
+                        )
+                    ),
+                ),
+            ),
+            post_buy_plot_enabled=bool(
+                d.get("post_buy_plot_enabled", C.POST_BUY_PLOT_ENABLED)
+            ),
+            post_buy_plot_window_min=max(
+                1.0,
+                min(
+                    120.0,
+                    float(
+                        d.get(
+                            "post_buy_plot_window_min",
+                            C.POST_BUY_PLOT_WINDOW_MIN,
+                        )
+                    ),
+                ),
+            ),
+            telegram_message_thread_id=max(
+                0,
+                min(
+                    1_000_000,
+                    int(
+                        d.get(
+                            "telegram_message_thread_id",
+                            C.TELEGRAM_MESSAGE_THREAD_ID,
                         )
                     ),
                 ),

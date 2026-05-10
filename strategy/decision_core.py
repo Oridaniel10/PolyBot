@@ -201,6 +201,8 @@ def momentum_leader_same_window_check(
     min_fall_abs_pts: float,
     min_fall_frac_of_old: float,
     min_samples: int,
+    collective_fall_min_abs_pts: Optional[float] = None,
+    collective_fall_min_frac: Optional[float] = None,
 ) -> Tuple[bool, str, Dict[str, Any], Dict[str, Any]]:
     """Smallest window (seconds) where target rise passes AND leader-yield passes — same lookback for both."""
     empty_meta: Dict[str, Any] = {
@@ -233,6 +235,8 @@ def momentum_leader_same_window_check(
             min_fall_abs_pts=min_fall_abs_pts,
             min_fall_frac_of_old=min_fall_frac_of_old,
             min_samples=min_samples,
+            collective_fall_min_abs_pts=collective_fall_min_abs_pts,
+            collective_fall_min_frac=collective_fall_min_frac,
         )
         lmd = dict(lmd)
         lmd["parsed_window_sec"] = float(w)
@@ -395,6 +399,112 @@ def _log_decision(d: TradeDecision) -> None:
 MOM_DIAG_SIBLING_WINDOW_SEC = 900.0
 
 
+def effective_settings_dump_for_momentum_eval(settings: RuntimeSettings) -> Dict[str, Any]:
+    """compact dict of effective runtime values feeding momentum_leader_same_window_check."""
+    ew = momentum_entry_candidate_windows(settings)
+    return {
+        "buy_min": float(getattr(settings, "buy_min", C.BUY_MIN_THRESHOLD)),
+        "buy_max": float(getattr(settings, "buy_max", C.BUY_MAX_THRESHOLD)),
+        "buy_earliest_local_hour": int(
+            getattr(settings, "buy_earliest_local_hour", C.BUY_EARLIEST_HOUR)
+        ),
+        "buy_latest_local_hour": int(getattr(settings, "buy_latest_local_hour", 24)),
+        "momentum_window_seconds": round(float(momentum_window_sec(settings)), 2),
+        "momentum_entry_max_window_seconds": float(
+            getattr(
+                settings,
+                "momentum_entry_max_window_seconds",
+                C.MOMENTUM_ENTRY_MAX_WINDOW_SEC,
+            )
+        ),
+        "momentum_entry_windows_sec": [round(float(x), 2) for x in ew],
+        "momentum_entry_rise": round(float(momentum_entry_rise_thr(settings)), 4),
+        "momentum_pct_rise": round(float(momentum_entry_pct_rise_thr(settings)), 4),
+        "momentum_min_start_price": round(
+            float(getattr(settings, "momentum_min_start_price", C.MOMENTUM_MIN_START_PRICE)),
+            6,
+        ),
+        "momentum_min_price": round(
+            float(getattr(settings, "momentum_min_price", C.MOMENTUM_MIN_PRICE)), 4
+        ),
+        "momentum_max_entry": round(
+            float(getattr(settings, "momentum_max_entry", C.MOMENTUM_MAX_ENTRY)), 4
+        ),
+        "double_momentum_entry_rise": round(
+            float(
+                getattr(settings, "double_momentum_entry_rise", C.DOUBLE_MOMENTUM_ENTRY_RISE)
+            ),
+            4,
+        ),
+        "double_momentum_pct_rise": round(
+            float(double_momentum_entry_pct_rise_thr(settings)), 4
+        ),
+        "double_momentum_min_start_price": round(
+            float(
+                getattr(
+                    settings,
+                    "double_momentum_min_start_price",
+                    C.DOUBLE_MOMENTUM_MIN_START_PRICE,
+                )
+            ),
+            6,
+        ),
+        "double_momentum_min_price": round(
+            float(getattr(settings, "double_momentum_min_price", C.DOUBLE_MOMENTUM_MIN_PRICE)),
+            4,
+        ),
+        "double_momentum_max_price": round(
+            float(getattr(settings, "double_momentum_max_price", C.DOUBLE_MOMENTUM_MAX_PRICE)),
+            4,
+        ),
+        "leader_yield_min_leader_old_price": round(
+            float(
+                getattr(
+                    settings,
+                    "leader_yield_min_leader_old_price",
+                    C.LEADER_YIELD_MIN_LEADER_OLD_PRICE,
+                )
+            ),
+            4,
+        ),
+        "leader_yield_fall_min_abs_pts": round(
+            float(
+                getattr(settings, "leader_yield_fall_min_abs_pts", C.LEADER_YIELD_FALL_MIN_ABS_PTS)
+            ),
+            4,
+        ),
+        "leader_yield_fall_min_frac": round(
+            float(getattr(settings, "leader_yield_fall_min_frac", C.LEADER_YIELD_FALL_MIN_FRAC)),
+            4,
+        ),
+        "collective_fall_min_abs_pts": round(
+            float(getattr(settings, "collective_fall_min_abs_pts", C.COLLECTIVE_FALL_MIN_ABS_PTS)),
+            4,
+        ),
+        "collective_fall_min_frac": round(
+            float(getattr(settings, "collective_fall_min_frac", C.COLLECTIVE_FALL_MIN_FRAC)),
+            4,
+        ),
+        "min_samples": int(C.MOMENTUM_MIN_SAMPLE_POINTS),
+        "research_edge_gate_buy": bool(getattr(settings, "research_edge_gate_buy", False)),
+        "enable_competition_filter": bool(getattr(settings, "enable_competition_filter", True)),
+        "min_market_yes_lead_gap_normal": round(
+            float(
+                getattr(
+                    settings,
+                    "min_market_yes_lead_gap_normal",
+                    C.MIN_MARKET_YES_LEAD_GAP_NORMAL,
+                )
+            ),
+            4,
+        ),
+        "max_market_prob_for_buy": round(
+            float(getattr(settings, "max_market_prob_for_buy", 0.75)), 4
+        ),
+        "forecast_gate_buy": bool(getattr(settings, "forecast_gate_buy", False)),
+    }
+
+
 def emit_mom_diag(
     *,
     market_id: str,
@@ -417,7 +527,7 @@ def emit_mom_diag(
     """emit one [mom_diag] json line per entry eval — grep-friendly.
 
     captures effective bands, both leader-window check outputs, and per-sibling
-    sample stats inside the 15m window so we can see whether the real ex-leader
+    sample stats inside the 15m window so we can see whether a sibling
     was silently dropped due to insufficient samples.
     """
     now_ts = time.time()
@@ -484,6 +594,14 @@ def emit_mom_diag(
             float(getattr(settings, "leader_yield_min_leader_old_price", C.LEADER_YIELD_MIN_LEADER_OLD_PRICE)),
             4,
         ),
+        "collective_fall_min_abs_pts": round(
+            float(getattr(settings, "collective_fall_min_abs_pts", C.COLLECTIVE_FALL_MIN_ABS_PTS)),
+            4,
+        ),
+        "collective_fall_min_frac": round(
+            float(getattr(settings, "collective_fall_min_frac", C.COLLECTIVE_FALL_MIN_FRAC)),
+            4,
+        ),
         "min_samples": int(C.MOMENTUM_MIN_SAMPLE_POINTS),
         "dbl": {
             "signal_raw": bool(dbl_signal_raw),
@@ -502,6 +620,11 @@ def emit_mom_diag(
             "drop_frac": round(float(leader_meta_dbl.get("drop_frac") or 0.0), 4),
             "reason": str(leader_meta_dbl.get("reason") or ""),
             "parsed_window_sec": float(leader_meta_dbl.get("parsed_window_sec") or 0.0),
+            "collective_total_drop_pts": round(
+                float(leader_meta_dbl.get("collective_total_drop_pts") or 0.0), 4
+            ),
+            "collective_drop_frac": round(float(leader_meta_dbl.get("collective_drop_frac") or 0.0), 4),
+            "pass_condition": str(leader_meta_dbl.get("pass_condition") or ""),
         },
         "mom": {
             "signal_raw": bool(mom_signal_raw),
@@ -520,11 +643,17 @@ def emit_mom_diag(
             "drop_frac": round(float(leader_meta_mom.get("drop_frac") or 0.0), 4),
             "reason": str(leader_meta_mom.get("reason") or ""),
             "parsed_window_sec": float(leader_meta_mom.get("parsed_window_sec") or 0.0),
+            "collective_total_drop_pts": round(
+                float(leader_meta_mom.get("collective_total_drop_pts") or 0.0), 4
+            ),
+            "collective_drop_frac": round(float(leader_meta_mom.get("collective_drop_frac") or 0.0), 4),
+            "pass_condition": str(leader_meta_mom.get("pass_condition") or ""),
         },
         "is_double_momentum": bool(is_double_momentum),
         "is_momentum_entry": bool(is_momentum_entry),
         "n_event_market_ids": len(all_event_ids),
         "siblings": siblings_info,
+        "effective_settings_dump": effective_settings_dump_for_momentum_eval(settings),
     }
     try:
         s = json.dumps(payload, ensure_ascii=False, default=str)
@@ -799,6 +928,12 @@ def evaluate_entry(
     leader_fall_frac = float(
         getattr(settings, "leader_yield_fall_min_frac", C.LEADER_YIELD_FALL_MIN_FRAC)
     )
+    coll_abs = float(
+        getattr(settings, "collective_fall_min_abs_pts", C.COLLECTIVE_FALL_MIN_ABS_PTS)
+    )
+    coll_frac = float(
+        getattr(settings, "collective_fall_min_frac", C.COLLECTIVE_FALL_MIN_FRAC)
+    )
 
     entry_windows = momentum_entry_candidate_windows(settings)
     dbl_signal_raw, dbl_trigger, dbl_meta, leader_meta_dbl = momentum_leader_same_window_check(
@@ -814,6 +949,8 @@ def evaluate_entry(
         min_fall_abs_pts=leader_fall_abs,
         min_fall_frac_of_old=leader_fall_frac,
         min_samples=C.MOMENTUM_MIN_SAMPLE_POINTS,
+        collective_fall_min_abs_pts=coll_abs,
+        collective_fall_min_frac=coll_frac,
     )
     mom_signal_raw, mom_trigger, mom_meta, leader_meta_mom = momentum_leader_same_window_check(
         market_id=market_id,
@@ -828,6 +965,8 @@ def evaluate_entry(
         min_fall_abs_pts=leader_fall_abs,
         min_fall_frac_of_old=leader_fall_frac,
         min_samples=C.MOMENTUM_MIN_SAMPLE_POINTS,
+        collective_fall_min_abs_pts=coll_abs,
+        collective_fall_min_frac=coll_frac,
     )
 
     dbl_rise_only, _, _ = momentum_multi_window_check(

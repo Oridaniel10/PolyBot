@@ -1,6 +1,7 @@
 import time
 from typing import Any, Dict, List
 
+from notifications.post_buy_plot import schedule_post_buy_event_chart
 from polymarket_client import PolymarketClient, condition_ids_equivalent
 from state.pnl_ledger import append_trade_csv_row
 from strategy.city_tz import city_local_time_str
@@ -201,6 +202,15 @@ def sync_state_with_portfolio(
                         f"⚡ <b>MANUAL BUY DETECTED</b>\n"
                         f"{pos_title}\n"
                         f"shares <code>{size:.4f}</code> · avg <code>{avg_px:.4f}</code>"
+                    )
+                except Exception:
+                    pass
+                try:
+                    schedule_post_buy_event_chart(
+                        client,
+                        telegram,
+                        mid or pos_key,
+                        context="MANUAL",
                     )
                 except Exception:
                     pass

@@ -198,6 +198,43 @@ class TelegramBot:
             print(f"[telegram] sendDocument failed: {exc!r}", flush=True)
             return False
 
+    def send_photo(
+        self,
+        photo_path: str,
+        caption: str = "",
+        *,
+        message_thread_id: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """upload image (PNG/JPEG). optional forum topic via message_thread_id."""
+        from pathlib import Path
+
+        if not self.is_configured():
+            return {"ok": False, "error": "telegram is not configured"}
+        path = Path(photo_path)
+        if not path.is_file():
+            return {"ok": False, "error": "photo file missing"}
+        data: Dict[str, Any] = {"chat_id": self.chat_id}
+        cap = (caption or "").strip()
+        if cap:
+            data["caption"] = cap[:1024]
+            data["parse_mode"] = "HTML"
+        mtid = message_thread_id
+        if mtid is not None and int(mtid) > 0:
+            data["message_thread_id"] = int(mtid)
+        try:
+            with path.open("rb") as ph:
+                resp = requests.post(
+                    f"{self.base_url}/sendPhoto",
+                    data=data,
+                    files={"photo": ph},
+                    timeout=TELEGRAM_TIMEOUT_SECONDS,
+                )
+            resp.raise_for_status()
+            return resp.json()
+        except requests.RequestException as exc:
+            print(f"[telegram] sendPhoto failed: {exc!r}", flush=True)
+            return {"ok": False, "error": str(exc)}
+
     def send_html_chunks(self, html_text: str, chunk_size: int = TELEGRAM_HTML_CHUNK_CHARS) -> int:
         if not self.is_configured() or not html_text:
             return 0
