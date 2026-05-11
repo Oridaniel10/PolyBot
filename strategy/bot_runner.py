@@ -43,6 +43,7 @@ from polymarket_client import PolymarketClient, PolymarketConfig
 from state.store import load_env_file, read_state, write_state
 from strategy.fingerprint import portfolio_snapshot_fingerprint
 from strategy.momentum import prune_old_price_sample_files, warm_ring_buffer_from_disk
+from strategy import redis_store
 from forecast.digest_runner import (
     run_forecast_digest_once,
     start_forecast_digest_background,
@@ -237,6 +238,7 @@ def _telegram_command_poller(
 
 def run_bot() -> None:
     load_env_file(ENV_FILE)
+    redis_store.connect()
     prune_old_price_sample_files()
     warm_ring_buffer_from_disk()
     log_settings_on_startup()

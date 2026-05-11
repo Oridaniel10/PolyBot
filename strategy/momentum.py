@@ -1,24 +1,23 @@
-"""Price sample storage with in-memory ring buffer for instant momentum reads.
+"""Price sample storage backed by Redis sorted sets.
 
 Architecture:
-- Every price sample is written to BOTH an in-memory ring buffer (fast reads)
-  and a JSONL file on disk (persistence across restarts).
-- Reads always come from the ring buffer — O(N) where N ≤ 480 per market.
-- On startup, `warm_ring_buffer_from_disk()` pre-loads today's JSONL into the
-  ring buffer so momentum calculations work immediately after restart.
-- The JSONL files are trimmed periodically for disk hygiene but never re-read
+- Every price sample is written to BOTH Redis (fast reads, TTL cleanup) and
+  an append-only JSONL file on disk (archival / disaster recovery).
+- Reads always come from Redis — O(log N) ZRANGEBYSCORE per market.
+- On startup, `warm_ring_buffer_from_disk()` bulk-loads today's + yesterday's
+  JSONL into Redis so momentum calculations work immediately after restart.
+- JSONL files are trimmed periodically for disk hygiene but never re-read
   after warm-up.
 """
 
 import json
 import tempfile
-import threading
 import time
-from collections import defaultdict, deque
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Deque, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from config.constants import (
     PRICE_SAMPLE_MAX_ENTRIES_PER_MARKET,
@@ -28,6 +27,7 @@ from config.constants import (
 )
 from config.settings import RuntimeSettings
 from strategy.probability import parse_market_probability
+from strategy import redis_store
 
 try:
     from zoneinfo import ZoneInfo
@@ -38,23 +38,9 @@ PRICE_SAMPLE_WINDOW_SECONDS = 2 * 60 * 60
 PRICE_SAMPLE_TRIM_INTERVAL_SECONDS = 120
 PRICE_SAMPLE_ENOSPC_RETRY_SECONDS = 60
 
-# Ring buffer: max entries per market.  2h window at ~30s intervals = 240 points.
-# 480 gives 2× headroom for faster tick rates / multi-source writes.
-RING_BUFFER_MAX_PER_MARKET = 480
-
 _last_trim_ts = 0.0
 _writes_blocked_until_ts = 0.0
-
-# ═══════════════════════════════════════════════════════════════════════
-# IN-MEMORY RING BUFFER — the core performance fix.
-# All momentum reads hit this instead of scanning JSONL files.
-# ═══════════════════════════════════════════════════════════════════════
-
-_price_ring: Dict[str, Deque[Tuple[float, float]]] = defaultdict(
-    lambda: deque(maxlen=RING_BUFFER_MAX_PER_MARKET)
-)
-_price_ring_lock = threading.Lock()
-_ring_warmed = False
+_ring_warmed = False  # kept for API compatibility; True after warm-up
 
 
 @dataclass(frozen=True)
@@ -93,10 +79,10 @@ def _sample_path_for_now() -> Path:
     return PRICE_SAMPLES_DIR / f"{d}.jsonl"
 
 
-# ── warm-up: load disk → ring buffer once at startup ─────────────────
+# ── warm-up: load JSONL → Redis once at startup ──────────────────────
 
 def warm_ring_buffer_from_disk() -> int:
-    """Pre-load recent JSONL samples into the ring buffer.
+    """Bulk-load recent JSONL samples into Redis.
 
     Called once at startup so momentum calculations work immediately.
     Returns the number of samples loaded.
@@ -108,7 +94,10 @@ def warm_ring_buffer_from_disk() -> int:
     cutoff = now_ts - float(PRICE_SAMPLE_WINDOW_SECONDS)
     loaded = 0
     PRICE_SAMPLES_DIR.mkdir(parents=True, exist_ok=True)
-    # load from sorted files (oldest first) so deque ordering is correct
+
+    batch: List[Tuple[str, float, float]] = []
+    seen_per_market: Dict[str, float] = {}  # market_id → last seen ts (dedup)
+
     for p in sorted(PRICE_SAMPLES_DIR.glob("*.jsonl")):
         try:
             with p.open("r", encoding="utf-8") as f:
@@ -127,24 +116,27 @@ def warm_ring_buffer_from_disk() -> int:
                     if not mid:
                         continue
                     yes = float(o.get("yes") or 0)
-                    with _price_ring_lock:
-                        ring = _price_ring[mid]
-                        # avoid duplicates (same ts already in ring)
-                        if not ring or ring[-1][0] < ts - 0.01:
-                            ring.append((ts, yes))
-                            loaded += 1
+                    prev_ts = seen_per_market.get(mid, -1.0)
+                    if ts > prev_ts + 0.01:
+                        batch.append((mid, yes, ts))
+                        seen_per_market[mid] = ts
+                        loaded += 1
         except OSError:
             continue
+
+    if batch:
+        redis_store.save_prices_pipeline(batch)
+
     _ring_warmed = True
-    n_markets = len(_price_ring)
+    n_markets = len(seen_per_market)
     print(
-        f"[momentum] ring buffer warmed: {loaded} samples across {n_markets} markets "
+        f"[momentum] Redis warmed: {loaded} samples across {n_markets} markets "
         f"(cutoff {PRICE_SAMPLE_WINDOW_SECONDS}s)"
     )
     return loaded
 
 
-# ── append: write to ring buffer + disk ───────────────────────────────
+# ── append: write to Redis + disk (archival) ─────────────────────────
 
 def append_price_sample(
     market_id: str, yes_price: float, ts: float | None = None
@@ -156,11 +148,10 @@ def append_price_sample(
     if t < _writes_blocked_until_ts:
         return
 
-    # 1. ring buffer (instant — no I/O)
-    with _price_ring_lock:
-        _price_ring[market_id].append((t, float(yes_price)))
+    # 1. Redis (primary — instant, TTL-managed)
+    redis_store.save_price(market_id, float(yes_price), t)
 
-    # 2. disk (append-only JSONL — runs in caller thread but is a single write)
+    # 2. Disk — append-only JSONL (archival / fallback)
     row = {"market_id": market_id, "ts": t, "yes": float(yes_price)}
     path = _sample_path_for_now()
     try:
@@ -177,41 +168,18 @@ def append_price_sample(
             raise
 
 
-# ── read: always from ring buffer ─────────────────────────────────────
+# ── read: from Redis ──────────────────────────────────────────────────
 
 def load_samples_for_market(
     market_id: str, window_sec: float, now_ts: float | None = None
 ) -> List[Tuple[float, float]]:
     """Return (ts, price) pairs for market_id within [now - window_sec, now].
 
-    Reads from the in-memory ring buffer (instant).  Includes one point
-    before the cutoff as the "anchor" so rise calculations have an old price.
+    Includes one anchor point before the cutoff so rise calculations have an
+    old price baseline.  Reads from Redis (sub-millisecond for typical sizes).
     """
     now_ts = now_ts if now_ts is not None else time.time()
-    cutoff = now_ts - window_sec
-
-    with _price_ring_lock:
-        ring = _price_ring.get(market_id)
-        if not ring:
-            return []
-        # snapshot under lock (deque iteration is not thread-safe)
-        snapshot = list(ring)
-
-    out: List[Tuple[float, float]] = []
-    last_before_cutoff: Optional[Tuple[float, float]] = None
-
-    for ts, price in snapshot:
-        if ts >= cutoff:
-            out.append((ts, price))
-        else:
-            if last_before_cutoff is None or ts > last_before_cutoff[0]:
-                last_before_cutoff = (ts, price)
-
-    if last_before_cutoff is not None:
-        out.insert(0, last_before_cutoff)
-
-    out.sort(key=lambda x: x[0])
-    return out
+    return redis_store.get_price_window(market_id, window_sec, now_ts)
 
 
 def load_sample_window_for_market(
@@ -349,20 +317,53 @@ def trim_price_samples_if_due(now_ts: float | None = None) -> None:
     if now_ts - _last_trim_ts < PRICE_SAMPLE_TRIM_INTERVAL_SECONDS:
         return
     _last_trim_ts = now_ts
+    # Trim JSONL archival file
     path = _sample_path_for_now()
     trim_price_samples_file(path)
+    # Clean Redis entries older than TTL
+    redis_store.cleanup_all_markets()
 
 
-def record_samples_for_market_dicts(markets: List[Dict[str, Any]]) -> None:
+def record_samples_for_market_dicts(
+    markets: List[Dict[str, Any]],
+    clob_prices: Optional[Dict[str, float]] = None,
+) -> None:
     now_ts = time.time()
     seen: Set[str] = set()
+    batch: List[Tuple[str, float, float]] = []
+    disk_rows: List[str] = []
+
     for m in markets:
         mid = str(m.get("id") or "").strip()
         if not mid or mid in seen:
             continue
         seen.add(mid)
-        p = parse_market_probability(m)
-        append_price_sample(mid, p, now_ts)
+        # prefer fresh CLOB price (injected by loop.py) over stale Gamma outcomePrices
+        if clob_prices and mid in clob_prices and clob_prices[mid] > 1e-6:
+            p = clob_prices[mid]
+        else:
+            p = parse_market_probability(m)
+        batch.append((mid, float(p), now_ts))
+        row = {"market_id": mid, "ts": now_ts, "yes": float(p)}
+        disk_rows.append(json.dumps(row, ensure_ascii=True, separators=(",", ":")))
+
+    if batch:
+        redis_store.save_prices_pipeline(batch)
+
+    if disk_rows:
+        path = _sample_path_for_now()
+        try:
+            with path.open("a", encoding="utf-8") as f:
+                f.write("\n".join(disk_rows) + "\n")
+        except OSError as err:
+            if getattr(err, "errno", None) == 28:
+                global _writes_blocked_until_ts
+                _writes_blocked_until_ts = now_ts + PRICE_SAMPLE_ENOSPC_RETRY_SECONDS
+                print(
+                    "[momentum] sample write paused: no disk space "
+                    f"(retry in {PRICE_SAMPLE_ENOSPC_RETRY_SECONDS}s)"
+                )
+
     trim_price_samples_if_due(now_ts)
 
 

@@ -26,13 +26,30 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+import os
+
 from config import constants as C
 from config.constants import DATA_DIR, PRICE_SAMPLES_DIR, STATE_FILE
 from config.settings import get_effective_settings
-from polymarket_client import PolymarketClient, gamma_event_ids_for_market
-from strategy.bot_runner import build_config
+from polymarket_client import PolymarketClient, PolymarketConfig, gamma_event_ids_for_market
 from strategy.decision_core import momentum_entry_candidate_windows
 from strategy.momentum_engine import absolute_price_change_in_window
+
+
+def build_config() -> PolymarketConfig:
+    """Build Polymarket client config from environment variables."""
+    sig_env = os.getenv("POLY_SIGNATURE_TYPE", "").strip()
+    clob_sig = int(sig_env) if sig_env.isdigit() else None
+    return PolymarketConfig(
+        api_key=os.getenv("API_KEY", os.getenv("POLY_API_KEY", "")),
+        api_secret=os.getenv("API_SECRET", ""),
+        api_passphrase=os.getenv("API_PASSPHRASE", ""),
+        private_key=os.getenv("POLY_PRIVATE_KEY", os.getenv("Wallet_PRIVATE_KEY", "")),
+        proxy_address=os.getenv("POLY_PROXY_ADDRESS", os.getenv("POLY_ADDRESS", "")),
+        gamma_base_url=os.getenv("POLY_GAMMA_BASE_URL", "https://gamma-api.polymarket.com"),
+        clob_base_url=os.getenv("POLY_CLOB_BASE_URL", "https://clob.polymarket.com"),
+        clob_signature_type=clob_sig,
+    )
 
 PLOT_DIR = DATA_DIR / "plots"
 
@@ -121,18 +138,29 @@ def _read_disk_samples(window_sec: float, now_ts: float) -> Dict[str, List[Tuple
 def _read_ring_samples(
     window_sec: float, now_ts: float
 ) -> Optional[Dict[str, List[Tuple[float, float]]]]:
+    """Read price window from Redis (primary source). Auto-connects if needed."""
     try:
-        from strategy.momentum import _price_ring, _price_ring_lock
-    except ImportError:
-        return None
-    cutoff = now_ts - window_sec
-    out: Dict[str, List[Tuple[float, float]]] = {}
-    with _price_ring_lock:
-        for mid, ring in _price_ring.items():
-            pts = [(t, p) for (t, p) in ring if t >= cutoff]
+        from strategy import redis_store
+        from strategy.momentum import warm_ring_buffer_from_disk
+        if not redis_store.is_connected():
+            redis_store.connect()
+        if not redis_store.is_connected():
+            return None
+        # warm from disk if Redis is empty (standalone run with no bot process)
+        mids = redis_store.get_all_market_ids()
+        if not mids:
+            warm_ring_buffer_from_disk()
+            mids = redis_store.get_all_market_ids()
+        if not mids:
+            return None
+        out: Dict[str, List[Tuple[float, float]]] = {}
+        for mid in mids:
+            pts = redis_store.get_price_window(mid, window_sec, now_ts)
             if pts:
                 out[str(mid)] = pts
-    return out
+        return out or None
+    except Exception:
+        return None
 
 
 def _infer_event_slug_from_market_slug(slug: str) -> Optional[str]:

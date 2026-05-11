@@ -145,6 +145,9 @@ def default_runtime_dict() -> Dict[str, Any]:
         "telegram_verbose_trade_reason": C.TELEGRAM_VERBOSE_TRADE_REASON,
         "crash_drop_pct_from_peak": C.CRASH_DROP_PCT_FROM_PEAK,
         "crash_from_peak_grace_sec_after_entry": C.CRASH_FROM_PEAK_GRACE_SEC_AFTER_ENTRY,
+        "stagnation_sl_enabled": C.STAGNATION_SL_ENABLED,
+        "stagnation_sl_window_hours": C.STAGNATION_SL_WINDOW_HOURS,
+        "stagnation_sl_min_rise_pct": C.STAGNATION_SL_MIN_RISE_PCT,
         "buy_escalate_notional_on_submit_fail": C.BUY_ESCALATE_NOTIONAL_ON_SUBMIT_FAIL,
         "buy_escalate_notional_step_usd": C.BUY_ESCALATE_NOTIONAL_STEP_USD,
         "momentum_entry_max_window_seconds": C.MOMENTUM_ENTRY_MAX_WINDOW_SEC,
@@ -311,6 +314,9 @@ class RuntimeSettings:
     telegram_verbose_trade_reason: bool
     crash_drop_pct_from_peak: float
     crash_from_peak_grace_sec_after_entry: float
+    stagnation_sl_enabled: bool
+    stagnation_sl_window_hours: float
+    stagnation_sl_min_rise_pct: float
     buy_escalate_notional_on_submit_fail: bool
     buy_escalate_notional_step_usd: float
     momentum_entry_max_window_seconds: float
@@ -878,6 +884,23 @@ class RuntimeSettings:
                             C.CRASH_FROM_PEAK_GRACE_SEC_AFTER_ENTRY,
                         )
                     ),
+                ),
+            ),
+            stagnation_sl_enabled=bool(
+                d.get("stagnation_sl_enabled", C.STAGNATION_SL_ENABLED)
+            ),
+            stagnation_sl_window_hours=max(
+                0.1,
+                min(
+                    48.0,
+                    float(d.get("stagnation_sl_window_hours", C.STAGNATION_SL_WINDOW_HOURS)),
+                ),
+            ),
+            stagnation_sl_min_rise_pct=max(
+                0.0,
+                min(
+                    1.0,
+                    float(d.get("stagnation_sl_min_rise_pct", C.STAGNATION_SL_MIN_RISE_PCT)),
                 ),
             ),
             buy_escalate_notional_on_submit_fail=bool(

@@ -573,11 +573,9 @@ def test_parse_trigger_window_seconds_maps_nm_win():
 def test_leader_yield_short_window_misses_peak_long_window_sees_it(tmp_path, monkeypatch):
     """Without anchor trick: last 60s only shows tail of crash; 15m includes peak."""
     monkeypatch.setattr("strategy.momentum.PRICE_SAMPLES_DIR", tmp_path)
-    from strategy.momentum import _price_ring, _price_ring_lock
-
-    with _price_ring_lock:
-        _price_ring.pop("ex_L", None)
-        _price_ring.pop("buy_B", None)
+    from strategy import redis_store as rs
+    if rs.is_connected():
+        rs._client.delete("prices:ex_L", "prices:buy_B")
     now = time.time()
     L, B = "ex_L", "buy_B"
     # peak old; mid-crash before last 60s (anchor for 60s window); last-minute tail
@@ -614,6 +612,9 @@ def test_leader_yield_short_window_misses_peak_long_window_sees_it(tmp_path, mon
 
 def test_leader_yield_ok_when_ex_leader_bleeds_in_window(tmp_path, monkeypatch):
     monkeypatch.setattr("strategy.momentum.PRICE_SAMPLES_DIR", tmp_path)
+    from strategy import redis_store as rs
+    if rs.is_connected():
+        rs._client.delete("prices:L", "prices:T", "prices:N")
     spacing = 120.0
     now = time.time()
     leader_prices = [0.70, 0.62, 0.55, 0.45, 0.34]
@@ -640,6 +641,9 @@ def test_leader_yield_ok_when_ex_leader_bleeds_in_window(tmp_path, monkeypatch):
 
 def test_leader_yield_passes_when_any_single_sibling_drops_enough(tmp_path, monkeypatch):
     monkeypatch.setattr("strategy.momentum.PRICE_SAMPLES_DIR", tmp_path)
+    from strategy import redis_store as rs
+    if rs.is_connected():
+        rs._client.delete("prices:X", "prices:Y", "prices:Z")
     spacing = 120.0
     now = time.time()
     leader_prices = [0.70] * 5
@@ -666,11 +670,9 @@ def test_leader_yield_passes_when_any_single_sibling_drops_enough(tmp_path, monk
 
 def test_leader_yield_fails_when_target_not_rising(tmp_path, monkeypatch):
     monkeypatch.setattr("strategy.momentum.PRICE_SAMPLES_DIR", tmp_path)
-    from strategy.momentum import _price_ring, _price_ring_lock
-
-    with _price_ring_lock:
-        _price_ring.pop("L", None)
-        _price_ring.pop("T", None)
+    from strategy import redis_store as rs
+    if rs.is_connected():
+        rs._client.delete("prices:L", "prices:T")
     spacing = 120.0
     now = time.time()
     peer_drop = [0.70, 0.62, 0.55, 0.45, 0.25]
@@ -694,6 +696,9 @@ def test_leader_yield_fails_when_target_not_rising(tmp_path, monkeypatch):
 
 def test_leader_yield_passes_via_collective_when_no_single_faller(tmp_path, monkeypatch):
     monkeypatch.setattr("strategy.momentum.PRICE_SAMPLES_DIR", tmp_path)
+    from strategy import redis_store as rs
+    if rs.is_connected():
+        rs._client.delete("prices:T", "prices:S1", "prices:S2", "prices:S3", "prices:S4")
     spacing = 120.0
     now = time.time()
     tgt = [0.10, 0.12, 0.15, 0.18, 0.35]
@@ -722,11 +727,9 @@ def test_leader_yield_passes_via_collective_when_no_single_faller(tmp_path, monk
 
 def test_leader_yield_fails_when_neither_condition_holds(tmp_path, monkeypatch):
     monkeypatch.setattr("strategy.momentum.PRICE_SAMPLES_DIR", tmp_path)
-    from strategy.momentum import _price_ring, _price_ring_lock
-
-    with _price_ring_lock:
-        _price_ring.pop("T", None)
-        _price_ring.pop("P", None)
+    from strategy import redis_store as rs
+    if rs.is_connected():
+        rs._client.delete("prices:T", "prices:P")
     spacing = 120.0
     now = time.time()
     tgt = [0.10, 0.11, 0.12, 0.13, 0.14]
@@ -753,6 +756,9 @@ def test_leader_yield_fails_when_neither_condition_holds(tmp_path, monkeypatch):
 
 def test_leader_yield_picks_largest_individual_faller_for_meta(tmp_path, monkeypatch):
     monkeypatch.setattr("strategy.momentum.PRICE_SAMPLES_DIR", tmp_path)
+    from strategy import redis_store as rs
+    if rs.is_connected():
+        rs._client.delete("prices:T", "prices:A", "prices:B")
     spacing = 120.0
     now = time.time()
     tgt = [0.08, 0.10, 0.15, 0.22, 0.38]

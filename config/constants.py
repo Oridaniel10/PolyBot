@@ -43,63 +43,79 @@ SELL_BELOW_MIN_TELEGRAM_COOLDOWN_SEC = 1800
 
 # ═══════════════════════════════════════════════════════════════════════
 # BUY / SELL thresholds — grouped by entry type.
-# each block keeps the full entry + exit config together.
+# UNIT KEY: values marked [PRICE] are absolute YES price points (0.0–1.0).
+#           values marked [FRAC]  are fractional multipliers (e.g. 0.50 = 50%).
+#           values marked [PCT]   are fractional price changes (1.0 = +100%).
 # ═══════════════════════════════════════════════════════════════════════
 
 # ─── NORMAL: buy band + sell stop-loss ────────────────────────────────
-# buy only if YES is inside this band.
-# example: 0.82 is inside 0.80..0.84 so normal entry can pass this gate.
-# upper bound lowered from 0.91 to 0.84 — at 0.88-0.92 upside is tiny while
-# downside risk on a missed bracket is large.
+# [PRICE] buy band for normal (non-momentum) entries.
+# Set both to 1.1 to effectively DISABLE normal entries (bot only trades momentum).
+# To re-enable: e.g. BUY_MIN_THRESHOLD=0.65, BUY_MAX_THRESHOLD=0.84
 BUY_MIN_THRESHOLD = 1.1
 BUY_MAX_THRESHOLD = 1.1
 BUY_DISABLE_PRICE_BAND = False
 
-# hard stop for normal.
-# example: if entry was 0.82, any live price below 0.50 is always a sell.
+# [PRICE] hard stop-loss floor for normal entries.
+# If live YES price falls below this absolute level → sell immediately.
+# Example: 0.20 means sell at 0.20 no matter what entry price was.
 STOP_LOSS_NORMAL = 0.20
-# relative stop for normal.
-# example: entry 0.80 with 30% drop => relative stop is 0.56.
-# effective stop = max(0.50, 0.56) = 0.56.
+# [FRAC] entry-relative stop for normal. Sell if price drops this fraction from entry.
+# Example: entry 0.80, drop_pct=0.30 → relative stop = 0.80*(1-0.30) = 0.56.
+# Effective stop = max(STOP_LOSS_NORMAL, entry*(1-drop_pct)).
 STOP_LOSS_NORMAL_ENTRY_DROP_PCT = 0.30
 
 # ─── MANUAL / UI: custom stop loss for user trades ───────────────────
-# hard stop for manual trades.
+# [PRICE] hard stop floor for manual/UI trades. Higher than momentum because
+# manually entered positions may be at lower probability.
 STOP_LOSS_MANUAL = 0.40
-# relative stop for manual trades.
+# [FRAC] entry-relative drop before manual stop triggers. Same logic as normal.
 STOP_LOSS_MANUAL_ENTRY_DROP_PCT = 0.30
 
 
-# ─── MOMENTUM: buy on 15m surge + sell stop-loss ──────────────────────
-# absolute rise trigger (any window).
-# example: 0.30 -> 0.45 is +0.15 so this trigger passes.
+# ─── MOMENTUM: buy on surge in any window (1m–15m) + sell stop-loss ───
+# [PRICE] minimum ABSOLUTE YES price rise to qualify for momentum entry.
+# This is the price in [0,1] range — NOT a percent.
+# Example: 0.15 means YES must rise by 0.15 points (e.g. 0.30 → 0.45 qualifies).
+# To make it EASIER to enter: lower this value (e.g. 0.10).
+# To make it HARDER to enter: raise it (e.g. 0.20).
 MOMENTUM_ENTRY_RISE = 0.15
-# percent rise trigger (fractional, not percent points).
-# example: 3.0 means +300%; 0.05 -> 0.15 passes on pct gate.
+# [PCT] alternative rise trigger — fractional multiplier (1.0 = price doubled = +100%).
+# EITHER absolute OR percent must pass (whichever is easier).
+# Example: 1.0 means price must have doubled (e.g. 0.05 → 0.10 passes on pct gate).
+# To require bigger % move: raise (e.g. 2.0 = price tripled).
 MOMENTUM_PCT_RISE = 1.0
-# floor on *old* YES in window below which we reject the pct gate (noise).
-# 0.0 = allow any positive baseline; merged runtime still clamps ≥0 via settings.
+# [PRICE] minimum window-start YES price for the percent gate to count.
+# Filters out noise (e.g. 0.001 → 0.003 looks like +200% but is meaningless).
+# 0.0 = allow all; 0.05 = ignore entries starting below 0.05.
 MOMENTUM_MIN_START_PRICE = 0.0001
-# live price band for momentum entry (current YES must fall in band at decision time).
+# [PRICE] live YES band for momentum entry at decision time.
+# Bot won't buy if current price is below MOMENTUM_MIN_PRICE or above MOMENTUM_MAX_ENTRY.
+# Example: 0.20 min means don't buy if YES is < 0.20 (too cheap = too risky).
 MOMENTUM_MIN_PRICE = 0.20
 MOMENTUM_MAX_ENTRY = 0.90
-# hard floor for momentum SL (effective = max(floor, entry*(1-drop_pct), trailing…)).
+# [PRICE] hard stop-loss floor for momentum entries.
+# Momentum entries are more aggressive, so stop floor can be lower.
 STOP_LOSS_MOMENTUM = 0.10
-# entry-relative leg: e.g. entry 0.56 → mark must stay above 0.28 before exit.
+# [FRAC] entry-relative drop before momentum stop triggers.
+# Example: entry 0.40, drop_pct=0.50 → stop at 0.20. Effective = max(0.10, 0.20).
 STOP_LOSS_MOMENTUM_ENTRY_DROP_PCT = 0.50
 
-# ─── DOUBLE MOMENTUM: stronger 15m surge + wider band + sell stop-loss ─
-# absolute 15m rise trigger.
-# example: 0.30 -> 0.70 is +0.40 so this trigger passes.
+# ─── DOUBLE MOMENTUM: stronger surge + wider band + sell stop-loss ────
+# [PRICE] minimum ABSOLUTE YES price rise for double-momentum entry.
+# Higher bar than standard momentum — rewards bigger, faster moves.
+# Example: 0.30 means price must jump 0.30 points (e.g. 0.20 → 0.50).
 DOUBLE_MOMENTUM_ENTRY_RISE = 0.30
-# percent rise trigger (fractional). 4.0 = +400%.
+# [PCT] fractional alternative for double momentum (2.0 = tripled = +200%).
 DOUBLE_MOMENTUM_PCT_RISE = 2.0
-# same pct noise floor as standard momentum — 0 allows low-start pct moves.
+# [PRICE] minimum window-start price for double momentum pct gate.
 DOUBLE_MOMENTUM_MIN_START_PRICE = 0.0001
-# wider entry band for larger surges only.
-DOUBLE_MOMENTUM_MIN_PRICE = 0.20
+# [PRICE] live YES band for double momentum entry (same band as standard momentum here).
+DOUBLE_MOMENTUM_MIN_PRICE = 0.10
 DOUBLE_MOMENTUM_MAX_PRICE = 0.90
-STOP_LOSS_DOUBLE_MOMENTUM = 0.10
+# [PRICE] stop-loss floor for double momentum entries.
+STOP_LOSS_DOUBLE_MOMENTUM = 0.05
+# [FRAC] entry-relative drop for double momentum stop.
 STOP_LOSS_DOUBLE_MOMENTUM_ENTRY_DROP_PCT = 0.50
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -111,48 +127,78 @@ TAKE_PROFIT_THRESHOLD = 0.96
 TAKE_PROFIT_COMPARE_SLACK = 0.002
 
 # ─── Momentum fast exit: ABSOLUTE price drop from peak in rolling window ──
-# absolute YES points peak→now (see momentum_engine). not percent.
+# [PRICE] if price drops this many absolute YES points from its peak inside
+# MOMENTUM_WINDOW_SECONDS → trigger emergency exit.
+# Example: 0.30 means peak was 0.80 and now it's 0.50 → exit.
+# To exit SOONER on smaller drops: lower (e.g. 0.15).
+# To tolerate bigger swings: raise (e.g. 0.40).
 MOMENTUM_FAST_EXIT_DROP = 0.30
+# [SECONDS] rolling window for fast exit drawdown + competitor surge checks.
 MOMENTUM_WINDOW_SECONDS = 900
-MOMENTUM_COMPETITOR_SURGE = 0.25
-# kept low so a fresh market that just jumped 0.1 → 0.7 in 2 ticks still
-# qualifies for double-momentum entry (was 3 → blocked late entries on big moves).
+# [PRICE] if any SIBLING bucket in the same event rises this many YES points
+# inside MOMENTUM_WINDOW_SECONDS → our position exits (money flowing to sibling).
+# Example: 0.35 means a sibling jumping from 0.30 to 0.65 triggers our exit.
+MOMENTUM_COMPETITOR_SURGE = 0.35
+# minimum price samples needed before momentum signal counts (2 = very permissive).
 MOMENTUM_MIN_SAMPLE_POINTS = 2
 
-# bot momentum entry: only sample windows ≤ this length (seconds). 900 = 15m.
+# [SECONDS] max window for the 1m–15m candidate grid.
+# The bot checks 1m, 2m, …, up to this cap and picks the best qualifying window.
 MOMENTUM_ENTRY_MAX_WINDOW_SEC = 900.0
-# --- leader yield (אותו חלון W כמו מומנטום) ---
-# מינימום "old_yes" לבucket אח בכדי שייחשב ל-sibling לבדיקת נפילה (מסנן 0/רעש).
-# מקביל ב-runtime: leader_yield_min_leader_old_price (data/runtime_config.json)
-LEADER_YIELD_MIN_LEADER_OLD_PRICE = 0.05
-# תנאי (A): לפחות אחד מהאחים יורד בנקודות או באחוז מ-yes הישן שלו.
-# מקביל: leader_yield_fall_min_abs_pts, leader_yield_fall_min_frac
+
+# ─── Leader-yield gate: sibling drop required for momentum entry ──────
+# At least one sibling must fall (condition A) OR siblings must fall collectively
+# (condition B) — independently of the window used for our rise check.
+#
+# [PRICE] ignore siblings whose window-start YES was below this (noise filter).
+LEADER_YIELD_MIN_LEADER_OLD_PRICE = 0.03
+# [PRICE] condition (A) individual sibling: must drop at least this many YES points.
+# Example: 0.25 means sibling must fall from 0.60 to ≤0.35 to qualify.
+# To require BIGGER sibling drops: raise (e.g. 0.35).
+# To allow SMALLER sibling drops: lower (e.g. 0.15).
 LEADER_YIELD_FALL_MIN_ABS_PTS = 0.25
+# [FRAC] condition (A) alternative — sibling must drop this fraction of its own old YES.
+# Example: 0.45 means sibling at 0.60 must fall to ≤0.33 (dropped 45% of 0.60).
 LEADER_YIELD_FALL_MIN_FRAC = 0.45
-# תנאי (B) קולקטיבי: סכום נפילות (בנקודות) או שבר משוקלל מסכום old_yes של כל האחים המתאימים.
-# מקביל: collective_fall_min_abs_pts, collective_fall_min_frac
+# [PRICE] condition (B) collective: SUM of all sibling drops must be at least this.
 COLLECTIVE_FALL_MIN_ABS_PTS = 0.25
+# [FRAC] condition (B) alternative — total drop / sum(sibling old YES) ≥ this.
 COLLECTIVE_FALL_MIN_FRAC = 0.45
 
-# fast (short) momentum window — runs alongside the 15m window.
-# either window passing = momentum signal qualifies.
-# motivation: 15m can be too diluted on rapid moves; 5m catches fresh surges.
+# [SECONDS] fast momentum window — checked alongside the 15m window.
+# Either window passing qualifies. Good for catching rapid surges.
 MOMENTUM_FAST_WINDOW_SECONDS = 300
 DOUBLE_MOMENTUM_FAST_WINDOW_SECONDS = 300
 
 # ─── Trailing stop ────────────────────────────────────────────────────
-# protects unrealized profit when price has moved up significantly.
-# example: entry 0.50 → price reaches 0.70 (>=entry+0.20 activation) →
-# trailing level becomes entry+0.10 = 0.60 (locks 0.10 of gain).
+# [PRICE] once price rises this much above entry, trailing stop activates.
+# Example: 0.20 means entry 0.50 → trailing unlocks when price reaches 0.70.
 TRAILING_STOP_ENABLED = True
 TRAILING_STOP_ACTIVATION_GAIN = 0.20
+# [PRICE] once trailing stop is active, lock stop at entry + this amount.
+# Example: 0.10 means stop locks at 0.50+0.10 = 0.60 (protecting 0.10 gain).
 TRAILING_STOP_LOCK_GAIN = 0.10
 
 # ─── Time-decay exit ─────────────────────────────────────────────────
+# [HOURS] exit if held longer than this AND not profitable enough.
 TIME_DECAY_HOURS = 2.0
-# min gain vs entry as absolute YES price points (not % of entry)
+# [PRICE] minimum absolute YES gain vs entry to AVOID the decay exit.
+# Example: 0.02 means entry 0.50 → must be above 0.52 after 2h to not decay.
 TIME_DECAY_MIN_GAIN = 0.02
+# [PRICE] decay exit only applies when mark is below this (near take-profit = skip).
 TIME_DECAY_MAX_PRICE = 0.85
+
+# ─── 2-hour stagnation stop-loss ─────────────────────────────────────
+# Exits a position if price has been stuck (no meaningful rise in 2 hours)
+# AND price is below entry. Prevents holding dead positions.
+# Enable/disable via stagnation_sl_enabled in runtime_config.json.
+STAGNATION_SL_ENABLED = True
+# [HOURS] lookback window to measure "has price risen at all?"
+STAGNATION_SL_WINDOW_HOURS = 2.0
+# [FRAC] minimum fractional rise in the window to KEEP the position.
+# Example: 0.05 = price must have risen at least 5% from 2h ago (0.40 → 0.42+).
+# If price hasn't risen this much in 2h AND is below entry → exit.
+STAGNATION_SL_MIN_RISE_PCT = 0.05
 
 # ═══════════════════════════════════════════════════════════════════════
 # ANTI-CHURN

@@ -204,7 +204,12 @@ def momentum_leader_same_window_check(
     collective_fall_min_abs_pts: Optional[float] = None,
     collective_fall_min_frac: Optional[float] = None,
 ) -> Tuple[bool, str, Dict[str, Any], Dict[str, Any]]:
-    """Smallest window (seconds) where target rise passes AND leader-yield passes — same lookback for both."""
+    """Independent-window check: target rise in ANY window AND sibling fall in ANY window.
+
+    Rise and fall windows are evaluated independently — a sibling that fell 5 minutes ago
+    combined with our price rising over the last 10 minutes both count, even though the
+    windows are different.  The trigger is labelled by the winning rise window.
+    """
     empty_meta: Dict[str, Any] = {
         "std_passed": False,
         "std_abs_rise": 0.0,
@@ -215,6 +220,9 @@ def momentum_leader_same_window_check(
     }
     fail_leader: Dict[str, Any] = {"reason": "no_momentum_rise_in_grid"}
 
+    # Pass 1: find the smallest window where our rise qualifies
+    rise_win: Optional[float] = None
+    rise_meta: Dict[str, Any] = {}
     for w in sorted(windows_sec):
         w_passed, w_old, w_new, w_abs, w_pct, _wr = momentum_entry_signal_with_pct(
             market_id=market_id,
@@ -225,12 +233,27 @@ def momentum_leader_same_window_check(
             min_current_price=min_current_price,
             max_current_price=max_current_price,
         )
-        if not w_passed:
-            continue
+        if w_passed:
+            rise_win = w
+            rise_meta = {
+                "std_passed": True,
+                "std_abs_rise": float(w_abs),
+                "std_pct_rise": float(w_pct),
+                "std_old_price": float(w_old),
+                "std_new_price": float(w_new),
+                "std_window_sec": float(w),
+            }
+            break
+
+    if rise_win is None:
+        return False, "none", empty_meta, fail_leader
+
+    # Pass 2: find ANY window where sibling fall qualifies (independent of rise window)
+    for w_fall in sorted(windows_sec):
         ok, lmd = leader_yield_drop_qualifies(
             target_market_id=market_id,
             event_market_ids=list(event_market_ids),
-            window_sec=float(w),
+            window_sec=float(w_fall),
             min_leader_old_price=min_leader_old_price,
             min_fall_abs_pts=min_fall_abs_pts,
             min_fall_frac_of_old=min_fall_frac_of_old,
@@ -239,20 +262,13 @@ def momentum_leader_same_window_check(
             collective_fall_min_frac=collective_fall_min_frac,
         )
         lmd = dict(lmd)
-        lmd["parsed_window_sec"] = float(w)
-        lmd["leader_eval_window_sec"] = float(w)
+        lmd["parsed_window_sec"] = float(w_fall)
+        lmd["leader_eval_window_sec"] = float(w_fall)
+        lmd["rise_window_sec"] = float(rise_win)
         if ok:
-            mins = max(1, int(round(w / 60.0)))
+            mins = max(1, int(round(rise_win / 60.0)))
             trigger = f"{mins}m_win"
-            meta = {
-                "std_passed": True,
-                "std_abs_rise": float(w_abs),
-                "std_pct_rise": float(w_pct),
-                "std_old_price": float(w_old),
-                "std_new_price": float(w_new),
-                "std_window_sec": float(w),
-            }
-            return True, trigger, meta, lmd
+            return True, trigger, rise_meta, lmd
         fail_leader = lmd
 
     return False, "none", empty_meta, fail_leader

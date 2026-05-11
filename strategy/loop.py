@@ -225,6 +225,8 @@ def run_once(
             )
         )
 
+    # Record Gamma prices for all samples. Active positions get live CLOB prices every 2s
+    # from fast_exit_watcher (giving smooth plot curves without parallel connection overload).
     threading.Thread(
         target=record_samples_for_market_dicts, args=(samples,), daemon=True
     ).start()

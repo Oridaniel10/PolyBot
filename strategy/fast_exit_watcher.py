@@ -170,6 +170,12 @@ class FastExitWatcher:
 
         # update trade row mark so the slow main loop sees fresh price too.
         trade_row["last_price"] = clob_price
+        # record every CLOB poll to Redis so plots show smooth live curves for held positions.
+        try:
+            from strategy.momentum import append_price_sample
+            append_price_sample(market_id, clob_price)
+        except Exception:
+            pass
         # update peak so the trailing stop tracks the highest seen across both
         # the slow loop and this watcher.
         cur_peak = float(trade_row.get("highest_seen_price") or 0.0)
@@ -231,6 +237,34 @@ class FastExitWatcher:
                 market_id, trade_row, clob_price, "momentum-stop-loss", settings
             )
             return
+
+        # --- check 3: 2-hour stagnation stop-loss ---
+        # if price is below entry AND hasn't risen ≥ stagnation_sl_min_rise_pct
+        # in the last stagnation_sl_window_hours → position is dead weight → exit.
+        stag_enabled = settings.stagnation_sl_enabled
+        if stag_enabled and clob_price < entry - 1e-9:
+            from strategy import redis_store
+            stag_hours = settings.stagnation_sl_window_hours
+            stag_min_rise = settings.stagnation_sl_min_rise_pct
+            stag_window_sec = stag_hours * 3600.0
+            price_oldest = redis_store.get_oldest_price_in_window(market_id, stag_window_sec)
+            if price_oldest is not None and price_oldest > 1e-9:
+                max_seen = redis_store.get_max_price_in_window(market_id, stag_window_sec)
+                rise_in_window = ((max_seen or 0.0) - price_oldest) / price_oldest
+                if rise_in_window < stag_min_rise - 1e-9:
+                    _log(
+                        f"stagnation_sl market={market_id} "
+                        f"clob={clob_price:.4f} entry={entry:.4f} "
+                        f"oldest_price={price_oldest:.4f} max_in_window={max_seen:.4f} "
+                        f"rise={rise_in_window:+.1%} threshold={stag_min_rise:.1%}"
+                    )
+                    trade_row["sl_category"] = "SL_STAGNATION"
+                    trade_row["sl_stagnation_rise"] = round(float(rise_in_window), 6)
+                    trade_row["sl_stagnation_window_hours"] = stag_hours
+                    self._trigger_exit(
+                        market_id, trade_row, clob_price, "stop-loss", settings
+                    )
+                    return
 
         crash_thr = float(getattr(settings, "crash_drop_pct_from_peak", 0.0))
         crash_grace = float(

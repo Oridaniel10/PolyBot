@@ -1,12 +1,12 @@
 import time
-from collections import deque
 from datetime import date
 from unittest.mock import patch
 
 from config.settings import RuntimeSettings, default_runtime_dict
 from forecast.parse_title import BracketKind, ParsedTempMarket
 from strategy.decision_core import TradeDecision, evaluate_entry
-from strategy.momentum import append_price_sample, load_samples_for_market, _price_ring, _price_ring_lock
+from strategy.momentum import append_price_sample, load_samples_for_market
+from strategy import redis_store
 from strategy.momentum_engine import momentum_entry_signal, peer_surge_detected, price_change_in_window
 from strategy.sync_portfolio import sync_state_with_portfolio
 from strategy.trades import close_position, place_buy, process_single_market, set_trade_lock
@@ -55,9 +55,9 @@ def parsed_market() -> ParsedTempMarket:
 
 def add_samples(market_id: str, prices: list[float]) -> None:
     now = time.time()
-    # clear ring buffer for this market so tests are isolated
-    with _price_ring_lock:
-        _price_ring[market_id] = deque(maxlen=480)
+    # clear Redis data for this market so tests are isolated
+    if redis_store.is_connected():
+        redis_store._client.delete(f"prices:{market_id}")
     for index, price in enumerate(prices):
         append_price_sample(market_id, price, ts=now - (len(prices) - index - 1) * 60)
 
@@ -368,14 +368,14 @@ def test_buy_and_sell_locks_prevent_duplicate_orders():
 
 
 def test_ring_buffer_momentum_1m_5m_15m_2h(tmp_path, monkeypatch):
-    """Verify all momentum windows return correct non-zero values from ring buffer."""
+    """Verify all momentum windows return correct non-zero values from Redis."""
     monkeypatch.setattr("strategy.momentum.PRICE_SAMPLES_DIR", tmp_path)
     mid = "ring_test_1"
     now = time.time()
 
-    # clear ring
-    with _price_ring_lock:
-        _price_ring[mid] = deque(maxlen=480)
+    # clear Redis for isolation
+    if redis_store.is_connected():
+        redis_store._client.delete(f"prices:{mid}")
 
     # add samples spanning 2h: price rising from 0.30 to 0.60
     for i in range(121):  # 0..120 minutes ago
@@ -399,15 +399,18 @@ def test_ring_buffer_momentum_1m_5m_15m_2h(tmp_path, monkeypatch):
     _, _, m2h = price_change_in_window(mid, 7200.0, now)
     assert abs(m2h - 1.0) < 0.1, f"2h momentum should be ~100%, got {m2h}"
 
+    if redis_store.is_connected():
+        redis_store._client.delete(f"prices:{mid}")
+
 
 def test_ring_buffer_load_samples_window_boundary(tmp_path, monkeypatch):
-    """Verify load_samples_for_market returns correct window slices from ring buffer."""
+    """Verify load_samples_for_market returns correct window slices from Redis."""
     monkeypatch.setattr("strategy.momentum.PRICE_SAMPLES_DIR", tmp_path)
     mid = "ring_boundary"
     now = time.time()
 
-    with _price_ring_lock:
-        _price_ring[mid] = deque(maxlen=480)
+    if redis_store.is_connected():
+        redis_store._client.delete(f"prices:{mid}")
 
     # sample at 10m ago, 5m ago, 1m ago, now
     for offset_min, price in [(10, 0.50), (5, 0.55), (1, 0.58), (0, 0.60)]:
@@ -420,11 +423,15 @@ def test_ring_buffer_load_samples_window_boundary(tmp_path, monkeypatch):
     assert pts[0][1] == 0.55, f"Anchor should be 0.55, got {pts[0][1]}"
     assert pts[-1][1] == 0.60, f"Latest should be 0.60, got {pts[-1][1]}"
 
+    if redis_store.is_connected():
+        redis_store._client.delete(f"prices:{mid}")
+
 
 def test_ring_buffer_cold_start_from_disk(tmp_path, monkeypatch):
-    """Verify warm_ring_buffer_from_disk loads JSONL into ring buffer."""
+    """Verify warm_ring_buffer_from_disk loads JSONL into Redis."""
     import json
-    from strategy.momentum import warm_ring_buffer_from_disk, _price_ring, _price_ring_lock
+    from strategy.momentum import warm_ring_buffer_from_disk
+    from strategy import redis_store as rs
 
     monkeypatch.setattr("strategy.momentum.PRICE_SAMPLES_DIR", tmp_path)
     monkeypatch.setattr("strategy.momentum._ring_warmed", False)
@@ -437,14 +444,15 @@ def test_ring_buffer_cold_start_from_disk(tmp_path, monkeypatch):
             row = {"market_id": "cold_start", "ts": now - (10 - i) * 30, "yes": 0.50 + i * 0.02}
             f.write(json.dumps(row) + "\n")
 
-    # clear ring buffer
-    with _price_ring_lock:
-        if "cold_start" in _price_ring:
-            del _price_ring["cold_start"]
+    # clear Redis for this test market
+    if rs.is_connected():
+        rs._client.delete("prices:cold_start")
 
     loaded = warm_ring_buffer_from_disk()
     assert loaded >= 10, f"Expected ≥10 samples loaded, got {loaded}"
 
-    with _price_ring_lock:
-        ring = _price_ring.get("cold_start")
-        assert ring is not None and len(ring) >= 10
+    pts = load_samples_for_market("cold_start", 7200.0)
+    assert len(pts) >= 10, f"Expected ≥10 points in Redis, got {len(pts)}"
+
+    if rs.is_connected():
+        rs._client.delete("prices:cold_start")
