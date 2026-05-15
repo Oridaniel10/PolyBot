@@ -1,4 +1,225 @@
-# Polymarket weather bot
+# Polymarket Weather Bot
+
+---
+
+## For Friends — Quick Start Guide
+
+This is a trading bot that automatically bets on weather outcomes on [Polymarket](https://polymarket.com). Every day, Polymarket lists markets like "Will the highest temperature in Paris be above 22°C on May 14?" — the bot finds those markets, decides whether to bet YES, and manages the trade automatically until it closes.
+
+No need to watch charts all day. The bot runs on your computer (or a server) and sends you updates on Telegram.
+
+---
+
+### How the strategy works (plain English)
+
+Each city/date has multiple "temperature buckets" listed as separate YES/NO markets — for example:
+- Paris below 18°C (YES price: 0.05)
+- Paris 18–20°C (YES price: 0.12)
+- Paris 20–22°C (YES price: **0.78**)  ← bot might buy this one
+- Paris above 22°C (YES price: 0.04)
+
+The bot looks for the bucket with the **highest YES price** (the crowd's favorite). It only buys if:
+
+1. **Price is in range** — between ~0.10 and 0.84. Not too cheap (uncertain) and not too expensive (no upside left).
+2. **Momentum** — the price is rising AND a competing bucket's price is falling. This means the crowd is shifting toward this outcome.
+3. **Time window** — not too early in the day (European cities from 16:00 local time; Asian/American cities from 14:00). Early-morning prices are noisy.
+4. **No recent loss** — if the bot just stopped out of this market in the last 30 minutes, it won't re-enter.
+5. **City not blacklisted** — if a city has been losing consistently, you can block it permanently in the config.
+
+**Exit rules:**
+- **Take profit** at 0.94 (close to 1.0 = "YES resolved")
+- **Stop loss** — if the price drops too far from entry, cut the loss
+- **Trailing stop** — once a trade is up +0.20, the stop moves up to lock in at least +0.10 gain
+- **Time decay** — if the event date is close and the trade hasn't moved, exit to free up capital
+
+---
+
+### Prerequisites
+
+You need:
+- **Python 3.11 or 3.12** — [python.org](https://www.python.org/downloads/)
+- **Redis** — an in-memory cache the bot uses to store price history
+- A **Polymarket account** with a funded wallet
+- A **Telegram bot** for notifications (optional but strongly recommended)
+
+---
+
+### Step 1 — Install Redis
+
+Redis stores 2 hours of price history used for momentum detection.
+
+**macOS (with Homebrew):**
+```bash
+brew install redis
+brew services start redis
+```
+
+**Ubuntu / Debian:**
+```bash
+sudo apt update && sudo apt install redis-server -y
+sudo systemctl enable redis-server
+sudo systemctl start redis-server
+```
+
+**Windows:**
+Use [Redis for Windows](https://github.com/microsoftarchive/redis/releases) or run via WSL2 with the Ubuntu instructions above.
+
+**Verify Redis is running:**
+```bash
+redis-cli ping
+# should print: PONG
+```
+
+---
+
+### Step 2 — Clone and install Python dependencies
+
+```bash
+git clone <this-repo-url>
+cd poly
+python -m venv venv
+source venv/bin/activate        # Windows: venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+---
+
+### Step 3 — Create your `.env` file
+
+Copy the template and fill in your keys:
+
+```bash
+cp .env.example .env   # or just create .env manually
+```
+
+Open `.env` and set the following:
+
+```dotenv
+# ── Polymarket wallet ────────────────────────────────────────────────────────
+# Your wallet's private key (starts with 0x...)
+POLY_PRIVATE_KEY=0xYOUR_PRIVATE_KEY_HERE
+
+# The proxy address shown in Polymarket's "API Keys" page
+POLY_PROXY_ADDRESS=0xYOUR_PROXY_ADDRESS_HERE
+
+# ── Polymarket API credentials ───────────────────────────────────────────────
+# Generate these at https://polymarket.com → Profile → API Keys
+API_KEY=your-api-key
+API_SECRET=your-api-secret
+API_PASSPHRASE=your-api-passphrase
+
+# ── Telegram bot (optional but recommended) ──────────────────────────────────
+# 1. Message @BotFather on Telegram → /newbot → copy the token
+TELEGRAM_BOT_TOKEN=123456:ABCdef...
+
+# 2. Get your chat ID: message @userinfobot on Telegram
+TELEGRAM_CHAT_ID=123456789
+
+# ── Optional: OpenWeather forecast (extra accuracy) ──────────────────────────
+# Free key from https://openweathermap.org/api
+OPENWEATHER_API_KEY=
+
+# ── Optional: AI-powered market research (not required for trading) ──────────
+OPENROUTER_API_KEY=
+```
+
+**Where to find your Polymarket keys:**
+1. Go to [polymarket.com](https://polymarket.com) and log in
+2. Click your profile → "API Keys"
+3. Click "Create API Key" — save the key, secret, and passphrase (shown once!)
+4. The "proxy address" is the contract address shown on that same page
+
+---
+
+### Step 4 — Configure the bot
+
+The main config file is `data/runtime_config.json`. Open it and adjust:
+
+```jsonc
+{
+  "buy_min_threshold": 0.10,    // don't buy below this price (too uncertain)
+  "buy_max_threshold": 0.84,    // don't buy above this price (too expensive)
+  "take_profit_threshold": 0.94,// sell when price reaches this
+  "stop_loss_momentum": 0.30,   // stop-loss level for momentum entries
+  "buy_earliest_local_hour": 15,// global fallback: don't buy before this local hour
+  "cash_reserve_usd": 3,        // keep this much cash untouched
+  "permanent_blacklist_cities": ["Madrid"]  // cities to never trade
+}
+```
+
+**Per-city buy hours** are in `data/city_buy_earliest_hour.json`. European cities default to 16, Asian/American cities to 14. If a city isn't listed, the global `buy_earliest_local_hour` applies.
+
+---
+
+### Step 5 — Run the bot
+
+```bash
+source venv/bin/activate
+python main.py
+```
+
+You'll see output in the terminal every ~20 seconds as the bot scans markets. If you set up Telegram, you'll get a message whenever the bot buys or sells.
+
+**To run with the web dashboard as well:**
+```bash
+python main_bot.py
+# open http://localhost:8080/dashboard/
+```
+
+---
+
+### Telegram commands
+
+Once the bot is running, message your bot on Telegram:
+
+| Command | What it does |
+|---------|-------------|
+| `/status` | Show all open positions with current P&L + charts |
+| `/forecast` | Show today's temperature forecasts vs current YES prices |
+| `/report` | Full portfolio summary |
+| `/ask <question>` | Ask AI about any market |
+| `/help` | List all commands |
+
+---
+
+### Key files at a glance
+
+| File | Purpose |
+|------|---------|
+| `.env` | Your private keys — never share this |
+| `data/runtime_config.json` | All trading parameters (edit live, reloads each tick) |
+| `data/city_buy_earliest_hour.json` | Per-city earliest buy hour |
+| `state.json` | Current open positions and bot memory |
+| `data/trade_log_YYYY-MM-DD.csv` | Daily trade history |
+| `data/price_samples/` | Rolling 2h price history for momentum detection |
+
+---
+
+### Common issues
+
+**Bot doesn't buy anything:**
+- Check that `buy_earliest_local_hour` isn't too high for your timezone
+- Check `data/runtime_config.json` for `permanent_blacklist_cities`
+- The bot only buys when the YES price is between `buy_min_threshold` (0.10) and `buy_max_threshold` (0.84)
+
+**Redis connection error:**
+```bash
+redis-cli ping  # should return PONG; if not, start Redis first
+```
+
+**Import errors / missing packages:**
+```bash
+source venv/bin/activate  # make sure venv is active
+pip install -r requirements.txt
+```
+
+**"No markets found":** The bot only scans highest-temperature markets. If Polymarket hasn't listed tomorrow's markets yet, it'll find nothing — this is normal before ~10:00 UTC.
+
+---
+
+*For technical documentation, architecture details, and strategy configuration, continue reading below.*
+
+---
 
 Automated Polymarket helper focused on **highest-temperature** style markets: scans Gamma, syncs open positions from the Data API, applies **price-band + momentum** entries, **per-type stop-loss**, take-profit, **time-decay**, and **competition (event sibling)** filters; sends Telegram updates. **No database** — state lives in JSON / JSONL under `data/` and `state.json`.
 

@@ -32,7 +32,11 @@ from config import constants as C
 from config.settings import RuntimeSettings
 from forecast.parse_title import ParsedTempMarket
 from polymarket_client import PolymarketClient, gamma_event_ids_for_market
-from research.calibration_apply import resolved_research_sigma_c
+from strategy.probability_engine import (
+    bucket_edge,
+    compute_model_prob,
+    get_sigma_for_city,
+)
 from strategy.competition_filter import (
     CompetitionResult,
     evaluate_competition,
@@ -49,17 +53,13 @@ from strategy.momentum_engine import (
     yes_rank_by_market_prob,
 )
 from strategy.leader_yield_momentum import (
+    is_persistent_leader,
     leader_yield_drop_qualifies,
     market_title_by_id,
     parse_trigger_window_seconds,
 )
 from strategy.momentum import load_samples_for_market
 from strategy.probability import parse_market_probability
-from strategy.probability_engine import bucket_edge, compute_model_prob
-from strategy.research_signal import (
-    ResearchEdgeDecision,
-    research_edge_decision,
-)
 from strategy.time_filter import should_time_decay_exit
 
 DECISION_LOG_MAX = 200
@@ -292,7 +292,7 @@ class TradeDecision:
     reason: str
     momentum_15m: float = 0.0
     competition: Optional[CompetitionResult] = None
-    research: Optional[ResearchEdgeDecision] = None
+    research: Optional[Any] = None
     # true when this BUY used momentum path (wide price band; bypass model/edge/competition)
     momentum_relaxed_gates: bool = False
     event_yes_rank: int = 0
@@ -318,7 +318,7 @@ class TradeDecision:
 
 
 def momentum_entry_candidate_windows(settings: RuntimeSettings) -> List[float]:
-    """Only short windows (≤15m by default) qualify for bot momentum entry."""
+    """Windows scanned for momentum entry, up to momentum_entry_max_window_seconds."""
     max_sec = float(
         getattr(
             settings,
@@ -326,9 +326,13 @@ def momentum_entry_candidate_windows(settings: RuntimeSettings) -> List[float]:
             C.MOMENTUM_ENTRY_MAX_WINDOW_SEC,
         )
     )
-    grid = [60.0 * float(i) for i in range(1, 16)]
+    # 1-15 min: every minute (fine-grained short-term)
+    # 16-60 min: every 5 minutes (coarser long-term)
+    short = [60.0 * float(i) for i in range(1, 16)]
+    long_ = [60.0 * float(i) for i in range(20, 65, 5)]
+    grid = short + long_
     out = [w for w in grid if w <= max_sec + 1e-9]
-    return out if out else [float(min(900.0, max_sec))]
+    return out if out else [float(min(3600.0, max_sec))]
 
 
 def collect_event_id_and_market_ids(
@@ -337,6 +341,20 @@ def collect_event_id_and_market_ids(
     client: Any,
 ) -> Tuple[Optional[str], Set[str]]:
     eids = gamma_event_ids_for_market(market)
+
+    # Slug-based fallback: when Gamma omits eventId from the market dict,
+    # derive the event slug by stripping the bucket suffix from the market slug.
+    if not eids:
+        slug = str(market.get("slug") or "").strip()
+        if slug and hasattr(client, "get_event_id_from_market_slug"):
+            eid_from_slug = client.get_event_id_from_market_slug(slug)
+            if eid_from_slug:
+                eids = [eid_from_slug]
+                print(
+                    f"[decision_core] slug_fallback market={market.get('id')} "
+                    f"slug={slug} → event_id={eid_from_slug}"
+                )
+
     if not eids:
         return None, set()
     eid = str(eids[0]).strip()
@@ -415,7 +433,9 @@ def _log_decision(d: TradeDecision) -> None:
 MOM_DIAG_SIBLING_WINDOW_SEC = 900.0
 
 
-def effective_settings_dump_for_momentum_eval(settings: RuntimeSettings) -> Dict[str, Any]:
+def effective_settings_dump_for_momentum_eval(
+    settings: RuntimeSettings,
+) -> Dict[str, Any]:
     """compact dict of effective runtime values feeding momentum_leader_same_window_check."""
     ew = momentum_entry_candidate_windows(settings)
     return {
@@ -437,7 +457,11 @@ def effective_settings_dump_for_momentum_eval(settings: RuntimeSettings) -> Dict
         "momentum_entry_rise": round(float(momentum_entry_rise_thr(settings)), 4),
         "momentum_pct_rise": round(float(momentum_entry_pct_rise_thr(settings)), 4),
         "momentum_min_start_price": round(
-            float(getattr(settings, "momentum_min_start_price", C.MOMENTUM_MIN_START_PRICE)),
+            float(
+                getattr(
+                    settings, "momentum_min_start_price", C.MOMENTUM_MIN_START_PRICE
+                )
+            ),
             6,
         ),
         "momentum_min_price": round(
@@ -448,7 +472,9 @@ def effective_settings_dump_for_momentum_eval(settings: RuntimeSettings) -> Dict
         ),
         "double_momentum_entry_rise": round(
             float(
-                getattr(settings, "double_momentum_entry_rise", C.DOUBLE_MOMENTUM_ENTRY_RISE)
+                getattr(
+                    settings, "double_momentum_entry_rise", C.DOUBLE_MOMENTUM_ENTRY_RISE
+                )
             ),
             4,
         ),
@@ -466,11 +492,19 @@ def effective_settings_dump_for_momentum_eval(settings: RuntimeSettings) -> Dict
             6,
         ),
         "double_momentum_min_price": round(
-            float(getattr(settings, "double_momentum_min_price", C.DOUBLE_MOMENTUM_MIN_PRICE)),
+            float(
+                getattr(
+                    settings, "double_momentum_min_price", C.DOUBLE_MOMENTUM_MIN_PRICE
+                )
+            ),
             4,
         ),
         "double_momentum_max_price": round(
-            float(getattr(settings, "double_momentum_max_price", C.DOUBLE_MOMENTUM_MAX_PRICE)),
+            float(
+                getattr(
+                    settings, "double_momentum_max_price", C.DOUBLE_MOMENTUM_MAX_PRICE
+                )
+            ),
             4,
         ),
         "leader_yield_min_leader_old_price": round(
@@ -485,25 +519,44 @@ def effective_settings_dump_for_momentum_eval(settings: RuntimeSettings) -> Dict
         ),
         "leader_yield_fall_min_abs_pts": round(
             float(
-                getattr(settings, "leader_yield_fall_min_abs_pts", C.LEADER_YIELD_FALL_MIN_ABS_PTS)
+                getattr(
+                    settings,
+                    "leader_yield_fall_min_abs_pts",
+                    C.LEADER_YIELD_FALL_MIN_ABS_PTS,
+                )
             ),
             4,
         ),
         "leader_yield_fall_min_frac": round(
-            float(getattr(settings, "leader_yield_fall_min_frac", C.LEADER_YIELD_FALL_MIN_FRAC)),
+            float(
+                getattr(
+                    settings, "leader_yield_fall_min_frac", C.LEADER_YIELD_FALL_MIN_FRAC
+                )
+            ),
             4,
         ),
         "collective_fall_min_abs_pts": round(
-            float(getattr(settings, "collective_fall_min_abs_pts", C.COLLECTIVE_FALL_MIN_ABS_PTS)),
+            float(
+                getattr(
+                    settings,
+                    "collective_fall_min_abs_pts",
+                    C.COLLECTIVE_FALL_MIN_ABS_PTS,
+                )
+            ),
             4,
         ),
         "collective_fall_min_frac": round(
-            float(getattr(settings, "collective_fall_min_frac", C.COLLECTIVE_FALL_MIN_FRAC)),
+            float(
+                getattr(
+                    settings, "collective_fall_min_frac", C.COLLECTIVE_FALL_MIN_FRAC
+                )
+            ),
             4,
         ),
         "min_samples": int(C.MOMENTUM_MIN_SAMPLE_POINTS),
-        "research_edge_gate_buy": bool(getattr(settings, "research_edge_gate_buy", False)),
-        "enable_competition_filter": bool(getattr(settings, "enable_competition_filter", True)),
+        "enable_competition_filter": bool(
+            getattr(settings, "enable_competition_filter", True)
+        ),
         "min_market_yes_lead_gap_normal": round(
             float(
                 getattr(
@@ -517,7 +570,6 @@ def effective_settings_dump_for_momentum_eval(settings: RuntimeSettings) -> Dict
         "max_market_prob_for_buy": round(
             float(getattr(settings, "max_market_prob_for_buy", 0.75)), 4
         ),
-        "forecast_gate_buy": bool(getattr(settings, "forecast_gate_buy", False)),
     }
 
 
@@ -583,11 +635,19 @@ def emit_mom_diag(
         "title": str(title)[:120],
         "gamma_probability": round(float(gamma_probability), 4),
         "double_momentum_min_price": round(
-            float(getattr(settings, "double_momentum_min_price", C.DOUBLE_MOMENTUM_MIN_PRICE)),
+            float(
+                getattr(
+                    settings, "double_momentum_min_price", C.DOUBLE_MOMENTUM_MIN_PRICE
+                )
+            ),
             4,
         ),
         "double_momentum_max_price": round(
-            float(getattr(settings, "double_momentum_max_price", C.DOUBLE_MOMENTUM_MAX_PRICE)),
+            float(
+                getattr(
+                    settings, "double_momentum_max_price", C.DOUBLE_MOMENTUM_MAX_PRICE
+                )
+            ),
             4,
         ),
         "momentum_min_price": round(
@@ -599,23 +659,49 @@ def emit_mom_diag(
         "buy_min": round(float(getattr(settings, "buy_min", 0.80)), 4),
         "buy_max": round(float(getattr(settings, "buy_max", 0.84)), 4),
         "leader_yield_fall_min_abs_pts": round(
-            float(getattr(settings, "leader_yield_fall_min_abs_pts", C.LEADER_YIELD_FALL_MIN_ABS_PTS)),
+            float(
+                getattr(
+                    settings,
+                    "leader_yield_fall_min_abs_pts",
+                    C.LEADER_YIELD_FALL_MIN_ABS_PTS,
+                )
+            ),
             4,
         ),
         "leader_yield_fall_min_frac": round(
-            float(getattr(settings, "leader_yield_fall_min_frac", C.LEADER_YIELD_FALL_MIN_FRAC)),
+            float(
+                getattr(
+                    settings, "leader_yield_fall_min_frac", C.LEADER_YIELD_FALL_MIN_FRAC
+                )
+            ),
             4,
         ),
         "leader_yield_min_leader_old_price": round(
-            float(getattr(settings, "leader_yield_min_leader_old_price", C.LEADER_YIELD_MIN_LEADER_OLD_PRICE)),
+            float(
+                getattr(
+                    settings,
+                    "leader_yield_min_leader_old_price",
+                    C.LEADER_YIELD_MIN_LEADER_OLD_PRICE,
+                )
+            ),
             4,
         ),
         "collective_fall_min_abs_pts": round(
-            float(getattr(settings, "collective_fall_min_abs_pts", C.COLLECTIVE_FALL_MIN_ABS_PTS)),
+            float(
+                getattr(
+                    settings,
+                    "collective_fall_min_abs_pts",
+                    C.COLLECTIVE_FALL_MIN_ABS_PTS,
+                )
+            ),
             4,
         ),
         "collective_fall_min_frac": round(
-            float(getattr(settings, "collective_fall_min_frac", C.COLLECTIVE_FALL_MIN_FRAC)),
+            float(
+                getattr(
+                    settings, "collective_fall_min_frac", C.COLLECTIVE_FALL_MIN_FRAC
+                )
+            ),
             4,
         ),
         "min_samples": int(C.MOMENTUM_MIN_SAMPLE_POINTS),
@@ -639,7 +725,9 @@ def emit_mom_diag(
             "collective_total_drop_pts": round(
                 float(leader_meta_dbl.get("collective_total_drop_pts") or 0.0), 4
             ),
-            "collective_drop_frac": round(float(leader_meta_dbl.get("collective_drop_frac") or 0.0), 4),
+            "collective_drop_frac": round(
+                float(leader_meta_dbl.get("collective_drop_frac") or 0.0), 4
+            ),
             "pass_condition": str(leader_meta_dbl.get("pass_condition") or ""),
         },
         "mom": {
@@ -662,7 +750,9 @@ def emit_mom_diag(
             "collective_total_drop_pts": round(
                 float(leader_meta_mom.get("collective_total_drop_pts") or 0.0), 4
             ),
-            "collective_drop_frac": round(float(leader_meta_mom.get("collective_drop_frac") or 0.0), 4),
+            "collective_drop_frac": round(
+                float(leader_meta_mom.get("collective_drop_frac") or 0.0), 4
+            ),
             "pass_condition": str(leader_meta_mom.get("pass_condition") or ""),
         },
         "is_double_momentum": bool(is_double_momentum),
@@ -846,7 +936,7 @@ def peer_market_ids_excluding_self(
 
 def evaluate_entry(
     parsed: ParsedTempMarket,
-    consensus_c: float,
+    consensus_c: Optional[float],
     market_yes: float,
     market: Dict[str, Any],
     client: PolymarketClient,
@@ -859,7 +949,7 @@ def evaluate_entry(
 
     params:
     - parsed: parsed temperature market title.
-    - consensus_c: bias-adjusted forecast °C.
+    - consensus_c: bias-adjusted forecast °C, or None for price-only mode.
     - market_yes: CLOB YES price (0-1).
     - market: full gamma market dict.
     - client: polymarket client for event lookups.
@@ -877,10 +967,28 @@ def evaluate_entry(
     bucket = (parsed.raw_title or "")[:160]
     market_id = str(market.get("id") or "").strip()
 
-    sigma = resolved_research_sigma_c(float(settings.research_sigma_c), city)
-    model_p = compute_model_prob(parsed, consensus_c, settings.research_sigma_c)
+    # permanent city blacklist — checked before any expensive computation
+    _perm_cities = getattr(settings, "permanent_blacklist_cities", None) or []
+    if _perm_cities and city and any(c.lower() == city.lower() for c in _perm_cities):
+        def _quick_finish(decision: str, reason: str) -> TradeDecision:
+            return TradeDecision(
+                city=city, date_iso=date_iso, chosen_bucket=bucket,
+                model_prob=0.0, market_prob=float(market_yes), edge=0.0,
+                consensus_c=None, sigma_used=0.0,
+                decision=decision, reason=reason,
+                momentum_15m=0.0, competition=None, research=None,
+            )
+        return _quick_finish("SKIP", f"permanent_blacklist_city:{city}")
+
+    sigma = float(get_sigma_for_city(city, 0.0))
     mkt = float(market_yes)
-    edge = bucket_edge(model_p, mkt)
+    if consensus_c is None:
+        model_p = 0.0
+        edge = float(-mkt)
+    else:
+        cc = float(consensus_c)
+        model_p = compute_model_prob(parsed, cc, 0.0)
+        edge = bucket_edge(model_p, mkt)
 
     ev_id, ev_mids = collect_event_id_and_market_ids(market, event_cache, client)
     siblings: List[Dict[str, Any]] = []
@@ -952,37 +1060,41 @@ def evaluate_entry(
     )
 
     entry_windows = momentum_entry_candidate_windows(settings)
-    dbl_signal_raw, dbl_trigger, dbl_meta, leader_meta_dbl = momentum_leader_same_window_check(
-        market_id=market_id,
-        event_market_ids=list(all_event_ids),
-        windows_sec=entry_windows,
-        abs_rise_threshold=dbl_rise_thr,
-        pct_rise_threshold=dbl_rise_pct_thr,
-        min_start_price=dbl_start_min,
-        min_current_price=dbl_min,
-        max_current_price=dbl_max,
-        min_leader_old_price=min_leader_old,
-        min_fall_abs_pts=leader_fall_abs,
-        min_fall_frac_of_old=leader_fall_frac,
-        min_samples=C.MOMENTUM_MIN_SAMPLE_POINTS,
-        collective_fall_min_abs_pts=coll_abs,
-        collective_fall_min_frac=coll_frac,
+    dbl_signal_raw, dbl_trigger, dbl_meta, leader_meta_dbl = (
+        momentum_leader_same_window_check(
+            market_id=market_id,
+            event_market_ids=list(all_event_ids),
+            windows_sec=entry_windows,
+            abs_rise_threshold=dbl_rise_thr,
+            pct_rise_threshold=dbl_rise_pct_thr,
+            min_start_price=dbl_start_min,
+            min_current_price=dbl_min,
+            max_current_price=dbl_max,
+            min_leader_old_price=min_leader_old,
+            min_fall_abs_pts=leader_fall_abs,
+            min_fall_frac_of_old=leader_fall_frac,
+            min_samples=C.MOMENTUM_MIN_SAMPLE_POINTS,
+            collective_fall_min_abs_pts=coll_abs,
+            collective_fall_min_frac=coll_frac,
+        )
     )
-    mom_signal_raw, mom_trigger, mom_meta, leader_meta_mom = momentum_leader_same_window_check(
-        market_id=market_id,
-        event_market_ids=list(all_event_ids),
-        windows_sec=entry_windows,
-        abs_rise_threshold=rise_thr,
-        pct_rise_threshold=rise_pct_thr,
-        min_start_price=mom_start_min,
-        min_current_price=mom_min,
-        max_current_price=mom_max,
-        min_leader_old_price=min_leader_old,
-        min_fall_abs_pts=leader_fall_abs,
-        min_fall_frac_of_old=leader_fall_frac,
-        min_samples=C.MOMENTUM_MIN_SAMPLE_POINTS,
-        collective_fall_min_abs_pts=coll_abs,
-        collective_fall_min_frac=coll_frac,
+    mom_signal_raw, mom_trigger, mom_meta, leader_meta_mom = (
+        momentum_leader_same_window_check(
+            market_id=market_id,
+            event_market_ids=list(all_event_ids),
+            windows_sec=entry_windows,
+            abs_rise_threshold=rise_thr,
+            pct_rise_threshold=rise_pct_thr,
+            min_start_price=mom_start_min,
+            min_current_price=mom_min,
+            max_current_price=mom_max,
+            min_leader_old_price=min_leader_old,
+            min_fall_abs_pts=leader_fall_abs,
+            min_fall_frac_of_old=leader_fall_frac,
+            min_samples=C.MOMENTUM_MIN_SAMPLE_POINTS,
+            collective_fall_min_abs_pts=coll_abs,
+            collective_fall_min_frac=coll_frac,
+        )
     )
 
     dbl_rise_only, _, _ = momentum_multi_window_check(
@@ -1026,6 +1138,30 @@ def evaluate_entry(
     # standard momentum: abs + pct in tighter band + ex-leader must bleed same window.
     is_momentum_entry = bool(is_double_momentum or is_momentum_from_std)
 
+    # ── Section 6: persistent-leader path ────────────────────────────────────
+    # If market held #1 rank among siblings for ≥ fraction of the last 2h AND now
+    # shows a momentum rise (but no sibling fall), allow buy without leader-yield gate.
+    _pl_enabled = bool(getattr(settings, "persistent_leader_enabled", True))
+    if _pl_enabled and not is_momentum_entry and (dbl_rise_only or mom_rise_only):
+        _pl_lookback = float(
+            getattr(settings, "persistent_leader_lookback_sec", 7200.0)
+        )
+        _pl_min_frac = float(
+            getattr(settings, "persistent_leader_min_fraction", 0.80)
+        )
+        if is_persistent_leader(
+            market_id, list(all_event_ids), _pl_lookback, _pl_min_frac
+        ):
+            is_momentum_entry = True
+            if dbl_rise_only:
+                is_double_momentum = True
+                active_leader_meta = {"reason": "persistent_leader_2h"}
+                leader_yield_win_sec = _pl_lookback
+            else:
+                is_momentum_from_std = True
+                active_leader_meta = {"reason": "persistent_leader_2h"}
+                leader_yield_win_sec = _pl_lookback
+
     # surgical diagnostic — single line, grep-friendly. logs every entry eval so
     # we can see *which* gate failed when an obvious surge gets skipped.
     emit_mom_diag(
@@ -1067,7 +1203,6 @@ def evaluate_entry(
         decision: str,
         reason: str,
         competition: Optional[CompetitionResult] = None,
-        research: Optional[ResearchEdgeDecision] = None,
         *,
         momentum_relaxed: bool = False,
     ) -> TradeDecision:
@@ -1110,13 +1245,13 @@ def evaluate_entry(
             model_prob=float(model_p),
             market_prob=mkt,
             edge=float(edge),
-            consensus_c=float(consensus_c),
+            consensus_c=None if consensus_c is None else float(consensus_c),
             sigma_used=float(sigma),
             decision=decision,
             reason=reason,
             momentum_15m=float(momentum_15m),
             competition=competition,
-            research=research,
+            research=None,
             momentum_relaxed_gates=relaxed,
             event_yes_rank=int(rank),
             entry_type=etype,
@@ -1226,7 +1361,7 @@ def evaluate_entry(
         return finish("SKIP", skip_lk)
 
     # 4–6 model path gates (skipped when momentum path qualifies)
-    if not is_momentum_entry:
+    if not is_momentum_entry and consensus_c is not None:
         max_mkt = float(getattr(settings, "max_market_prob_for_buy", 0.75))
         if mkt > max_mkt + 1e-9:
             return finish("SKIP", f"market_prob {mkt:.4f} > max {max_mkt:.4f}")
@@ -1248,7 +1383,7 @@ def evaluate_entry(
         float(settings.min_lead_over_runner_up),
         event_cache,
         consensus_c=consensus_c,
-        sigma_c_setting=float(settings.research_sigma_c),
+        sigma_c_setting=0.0,
     )
     if settings.enable_competition_filter and not is_momentum_entry:
         min_mkt_gap = float(
@@ -1274,31 +1409,7 @@ def evaluate_entry(
             competition=comp,
         )
 
-    # 10. research edge gate (fee-aware) — skipped for momentum entries
-    rd = research_edge_decision(
-        parsed,
-        float(consensus_c),
-        mkt,
-        sigma_c=float(sigma),
-        min_edge=float(settings.research_min_edge),
-        min_edge_after_fees_add=float(settings.research_min_edge_after_fees_add),
-        fee_rate_for_drag=float(settings.research_weather_taker_fee_rate),
-        gate_enabled=bool(settings.research_edge_gate_buy),
-        soft_match_enabled=bool(settings.research_crowd_soft_match),
-        soft_band=float(settings.research_crowd_soft_band),
-        soft_edge_factor=float(settings.research_crowd_soft_edge_factor),
-        disagree_extra_edge=float(settings.research_crowd_disagree_extra_edge),
-        disagree_gap=float(settings.research_crowd_disagree_gap),
-        implied_soft_floor=float(settings.research_edge_implied_soft_floor),
-        implied_soft_boost_mult=float(settings.research_edge_implied_soft_boost),
-    )
-    if not rd.passes_gate and not is_momentum_entry:
-        return finish(
-            "SKIP",
-            rd.skip_reason or "research_edge_fail",
-            competition=comp,
-            research=rd,
-        )
+    # 10. research edge gate removed — price-first entries
 
     reason = (
         "momentum_entry_ride_the_wave" if is_momentum_entry else "passed_all_filters"
@@ -1307,7 +1418,6 @@ def evaluate_entry(
         "BUY",
         reason,
         competition=comp,
-        research=rd,
         momentum_relaxed=is_momentum_entry,
     )
 

@@ -46,7 +46,6 @@ def format_research_context_html(
     return " · ".join(parts) + "\n"
 
 
-_LAST_RESEARCH_SKIP_TG: Dict[str, float] = {}
 _LAST_DECISION_SKIP_TG: Dict[str, float] = {}
 
 
@@ -95,31 +94,6 @@ def decision_skip_telegram_allowed(
         for k in list(_LAST_DECISION_SKIP_TG.keys()):
             if _LAST_DECISION_SKIP_TG[k] < cutoff:
                 del _LAST_DECISION_SKIP_TG[k]
-    return True
-
-
-def research_skip_telegram_allowed(
-    market_id: str,
-    reason: str,
-    cooldown_sec: float,
-) -> bool:
-    """
-    returns true if we should send (and records send time).
-    dedupes same market_id+reason within cooldown_sec (in-process only).
-    """
-    if cooldown_sec <= 0:
-        return True
-    key = f"{market_id}|{reason[:120]}"
-    now = time.monotonic()
-    prev = _LAST_RESEARCH_SKIP_TG.get(key)
-    if prev is not None and (now - prev) < cooldown_sec:
-        return False
-    _LAST_RESEARCH_SKIP_TG[key] = now
-    if len(_LAST_RESEARCH_SKIP_TG) > 500:
-        cutoff = now - cooldown_sec * 2
-        for k in list(_LAST_RESEARCH_SKIP_TG.keys()):
-            if _LAST_RESEARCH_SKIP_TG[k] < cutoff:
-                del _LAST_RESEARCH_SKIP_TG[k]
     return True
 
 

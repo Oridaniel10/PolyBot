@@ -212,3 +212,81 @@ def market_title_by_id(siblings: List[Dict[str, Any]], mid: str) -> str:
             m.get("question") or m.get("title") or m.get("slug") or ms
         ).strip()[:200]
     return ms
+
+
+def is_persistent_leader(
+    market_id: str,
+    event_market_ids: List[str],
+    lookback_sec: float = 7200.0,
+    min_first_place_fraction: float = 0.80,
+    now_ts: Optional[float] = None,
+) -> bool:
+    """Return True if market_id held the highest YES price among siblings for
+    at least min_first_place_fraction of the price samples in the lookback window.
+
+    Used as an alternative buy trigger (Section 6): a persistent leader that now
+    shows a momentum jump can be bought without requiring sibling fall (leader-yield).
+    """
+    from strategy.momentum import load_samples_for_market
+
+    mid = str(market_id or "").strip()
+    if not mid:
+        return False
+    now = now_ts if now_ts is not None else time.time()
+    window = max(120.0, float(lookback_sec))
+
+    # load this market's samples
+    own_samples = load_samples_for_market(mid, window, now)
+    if len(own_samples) < 3:
+        return False
+
+    # collect all sibling IDs (excluding the candidate itself)
+    sibling_ids = [
+        str(s).strip() for s in event_market_ids
+        if str(s).strip() and str(s).strip() != mid
+    ]
+    if not sibling_ids:
+        # single-bucket event — trivially always #1, but not a meaningful signal
+        return False
+
+    # for each own sample timestamp, find highest sibling price via interpolation
+    # load sibling samples once
+    sibling_samples: Dict[str, List[Tuple[float, float]]] = {}
+    for sid in sibling_ids:
+        pts = load_samples_for_market(sid, window, now)
+        if pts:
+            sibling_samples[sid] = pts
+
+    if not sibling_samples:
+        return False
+
+    def _interp_price(samples: List[Tuple[float, float]], ts: float) -> float:
+        """Linear interpolation of price at ts from sorted (ts, price) list."""
+        if not samples:
+            return 0.0
+        if ts <= samples[0][0]:
+            return float(samples[0][1])
+        if ts >= samples[-1][0]:
+            return float(samples[-1][1])
+        for i in range(len(samples) - 1):
+            t0, p0 = samples[i]
+            t1, p1 = samples[i + 1]
+            if t0 <= ts <= t1:
+                frac = (ts - t0) / max(1e-6, t1 - t0)
+                return float(p0 + frac * (p1 - p0))
+        return float(samples[-1][1])
+
+    first_place_count = 0
+    total_count = 0
+    for ts, own_price in own_samples:
+        max_sibling_price = max(
+            _interp_price(pts, ts) for pts in sibling_samples.values()
+        )
+        total_count += 1
+        if own_price >= max_sibling_price - 1e-6:
+            first_place_count += 1
+
+    if total_count < 3:
+        return False
+    fraction = first_place_count / total_count
+    return fraction >= float(min_first_place_fraction)

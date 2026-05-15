@@ -60,43 +60,15 @@ def default_runtime_dict() -> Dict[str, Any]:
         "max_trade_fraction_of_cash": C.MAX_TRADE_FRACTION_OF_CASH,
         "dashboard_weather_max_pages": 6,
         "cash_reserve_usd": C.CASH_RESERVE_USD,
-        "forecast_digest_enabled": C.FORECAST_DIGEST_ENABLED,
-        "forecast_digest_refresh_interval_sec": C.FORECAST_DIGEST_REFRESH_INTERVAL_SEC,
-        "forecast_digest_telegram_interval_sec": C.FORECAST_DIGEST_TELEGRAM_INTERVAL_SEC,
-        "forecast_digest_interval_sec": C.FORECAST_DIGEST_INTERVAL_SEC,
-        "forecast_digest_scope": C.FORECAST_DIGEST_SCOPE,
-        "forecast_digest_max_location_groups": C.FORECAST_DIGEST_MAX_LOCATION_GROUPS,
-        "enable_openweather_forecast": C.ENABLE_OPENWEATHER_FORECAST,
         "enable_flow_sampling": C.ENABLE_FLOW_SAMPLING,
         "flow_max_events_per_tick": C.FLOW_MAX_EVENTS_PER_TICK,
         "enable_flow_peer_exit": C.ENABLE_FLOW_PEER_EXIT,
         "flow_peer_window_sec": C.FLOW_PEER_WINDOW_SEC,
         "flow_peer_surge_drop": C.FLOW_PEER_SURGE_DROP,
         "flow_peer_surge_rise": C.FLOW_PEER_SURGE_RISE,
-        "forecast_gate_buy": C.FORECAST_GATE_BUY,
-        "forecast_contradict_margin_c": C.FORECAST_CONTRADICT_MARGIN_C,
-        "forecast_exact_bucket_support_slack_c": C.FORECAST_EXACT_BUCKET_SUPPORT_SLACK_C,
-        "forecast_reduce_usd_if_weak": C.FORECAST_REDUCE_USD_IF_WEAK,
-        "forecast_weak_size_factor": C.FORECAST_WEAK_SIZE_FACTOR,
-        "research_exit_on_model_flip": C.RESEARCH_EXIT_ON_MODEL_FLIP,
-        "research_edge_gate_buy": C.RESEARCH_EDGE_GATE_BUY,
-        "research_min_edge": C.RESEARCH_MIN_EDGE,
-        "research_min_edge_after_fees_add": C.RESEARCH_MIN_EDGE_AFTER_FEES_ADD,
-        "research_sigma_c": C.RESEARCH_SIGMA_C,
-        "research_weather_taker_fee_rate": C.RESEARCH_WEATHER_TAKER_FEE_RATE,
-        "research_edge_implied_soft_floor": C.RESEARCH_EDGE_IMPLIED_SOFT_FLOOR,
-        "research_edge_implied_soft_boost": C.RESEARCH_EDGE_IMPLIED_SOFT_BOOST,
         "buy_earliest_local_hour": C.BUY_EARLIEST_HOUR,
         "buy_latest_local_hour": C.BUY_LATEST_LOCAL_HOUR,
-        "research_edge_scale_size": C.RESEARCH_EDGE_SCALE_SIZE,
-        "research_edge_size_slope": C.RESEARCH_EDGE_SIZE_SLOPE,
-        "research_edge_size_cap_mult": C.RESEARCH_EDGE_SIZE_CAP_MULT,
-        "research_crowd_soft_match": C.RESEARCH_CROWD_SOFT_MATCH,
-        "research_crowd_soft_band": C.RESEARCH_CROWD_SOFT_BAND,
-        "research_crowd_soft_edge_factor": C.RESEARCH_CROWD_SOFT_EDGE_FACTOR,
-        "research_crowd_disagree_gap": C.RESEARCH_CROWD_DISAGREE_GAP,
-        "research_crowd_disagree_extra_edge": C.RESEARCH_CROWD_DISAGREE_EXTRA_EDGE,
-        "research_skip_telegram_cooldown_sec": C.RESEARCH_SKIP_TELEGRAM_COOLDOWN_SEC,
+        "decision_skip_telegram_cooldown_sec": C.DECISION_SKIP_TELEGRAM_COOLDOWN_SEC,
         "decision_skip_telegram_notify": C.DECISION_SKIP_TELEGRAM_NOTIFY,
         "max_market_prob_for_buy": C.MAX_MARKET_PROB_FOR_BUY,
         "min_model_prob_for_buy": C.MIN_MODEL_PROB_FOR_BUY,
@@ -159,6 +131,19 @@ def default_runtime_dict() -> Dict[str, Any]:
         "post_buy_plot_enabled": C.POST_BUY_PLOT_ENABLED,
         "post_buy_plot_window_min": C.POST_BUY_PLOT_WINDOW_MIN,
         "telegram_message_thread_id": C.TELEGRAM_MESSAGE_THREAD_ID,
+        "momentum_alert_enabled": C.MOMENTUM_ALERT_ENABLED,
+        "momentum_alert_min_abs": C.MOMENTUM_ALERT_MIN_ABS,
+        "momentum_alert_min_pct": C.MOMENTUM_ALERT_MIN_PCT,
+        "momentum_alert_window_sec": C.MOMENTUM_ALERT_WINDOW_SEC,
+        "momentum_alert_cooldown_sec": C.MOMENTUM_ALERT_COOLDOWN_SEC,
+        # permanent city-level blacklist (case-insensitive city name match)
+        "permanent_blacklist_cities": [],
+        # sell cooldown
+        "sell_cooldown_30m_sec": C.SELL_COOLDOWN_30M_SEC,
+        # persistent-leader entry path
+        "persistent_leader_enabled": C.PERSISTENT_LEADER_ENABLED,
+        "persistent_leader_lookback_sec": C.PERSISTENT_LEADER_LOOKBACK_SEC,
+        "persistent_leader_min_fraction": C.PERSISTENT_LEADER_MIN_FRACTION,
     }
 
 
@@ -177,6 +162,16 @@ def load_runtime_config_file() -> Dict[str, Any]:
                     if k in base or k == "blacklist_market_ids"
                 }
             )
+            if (
+                "decision_skip_telegram_cooldown_sec" not in raw
+                and raw.get("research_skip_telegram_cooldown_sec") is not None
+            ):
+                try:
+                    base["decision_skip_telegram_cooldown_sec"] = int(
+                        raw["research_skip_telegram_cooldown_sec"]
+                    )
+                except (TypeError, ValueError):
+                    pass
     except (OSError, json.JSONDecodeError):
         pass
     return base
@@ -237,42 +232,15 @@ class RuntimeSettings:
     max_trade_fraction_of_cash: float
     dashboard_weather_max_pages: int
     cash_reserve_usd: float
-    forecast_digest_enabled: bool
-    forecast_digest_refresh_interval_sec: int
-    forecast_digest_telegram_interval_sec: int
-    forecast_digest_scope: str
-    forecast_digest_max_location_groups: int
-    enable_openweather_forecast: bool
     enable_flow_sampling: bool
     flow_max_events_per_tick: int
     enable_flow_peer_exit: bool
     flow_peer_window_sec: int
     flow_peer_surge_drop: float
     flow_peer_surge_rise: float
-    forecast_gate_buy: bool
-    forecast_contradict_margin_c: float
-    forecast_exact_bucket_support_slack_c: float
-    forecast_reduce_usd_if_weak: bool
-    forecast_weak_size_factor: float
-    research_exit_on_model_flip: bool
-    research_edge_gate_buy: bool
-    research_min_edge: float
-    research_min_edge_after_fees_add: float
-    research_sigma_c: float
-    research_weather_taker_fee_rate: float
-    research_edge_implied_soft_floor: float
-    research_edge_implied_soft_boost: float
     buy_earliest_local_hour: int
     buy_latest_local_hour: int
-    research_edge_scale_size: bool
-    research_edge_size_slope: float
-    research_edge_size_cap_mult: float
-    research_crowd_soft_match: bool
-    research_crowd_soft_band: float
-    research_crowd_soft_edge_factor: float
-    research_crowd_disagree_gap: float
-    research_crowd_disagree_extra_edge: float
-    research_skip_telegram_cooldown_sec: int
+    decision_skip_telegram_cooldown_sec: int
     decision_skip_telegram_notify: bool
     max_market_prob_for_buy: float
     min_model_prob_for_buy: float
@@ -328,7 +296,17 @@ class RuntimeSettings:
     post_buy_plot_enabled: bool
     post_buy_plot_window_min: float
     telegram_message_thread_id: int
+    momentum_alert_enabled: bool
+    momentum_alert_min_abs: float
+    momentum_alert_min_pct: float
+    momentum_alert_window_sec: float
+    momentum_alert_cooldown_sec: float
     blacklist_market_ids: Set[str] = field(default_factory=set)
+    permanent_blacklist_cities: List[str] = field(default_factory=list)
+    sell_cooldown_30m_sec: float = C.SELL_COOLDOWN_30M_SEC
+    persistent_leader_enabled: bool = C.PERSISTENT_LEADER_ENABLED
+    persistent_leader_lookback_sec: float = C.PERSISTENT_LEADER_LOOKBACK_SEC
+    persistent_leader_min_fraction: float = C.PERSISTENT_LEADER_MIN_FRACTION
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "RuntimeSettings":
@@ -342,39 +320,14 @@ class RuntimeSettings:
             0.0, float(d.get("min_order_notional_usd", C.MIN_ORDER_NOTIONAL_USD))
         )
         max_buy = max(0.0, float(d.get("max_buy_notional_usd", C.MAX_BUY_NOTIONAL_USD)))
+        # hard ceiling: runtime/json cannot exceed MAX_BUY_NOTIONAL_USD in constants.py
+        max_buy = min(max_buy, float(C.MAX_BUY_NOTIONAL_USD))
         if max_buy > 0 and min_n > max_buy:
             min_n = min(min_n, max_buy)
         dwp = int(d.get("dashboard_weather_max_pages", 6))
         dwp = max(1, min(80, dwp))
         reserve = max(0.0, float(d.get("cash_reserve_usd", C.CASH_RESERVE_USD)))
         reserve = min(reserve, 1_000_000.0)
-        legacy_fd = d.get("forecast_digest_interval_sec")
-        refresh_raw = d.get("forecast_digest_refresh_interval_sec")
-        if refresh_raw is not None:
-            refresh_iv = int(refresh_raw)
-        elif legacy_fd is not None:
-            refresh_iv = int(legacy_fd)
-        else:
-            refresh_iv = int(C.FORECAST_DIGEST_REFRESH_INTERVAL_SEC)
-        refresh_iv = max(60, min(3600, refresh_iv))
-        tg_raw = d.get("forecast_digest_telegram_interval_sec")
-        if tg_raw is not None:
-            tg_iv = int(tg_raw)
-        elif legacy_fd is not None:
-            tg_iv = int(legacy_fd)
-        else:
-            tg_iv = int(C.FORECAST_DIGEST_TELEGRAM_INTERVAL_SEC)
-        tg_iv = max(0, min(86400, tg_iv))
-        fscope = str(d.get("forecast_digest_scope", C.FORECAST_DIGEST_SCOPE) or "scan")
-        if fscope not in ("scan", "positions"):
-            fscope = "scan"
-        fd_cap = int(
-            d.get(
-                "forecast_digest_max_location_groups",
-                C.FORECAST_DIGEST_MAX_LOCATION_GROUPS,
-            )
-        )
-        fd_cap = max(4, min(int(C.FORECAST_DIGEST_MAX_GROUPS_CAP), fd_cap))
         fme = int(d.get("flow_max_events_per_tick", C.FLOW_MAX_EVENTS_PER_TICK))
         fme = max(1, min(40, fme))
         fpw = int(d.get("flow_peer_window_sec", C.FLOW_PEER_WINDOW_SEC))
@@ -383,15 +336,13 @@ class RuntimeSettings:
         beh = max(0, min(23, beh))
         blh = int(d.get("buy_latest_local_hour", C.BUY_LATEST_LOCAL_HOUR))
         blh = max(0, min(24, blh))
-        sig = float(d.get("research_sigma_c", C.RESEARCH_SIGMA_C))
-        if sig <= 1e-12:
-            sig = 0.0
-        else:
-            sig = max(0.5, min(8.0, sig))
         rsec = int(
             d.get(
-                "research_skip_telegram_cooldown_sec",
-                C.RESEARCH_SKIP_TELEGRAM_COOLDOWN_SEC,
+                "decision_skip_telegram_cooldown_sec",
+                d.get(
+                    "research_skip_telegram_cooldown_sec",
+                    C.DECISION_SKIP_TELEGRAM_COOLDOWN_SEC,
+                ),
             )
         )
         rsec = max(0, min(86400, rsec))
@@ -573,16 +524,6 @@ class RuntimeSettings:
             max_trade_fraction_of_cash=frac,
             dashboard_weather_max_pages=dwp,
             cash_reserve_usd=reserve,
-            forecast_digest_enabled=bool(
-                d.get("forecast_digest_enabled", C.FORECAST_DIGEST_ENABLED)
-            ),
-            forecast_digest_refresh_interval_sec=refresh_iv,
-            forecast_digest_telegram_interval_sec=tg_iv,
-            forecast_digest_scope=fscope,
-            forecast_digest_max_location_groups=fd_cap,
-            enable_openweather_forecast=bool(
-                d.get("enable_openweather_forecast", C.ENABLE_OPENWEATHER_FORECAST)
-            ),
             enable_flow_sampling=bool(
                 d.get("enable_flow_sampling", C.ENABLE_FLOW_SAMPLING)
             ),
@@ -597,99 +538,9 @@ class RuntimeSettings:
             flow_peer_surge_rise=float(
                 d.get("flow_peer_surge_rise", C.FLOW_PEER_SURGE_RISE)
             ),
-            forecast_gate_buy=bool(d.get("forecast_gate_buy", C.FORECAST_GATE_BUY)),
-            forecast_contradict_margin_c=float(
-                d.get("forecast_contradict_margin_c", C.FORECAST_CONTRADICT_MARGIN_C)
-            ),
-            forecast_exact_bucket_support_slack_c=float(
-                d.get(
-                    "forecast_exact_bucket_support_slack_c",
-                    C.FORECAST_EXACT_BUCKET_SUPPORT_SLACK_C,
-                )
-            ),
-            forecast_reduce_usd_if_weak=bool(
-                d.get("forecast_reduce_usd_if_weak", C.FORECAST_REDUCE_USD_IF_WEAK)
-            ),
-            forecast_weak_size_factor=float(
-                d.get("forecast_weak_size_factor", C.FORECAST_WEAK_SIZE_FACTOR)
-            ),
-            research_exit_on_model_flip=bool(
-                d.get("research_exit_on_model_flip", C.RESEARCH_EXIT_ON_MODEL_FLIP)
-            ),
-            research_edge_gate_buy=bool(
-                d.get("research_edge_gate_buy", C.RESEARCH_EDGE_GATE_BUY)
-            ),
-            research_min_edge=float(d.get("research_min_edge", C.RESEARCH_MIN_EDGE)),
-            research_min_edge_after_fees_add=float(
-                d.get(
-                    "research_min_edge_after_fees_add",
-                    C.RESEARCH_MIN_EDGE_AFTER_FEES_ADD,
-                )
-            ),
-            research_sigma_c=sig,
-            research_weather_taker_fee_rate=float(
-                d.get(
-                    "research_weather_taker_fee_rate",
-                    C.RESEARCH_WEATHER_TAKER_FEE_RATE,
-                )
-            ),
-            research_edge_implied_soft_floor=min(
-                0.95,
-                max(
-                    0.0,
-                    float(
-                        d.get(
-                            "research_edge_implied_soft_floor",
-                            C.RESEARCH_EDGE_IMPLIED_SOFT_FLOOR,
-                        )
-                    ),
-                ),
-            ),
-            research_edge_implied_soft_boost=min(
-                3.0,
-                max(
-                    0.0,
-                    float(
-                        d.get(
-                            "research_edge_implied_soft_boost",
-                            C.RESEARCH_EDGE_IMPLIED_SOFT_BOOST,
-                        )
-                    ),
-                ),
-            ),
             buy_earliest_local_hour=beh,
             buy_latest_local_hour=blh,
-            research_edge_scale_size=bool(
-                d.get("research_edge_scale_size", C.RESEARCH_EDGE_SCALE_SIZE)
-            ),
-            research_edge_size_slope=float(
-                d.get("research_edge_size_slope", C.RESEARCH_EDGE_SIZE_SLOPE)
-            ),
-            research_edge_size_cap_mult=float(
-                d.get("research_edge_size_cap_mult", C.RESEARCH_EDGE_SIZE_CAP_MULT)
-            ),
-            research_crowd_soft_match=bool(
-                d.get("research_crowd_soft_match", C.RESEARCH_CROWD_SOFT_MATCH)
-            ),
-            research_crowd_soft_band=float(
-                d.get("research_crowd_soft_band", C.RESEARCH_CROWD_SOFT_BAND)
-            ),
-            research_crowd_soft_edge_factor=float(
-                d.get(
-                    "research_crowd_soft_edge_factor",
-                    C.RESEARCH_CROWD_SOFT_EDGE_FACTOR,
-                )
-            ),
-            research_crowd_disagree_gap=float(
-                d.get("research_crowd_disagree_gap", C.RESEARCH_CROWD_DISAGREE_GAP)
-            ),
-            research_crowd_disagree_extra_edge=float(
-                d.get(
-                    "research_crowd_disagree_extra_edge",
-                    C.RESEARCH_CROWD_DISAGREE_EXTRA_EDGE,
-                )
-            ),
-            research_skip_telegram_cooldown_sec=rsec,
+            decision_skip_telegram_cooldown_sec=rsec,
             decision_skip_telegram_notify=d_skip_tg,
             max_market_prob_for_buy=max_mkt,
             min_model_prob_for_buy=min_mod,
@@ -1020,6 +871,64 @@ class RuntimeSettings:
                     ),
                 ),
             ),
+            momentum_alert_enabled=bool(
+                d.get("momentum_alert_enabled", C.MOMENTUM_ALERT_ENABLED)
+            ),
+            momentum_alert_min_abs=max(
+                0.0, float(d.get("momentum_alert_min_abs", C.MOMENTUM_ALERT_MIN_ABS))
+            ),
+            momentum_alert_min_pct=max(
+                0.0, float(d.get("momentum_alert_min_pct", C.MOMENTUM_ALERT_MIN_PCT))
+            ),
+            momentum_alert_window_sec=max(
+                60.0,
+                float(d.get("momentum_alert_window_sec", C.MOMENTUM_ALERT_WINDOW_SEC)),
+            ),
+            momentum_alert_cooldown_sec=max(
+                0.0,
+                float(
+                    d.get("momentum_alert_cooldown_sec", C.MOMENTUM_ALERT_COOLDOWN_SEC)
+                ),
+            ),
+            permanent_blacklist_cities=[
+                str(x).strip()
+                for x in (d.get("permanent_blacklist_cities") or [])
+                if str(x).strip()
+            ],
+            sell_cooldown_30m_sec=max(
+                0.0,
+                min(
+                    86400.0,
+                    float(d.get("sell_cooldown_30m_sec", C.SELL_COOLDOWN_30M_SEC)),
+                ),
+            ),
+            persistent_leader_enabled=bool(
+                d.get("persistent_leader_enabled", C.PERSISTENT_LEADER_ENABLED)
+            ),
+            persistent_leader_lookback_sec=max(
+                60.0,
+                min(
+                    86400.0,
+                    float(
+                        d.get(
+                            "persistent_leader_lookback_sec",
+                            C.PERSISTENT_LEADER_LOOKBACK_SEC,
+                        )
+                    ),
+                ),
+            ),
+            persistent_leader_min_fraction=max(
+                0.1,
+                min(
+                    1.0,
+                    float(
+                        d.get(
+                            "persistent_leader_min_fraction",
+                            C.PERSISTENT_LEADER_MIN_FRACTION,
+                        )
+                    ),
+                ),
+            ),
         )
 
 
@@ -1042,6 +951,48 @@ def load_blacklist_day_ids() -> Set[str]:
         return set()
     ids = raw.get("market_ids") or []
     return {str(x).strip() for x in ids if str(x).strip()}
+
+
+def load_city_buy_earliest_hours() -> Dict[str, int]:
+    """Load per-city earliest buy hour map from data/city_buy_earliest_hour.json.
+
+    Returns a dict mapping lowercase city name → earliest hour (int).
+    Keys starting with '_' (comments/metadata) are skipped.
+    Missing file returns an empty dict (falls back to global setting).
+    """
+    if not C.CITY_BUY_EARLIEST_HOURS_FILE.is_file():
+        return {}
+    try:
+        raw = json.loads(
+            C.CITY_BUY_EARLIEST_HOURS_FILE.read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    result: Dict[str, int] = {}
+    for k, v in raw.items():
+        if str(k).startswith("_"):
+            continue
+        try:
+            result[str(k).strip().lower()] = max(0, min(23, int(v)))
+        except (TypeError, ValueError):
+            pass
+    return result
+
+
+def get_city_buy_earliest_hour(city: str, settings: RuntimeSettings) -> int:
+    """Return the earliest buy hour for a specific city.
+
+    Looks up the city in data/city_buy_earliest_hour.json first.
+    Falls back to settings.buy_earliest_local_hour if city not found.
+    """
+    city_lower = str(city or "").strip().lower()
+    if city_lower:
+        city_hours = load_city_buy_earliest_hours()
+        if city_lower in city_hours:
+            return city_hours[city_lower]
+    return int(getattr(settings, "buy_earliest_local_hour", C.BUY_EARLIEST_HOUR))
 
 
 def get_effective_settings() -> RuntimeSettings:

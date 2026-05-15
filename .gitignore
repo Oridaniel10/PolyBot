@@ -1,5 +1,7 @@
 .env
-data/
+data/*
+!data/runtime_config.json
+!data/city_buy_earliest_hour.json
 
 venv/
 __pycache__/
@@ -15,20 +17,6 @@ logs/
 /ui/dist
 /ui/build
 /ui/venv
-/ui/node_modules
-/ui/dist
-/ui/build
-/ui/venv
 .idea
 .cursor/*
 .cursor/rules/*
-/data/*
-/data
-/date/trade_log_*.csv
-/data/price_samples/*
-/data/price_samples
-/data/trade_log_2026-04-11.csv
-/data/*csv
-/data/*
-*data/
-data

@@ -59,45 +59,15 @@ class RuntimeConfigUpdate(BaseModel):
     max_trade_fraction_of_cash: Optional[float] = Field(None, ge=0.0, le=1.0)
     dashboard_weather_max_pages: Optional[int] = Field(None, ge=1, le=80)
     cash_reserve_usd: Optional[float] = Field(None, ge=0.0, le=1_000_000)
-    forecast_digest_enabled: Optional[bool] = None
-    forecast_digest_refresh_interval_sec: Optional[int] = Field(None, ge=60, le=3600)
-    forecast_digest_telegram_interval_sec: Optional[int] = Field(None, ge=0, le=86400)
-    forecast_digest_interval_sec: Optional[int] = Field(None, ge=120, le=3600)
-    forecast_digest_scope: Optional[str] = None
-    forecast_digest_max_location_groups: Optional[int] = Field(None, ge=4, le=500)
-    enable_openweather_forecast: Optional[bool] = None
     enable_flow_sampling: Optional[bool] = None
     flow_max_events_per_tick: Optional[int] = Field(None, ge=1, le=40)
     enable_flow_peer_exit: Optional[bool] = None
     flow_peer_window_sec: Optional[int] = Field(None, ge=120, le=3600)
     flow_peer_surge_drop: Optional[float] = Field(None, ge=0.0, le=1.0)
     flow_peer_surge_rise: Optional[float] = Field(None, ge=0.0, le=1.0)
-    forecast_gate_buy: Optional[bool] = None
-    forecast_contradict_margin_c: Optional[float] = Field(None, ge=0.0, le=15.0)
-    forecast_exact_bucket_support_slack_c: Optional[float] = Field(
-        None, ge=0.0, le=15.0
-    )
-    forecast_reduce_usd_if_weak: Optional[bool] = None
-    forecast_weak_size_factor: Optional[float] = Field(None, ge=0.05, le=1.0)
-    research_exit_on_model_flip: Optional[bool] = None
-    research_edge_gate_buy: Optional[bool] = None
-    research_min_edge: Optional[float] = Field(None, ge=0.0, le=0.5)
-    research_min_edge_after_fees_add: Optional[float] = Field(None, ge=0.0, le=0.5)
-    research_sigma_c: Optional[float] = Field(None, ge=0.0, le=8.0)
-    research_weather_taker_fee_rate: Optional[float] = Field(None, ge=0.0, le=0.2)
-    research_edge_implied_soft_floor: Optional[float] = Field(None, ge=0.0, le=0.95)
-    research_edge_implied_soft_boost: Optional[float] = Field(None, ge=0.0, le=3.0)
     buy_earliest_local_hour: Optional[int] = Field(None, ge=0, le=23)
     buy_latest_local_hour: Optional[int] = Field(None, ge=0, le=24)
-    research_edge_scale_size: Optional[bool] = None
-    research_edge_size_slope: Optional[float] = Field(None, ge=0.0, le=50.0)
-    research_edge_size_cap_mult: Optional[float] = Field(None, ge=1.0, le=3.0)
-    research_crowd_soft_match: Optional[bool] = None
-    research_crowd_soft_band: Optional[float] = Field(None, ge=0.0, le=0.5)
-    research_crowd_soft_edge_factor: Optional[float] = Field(None, ge=0.1, le=1.0)
-    research_crowd_disagree_gap: Optional[float] = Field(None, ge=0.0, le=0.5)
-    research_crowd_disagree_extra_edge: Optional[float] = Field(None, ge=0.0, le=0.5)
-    research_skip_telegram_cooldown_sec: Optional[int] = Field(None, ge=0, le=86400)
+    decision_skip_telegram_cooldown_sec: Optional[int] = Field(None, ge=0, le=86400)
     decision_skip_telegram_notify: Optional[bool] = None
     max_market_prob_for_buy: Optional[float] = Field(None, ge=0.05, le=0.99)
     min_model_prob_for_buy: Optional[float] = Field(None, ge=0.0, le=0.95)
@@ -340,7 +310,7 @@ def api_forecast_preview(
             isinstance(cached, dict)
             and cached.get("groups") is not None
             and age is not None
-            and age < float(C.FORECAST_CACHE_MAX_AGE_SEC)
+            and age < float(C.WEATHER_PREVIEW_CACHE_MAX_AGE_SEC)
             and cache_has_groups
         ):
             out = dict(cached)

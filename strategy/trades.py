@@ -1,4 +1,3 @@
-import os
 import time
 from typing import Any, Dict, List, Optional
 
@@ -10,8 +9,6 @@ from config.constants import (
     CLOB_SELL_TOPUP_MAX_ROUNDS,
     DEFAULT_ORDER_SIZE,
     DUST_SHARES_EPS,
-    FORECAST_CONTRADICT_MARGIN_C,
-    FORECAST_EXACT_BUCKET_SUPPORT_SLACK_C,
     MAX_CONCURRENT_POSITIONS,
     DOUBLE_MOMENTUM_ENTRY_RISE,
     DOUBLE_MOMENTUM_MAX_PRICE,
@@ -21,6 +18,7 @@ from config.constants import (
     SELL_BELOW_MIN_COOLDOWN_SEC,
     SELL_BELOW_MIN_TELEGRAM_COOLDOWN_SEC,
     SELL_BYPASS_MIN_COOLDOWN_REASONS,
+    SELL_COOLDOWN_30M_SEC,
     SL_CATEGORY_ABSOLUTE,
     SL_CATEGORY_CRASH_PEAK,
     SL_CATEGORY_MOMENTUM,
@@ -36,14 +34,13 @@ from config.constants import (
     TRADE_RECENT_SELL_TTL_SEC,
     TRADE_SELL_LOCK_TTL_SEC,
 )
-from config.settings import RuntimeSettings, get_effective_settings
+from config.settings import RuntimeSettings, get_effective_settings, get_city_buy_earliest_hour
 from notifications.portfolio import send_portfolio_telegram
 from notifications.post_buy_plot import schedule_post_buy_event_chart
 from notifications.research_trade_fmt import (
+    decision_skip_telegram_allowed,
     format_decision_engine_html,
     format_decision_skip_html,
-    format_research_context_html,
-    decision_skip_telegram_allowed,
 )
 from notifications.telegram_fmt import (
     format_buy_exit_plan_html,
@@ -72,6 +69,8 @@ from strategy.churn import (
     churn_event_mark_loss_tiered,
     churn_mark_event_recent_stoploss,
     churn_record_event_leader_switch,
+    mark_sell_cooldown_30m,
+    sell_cooldown_30m_active,
 )
 from strategy.gates import market_can_post_clob_orders, market_status
 from strategy.market_match import (
@@ -103,13 +102,7 @@ from strategy.probability import (
     stop_loss_reference_if_triggered,
     take_profit_decision_probability,
 )
-from forecast.forecast_service import get_forecast_max_for_city_day
-from forecast.parse_title import (
-    forecast_contradicts_strongly,
-    forecast_supports_yes,
-    parse_highest_temp_title,
-)
-from strategy.research_signal import edge_size_multiplier
+from forecast.parse_title import parse_highest_temp_title
 from strategy.sizing import compute_buy_usd_amount, planned_buy_cap_lines
 from strategy.time_filter import entry_time_allowed
 from strategy.time_utils import format_report_local_hhmm, now_in_report_timezone
@@ -788,8 +781,21 @@ def place_buy(
     if market_id in settings.blacklist_market_ids:
         emit_post_decision_skip("blacklist_market_id")
         return
+    _place_buy_title = str(
+        market.get("question") or market.get("title") or ""
+    )
+    _city_for_bl = _extract_city_from_title(_place_buy_title).lower()
+    if _city_for_bl and any(
+        c.lower() == _city_for_bl
+        for c in (getattr(settings, "permanent_blacklist_cities", None) or [])
+    ):
+        emit_post_decision_skip("permanent_blacklist_city")
+        return
     if not churn_allows_buy(state, market_id):
         emit_post_decision_skip("churn_blocks_buy")
+        return
+    if sell_cooldown_30m_active(state, market_id):
+        emit_post_decision_skip("sell_cooldown_30m_active")
         return
 
     title = (
@@ -853,73 +859,9 @@ def place_buy(
     if live_clob > 0:
         probability = live_clob
 
-    # decision engine already validated — use its result
-    # momentum/double_momentum bypass the forecast contradiction gate (legacy mom_relax).
-    mom_relax = entry_type in ("momentum", "double_momentum")
-    research_decision = trade_decision.research if trade_decision else None
-    forecast_usd_factor = 1.0
-    if research_decision is not None:
-        exm = edge_size_multiplier(
-            research_decision.edge,
-            research_decision.required_edge,
-            scale_enabled=bool(settings.research_edge_scale_size),
-            slope=float(settings.research_edge_size_slope),
-            cap_mult=float(settings.research_edge_size_cap_mult),
-        )
-        forecast_usd_factor *= exm
-
-    parsed_fc = parse_highest_temp_title(str(title))
-    if parsed_fc:
-        ow_blend = bool(getattr(settings, "enable_openweather_forecast", False))
-        ow_key = os.getenv("OPENWEATHER_API_KEY", "").strip() if ow_blend else ""
-        _om, _ow, cons = get_forecast_max_for_city_day(
-            parsed_fc.city_key,
-            parsed_fc.event_date,
-            parsed_fc.tz_name,
-            openweather_api_key=ow_key,
-            use_openweather=ow_blend,
-        )
-        if cons is not None:
-            margin = float(
-                getattr(
-                    settings,
-                    "forecast_contradict_margin_c",
-                    FORECAST_CONTRADICT_MARGIN_C,
-                )
-            )
-            if (
-                getattr(settings, "forecast_gate_buy", False)
-                and not mom_relax
-                and forecast_contradicts_strongly(cons, parsed_fc, margin)
-            ):
-                print(
-                    term_wrap(
-                        TERM_DIM,
-                        f"[forecast] skip buy — model contradicts bracket (max≈{cons:.1f}°C)\n  {title}",
-                    )
-                )
-                emit_post_decision_skip(
-                    "forecast_contradicts_bracket", consensus_c=f"{cons:.2f}"
-                )
-                return
-            if getattr(settings, "forecast_reduce_usd_if_weak", False):
-                if not forecast_supports_yes(
-                    cons,
-                    parsed_fc,
-                    exact_slack_c=float(
-                        getattr(
-                            settings,
-                            "forecast_exact_bucket_support_slack_c",
-                            FORECAST_EXACT_BUCKET_SUPPORT_SLACK_C,
-                        )
-                    ),
-                ) and not forecast_contradicts_strongly(cons, parsed_fc, margin):
-                    fac = float(getattr(settings, "forecast_weak_size_factor", 0.45))
-                    forecast_usd_factor *= min(1.0, max(0.1, fac))
-
     balance_before = client.get_portfolio_balance(force_allowance_refresh=True)
     cash = float(balance_before.get("cash") or 0)
-    usd = compute_buy_usd_amount(cash, probability, settings) * forecast_usd_factor
+    usd = compute_buy_usd_amount(cash, probability, settings)
 
     # Polymarket CLOB v2 requires a minimum of 5 shares for limit orders.
     if probability > 0 and (usd / probability) < 5.05:
@@ -1227,17 +1169,6 @@ def place_buy(
         ),
         "After BUY",
     )
-    if research_decision is not None:
-        headline_html += format_research_context_html(
-            consensus_c=research_decision.consensus_c,
-            implied_yes=research_decision.implied_yes,
-            edge=research_decision.edge,
-            required_edge=research_decision.required_edge,
-            fee_drag=research_decision.fee_drag,
-            clob_yes=probability,
-            edge_raw=research_decision.edge_raw,
-            edge_soft_boost=research_decision.edge_soft_boost,
-        )
     if trade_decision is not None:
         headline_html += format_decision_engine_html(trade_decision)
     log_trade_buy_terminal(
@@ -1262,16 +1193,6 @@ def place_buy(
         "buy_est_sl_pnl_usd": round(est_sl_pnl, 4),
         "buy_est_yes_resolve_pnl_usd": round(est_yes_pnl, 4),
     }
-    if research_decision is not None:
-        led_buy["research_consensus_c"] = round(research_decision.consensus_c, 4)
-        led_buy["research_implied_yes"] = round(research_decision.implied_yes, 6)
-        led_buy["research_edge"] = round(research_decision.edge, 6)
-        led_buy["research_edge_raw"] = round(research_decision.edge_raw, 6)
-        led_buy["research_edge_soft_boost"] = round(
-            research_decision.edge_soft_boost,
-            6,
-        )
-        led_buy["research_required_edge"] = round(research_decision.required_edge, 6)
     if trade_decision is not None:
         led_buy["decision_sigma_c"] = round(trade_decision.sigma_used, 4)
         led_buy["decision_model_prob"] = round(trade_decision.model_prob, 6)
@@ -1344,14 +1265,6 @@ def place_buy(
         "highest_seen_price": round(float(probability), 6),
         "full_reason": full_reason_buy,
     }
-    if research_decision is not None:
-        csv_buy["consensus_c"] = round(research_decision.consensus_c, 4)
-        csv_buy["implied_yes"] = round(research_decision.implied_yes, 6)
-        csv_buy["edge"] = round(research_decision.edge, 6)
-        csv_buy["edge_raw"] = round(research_decision.edge_raw, 6)
-        csv_buy["edge_soft_boost"] = round(research_decision.edge_soft_boost, 6)
-        csv_buy["required_edge"] = round(research_decision.required_edge, 6)
-        csv_buy["fee_drag"] = round(research_decision.fee_drag, 6)
     if trade_decision is not None:
         csv_buy["decision_sigma_c"] = round(trade_decision.sigma_used, 4)
         csv_buy["decision_model_prob"] = round(trade_decision.model_prob, 6)
@@ -1813,7 +1726,7 @@ def close_position(
             "full_reason": full_reason_sell,
         }
     )
-    if reason in (
+    _SELL_LOSS_REASONS = frozenset({
         "stop-loss",
         "trailing-stop",
         "peer-yes-surge",
@@ -1821,7 +1734,8 @@ def close_position(
         "competitor-surge",
         "momentum-competitor-dominant",
         "time-decay",
-    ):
+    })
+    if reason in _SELL_LOSS_REASONS:
         churn_on_stop_loss_exit(
             state,
             market_id,
@@ -1870,6 +1784,13 @@ def close_position(
     elif reason == "take-profit":
         churn_on_take_profit(state, market_id)
 
+    # 30-min per-market re-entry block: applies to all loss/manual exits (not take-profit)
+    if reason in _SELL_LOSS_REASONS or reason == "manual":
+        cooldown_30m = float(
+            getattr(settings, "sell_cooldown_30m_sec", SELL_COOLDOWN_30M_SEC)
+        )
+        mark_sell_cooldown_30m(state, market_id, cooldown_30m)
+
     try:
         send_portfolio_telegram(
             telegram,
@@ -1883,6 +1804,14 @@ def close_position(
         )
     except Exception as err:
         print(term_wrap(TERM_RED, f"sell ok but telegram failed: {err!r}"))
+
+    # send event siblings plot after every sell (Section 4b)
+    try:
+        schedule_post_buy_event_chart(
+            client, telegram, market_id, context=f"SELL:{reason}"
+        )
+    except Exception:
+        pass
 
 
 def claim_position(
@@ -2033,48 +1962,6 @@ def process_single_market(
             )
             return
 
-    # research model flip exit (optional)
-    if (
-        getattr(settings, "research_exit_on_model_flip", False)
-        and has_position
-        and trade_row
-        and market_can_post_clob_orders(market)
-    ):
-        t_exit = str(market.get("question") or market.get("title") or "")
-        p_exit = parse_highest_temp_title(t_exit)
-        if p_exit:
-            ow_blend_e = bool(getattr(settings, "enable_openweather_forecast", False))
-            ow_key_exit = (
-                os.getenv("OPENWEATHER_API_KEY", "").strip() if ow_blend_e else ""
-            )
-            _om_e, _ow_e, cons_e = get_forecast_max_for_city_day(
-                p_exit.city_key,
-                p_exit.event_date,
-                p_exit.tz_name,
-                openweather_api_key=ow_key_exit,
-                use_openweather=ow_blend_e,
-            )
-            if cons_e is not None:
-                margin_e = float(
-                    getattr(
-                        settings,
-                        "forecast_contradict_margin_c",
-                        FORECAST_CONTRADICT_MARGIN_C,
-                    )
-                )
-                if forecast_contradicts_strongly(cons_e, p_exit, margin_e):
-                    close_position(
-                        client,
-                        market,
-                        state,
-                        telegram,
-                        gamma_probability,
-                        "research-model-flip",
-                        settings,
-                        state_trade_key=sk,
-                    )
-                    return
-
     # regular stop-loss — use per-type SL (from entry_type stored at buy time)
     entry_type = str((trade_row or {}).get("entry_type") or "normal").strip()
     entry_price_live = float((trade_row or {}).get("entry_price") or 0.0)
@@ -2160,9 +2047,13 @@ def process_single_market(
 
     # time gate: same calendar day in the market city as event_date, and hour window
     _pm_timegate = parse_highest_temp_title(_title)
+    _city_for_tg = str(
+        (_pm_timegate.city_key if _pm_timegate else None) or ""
+    )
+    _earliest_hour = get_city_buy_earliest_hour(_city_for_tg, settings)
     time_ok, _city_hour, _time_skip = entry_time_allowed(
         _title,
-        earliest_hour=int(settings.buy_earliest_local_hour),
+        earliest_hour=_earliest_hour,
         latest_hour=int(settings.buy_latest_local_hour or 24),
         event_date=_pm_timegate.event_date if _pm_timegate else None,
     )
@@ -2170,7 +2061,8 @@ def process_single_market(
         print(
             term_wrap(
                 TERM_DIM,
-                f"[decision] skip buy — local_time_gate {_time_skip} hour={_city_hour!r}\n  {_title}",
+                f"[decision] skip buy — local_time_gate {_time_skip} hour={_city_hour!r} "
+                f"earliest={_earliest_hour} city={_city_for_tg!r}\n  {_title}",
             )
         )
         return
@@ -2273,31 +2165,9 @@ def process_single_market(
     if not parsed_fc:
         return
 
-    ow_blend = bool(getattr(settings, "enable_openweather_forecast", False))
-    ow_key = os.getenv("OPENWEATHER_API_KEY", "").strip() if ow_blend else ""
-    _om, _ow, cons = get_forecast_max_for_city_day(
-        parsed_fc.city_key,
-        parsed_fc.event_date,
-        parsed_fc.tz_name,
-        openweather_api_key=ow_key,
-        use_openweather=ow_blend,
-    )
-    # forecast consensus is optional now (research/calibration removed from decisions).
-    # when missing, fall back to a neutral value so price-based gates (band, momentum,
-    # competition) still drive entries.
-    if cons is None:
-        print(
-            term_wrap(
-                TERM_DIM,
-                f"[decision] no forecast consensus for {parsed_fc.city_key} — "
-                f"continuing on price-based gates only\n  {_title}",
-            )
-        )
-    cons_for_eval = float(cons) if cons is not None else 0.0
-
     td = evaluate_entry(
         parsed_fc,
-        cons_for_eval,
+        None,
         float(gamma_probability),
         market,
         client,
@@ -2312,20 +2182,9 @@ def process_single_market(
             if telegram.is_configured() and bool(
                 getattr(settings, "decision_skip_telegram_notify", False)
             ):
-                cd = float(settings.research_skip_telegram_cooldown_sec)
+                cd = float(settings.decision_skip_telegram_cooldown_sec)
                 if decision_skip_telegram_allowed(market_id, td.reason, cd):
                     det = format_decision_engine_html(td)
-                    if td.research is not None:
-                        det += format_research_context_html(
-                            consensus_c=td.research.consensus_c,
-                            implied_yes=td.research.implied_yes,
-                            edge=td.research.edge,
-                            required_edge=td.research.required_edge,
-                            fee_drag=td.research.fee_drag,
-                            clob_yes=gamma_probability,
-                            edge_raw=td.research.edge_raw,
-                            edge_soft_boost=td.research.edge_soft_boost,
-                        )
                     telegram.send_html_chunks(
                         f"{_telegram_local_clock_html()}"
                         + format_decision_skip_html(str(_title), td.reason, det)

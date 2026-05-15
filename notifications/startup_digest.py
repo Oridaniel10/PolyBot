@@ -136,115 +136,6 @@ def _digest_rows(
         "count of ids in runtime blacklist set",
     )
 
-    sec("Forecast buy gate")
-    row(
-        "forecast_gate_buy",
-        settings.forecast_gate_buy,
-        "block buys when forecast contradicts bracket hard",
-    )
-    row(
-        "forecast_contradict_margin_c",
-        settings.forecast_contradict_margin_c,
-        "°C margin for contradict rule",
-    )
-    row(
-        "forecast_exact_bucket_support_slack_c",
-        settings.forecast_exact_bucket_support_slack_c,
-        "°C slack for weak YES support / sizing",
-    )
-    row(
-        "forecast_reduce_usd_if_weak",
-        settings.forecast_reduce_usd_if_weak,
-        "shrink buy if forecast not supportive",
-    )
-    row(
-        "forecast_weak_size_factor",
-        settings.forecast_weak_size_factor,
-        "multiplier when forecast weak-neutral",
-    )
-
-    sec("Research edge gate (model P(YES) vs CLOB)")
-    row(
-        "research_edge_gate_buy",
-        settings.research_edge_gate_buy,
-        "enable research edge hurdle for buys",
-    )
-    row(
-        "research_min_edge",
-        settings.research_min_edge,
-        "base min edge (prob scale) before fee drag",
-    )
-    row(
-        "research_min_edge_after_fees_add",
-        settings.research_min_edge_after_fees_add,
-        "extra edge on top of min + fee_drag",
-    )
-    row(
-        "research_sigma_c",
-        settings.research_sigma_c,
-        "0 = sigma from calibration MAE; else fixed °C",
-    )
-    row(
-        "research_weather_taker_fee_rate",
-        settings.research_weather_taker_fee_rate,
-        "fee model for required_edge (prob-scale drag)",
-    )
-    row(
-        "research_edge_implied_soft_floor",
-        settings.research_edge_implied_soft_floor,
-        "if P_implied > floor, add soft boost to edge",
-    )
-    row(
-        "research_edge_implied_soft_boost",
-        settings.research_edge_implied_soft_boost,
-        "multiplier on (P_implied − floor) added to raw edge",
-    )
-    row(
-        "research_edge_scale_size",
-        settings.research_edge_scale_size,
-        "scale buy size when edge clears bar",
-    )
-    row(
-        "research_edge_size_slope",
-        settings.research_edge_size_slope,
-        "edge excess → size slope",
-    )
-    row(
-        "research_edge_size_cap_mult",
-        settings.research_edge_size_cap_mult,
-        "cap on edge size multiplier",
-    )
-    row(
-        "research_crowd_soft_match",
-        settings.research_crowd_soft_match,
-        "lower required edge when near crowd",
-    )
-    row(
-        "research_crowd_soft_band",
-        settings.research_crowd_soft_band,
-        "|clob−implied| band for soft match",
-    )
-    row(
-        "research_crowd_soft_edge_factor",
-        settings.research_crowd_soft_edge_factor,
-        "multiplier on required when soft",
-    )
-    row(
-        "research_crowd_disagree_gap",
-        settings.research_crowd_disagree_gap,
-        "clob above implied by this → crowd disagree",
-    )
-    row(
-        "research_crowd_disagree_extra_edge",
-        settings.research_crowd_disagree_extra_edge,
-        "extra required edge when crowd disagrees",
-    )
-    row(
-        "research_exit_on_model_flip",
-        settings.research_exit_on_model_flip,
-        "optional exit when model flips vs bracket",
-    )
-
     sec("Peer YES surge (siblings)")
     row(
         "enable_peer_surge_exit",
@@ -289,36 +180,16 @@ def _digest_rows(
         "no buys after this local hour (24 = off)",
     )
 
-    sec("Telegram / digest")
+    sec("Telegram / advisor")
+    row(
+        "decision_skip_telegram_cooldown_sec",
+        settings.decision_skip_telegram_cooldown_sec,
+        "dedupe decision BUY skip spam",
+    )
     row(
         "advisor_context_MODEL_PROB_MD",
         "MODEL_PROBABILITY_AND_CALIBRATION.md",
-        "OpenRouter /ask bundles this file (forecast→μ→σ→P(YES) + numeric examples)",
-    )
-    row(
-        "forecast_digest_enabled",
-        settings.forecast_digest_enabled,
-        "background forecast digest thread",
-    )
-    row(
-        "forecast_digest_refresh_interval_sec",
-        settings.forecast_digest_refresh_interval_sec,
-        "rewrite forecast_cache.json",
-    )
-    row(
-        "forecast_digest_telegram_interval_sec",
-        settings.forecast_digest_telegram_interval_sec,
-        "0 = no auto digest TG",
-    )
-    row(
-        "forecast_digest_scope",
-        settings.forecast_digest_scope,
-        "scan vs positions digest scope",
-    )
-    row(
-        "research_skip_telegram_cooldown_sec",
-        settings.research_skip_telegram_cooldown_sec,
-        "dedupe research skip spam",
+        "OpenRouter /ask bundles this file (optional context)",
     )
     row(
         "decision_skip_telegram_notify",
@@ -355,7 +226,7 @@ def _digest_rows(
     row(
         "MOMENTUM_ENTRY_RISE",
         C.MOMENTUM_ENTRY_RISE,
-        "YES rise in window → momentum entry (bypass comp+research edge)",
+        "YES rise in window → momentum entry (bypasses normal competition gap)",
     )
     row(
         "TIME_DECAY_HOURS",

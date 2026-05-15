@@ -130,7 +130,6 @@ def test_normal_entry_high_band_not_blocked_by_market_prob(monkeypatch):
     }
     settings = make_settings(
         enable_competition_filter=False,
-        research_edge_gate_buy=False,
         max_market_prob_for_buy=0.99,
     )
 
@@ -163,7 +162,6 @@ def test_normal_entry_skips_when_market_lead_gap_below_configured_half():
     ]
     settings = make_settings(
         enable_competition_filter=True,
-        research_edge_gate_buy=False,
         max_market_prob_for_buy=0.99,
         min_market_yes_lead_gap_normal=0.5,
     )
@@ -196,7 +194,6 @@ def test_normal_entry_passes_when_market_lead_gap_meets_half():
     ]
     settings = make_settings(
         enable_competition_filter=True,
-        research_edge_gate_buy=False,
         max_market_prob_for_buy=0.99,
         min_market_yes_lead_gap_normal=0.5,
     )
@@ -293,7 +290,6 @@ def test_double_momentum_low_band_reaches_place_buy(tmp_path, monkeypatch):
         patch("strategy.trades.market_can_post_clob_orders", return_value=True),
         patch("strategy.trades.entry_time_allowed", return_value=(True, 15, "")),
         patch("strategy.trades.parse_highest_temp_title", return_value=parsed_market()),
-        patch("strategy.trades.get_forecast_max_for_city_day", return_value=(None, None, 17.0)),
         patch("strategy.trades.evaluate_entry", return_value=decision),
         patch("strategy.trades.momentum_multi_window_check", return_value=mcc_ret),
         patch("strategy.trades.place_buy") as buy_mock,

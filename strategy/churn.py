@@ -12,6 +12,7 @@ from typing import Any, Dict
 
 # ─── Per-market churn ─────────────────────────────────────────────────
 
+
 def churn_allows_buy(state: Dict[str, Any], market_id: str) -> bool:
     ch = state.setdefault("churn_by_market", {})
     c = ch.get(market_id) or {}
@@ -42,7 +43,40 @@ def churn_on_take_profit(state: Dict[str, Any], market_id: str) -> None:
     ch[market_id] = {"stop_cycles": 0, "cooldown_until": 0.0}
 
 
+# ─── 30-minute per-market sell blacklist ──────────────────────────────
+# Applied after any stop-loss or manual sell — prevents immediate re-entry.
+# Take-profit exits do NOT set this (re-entry allowed after a win).
+
+def mark_sell_cooldown_30m(
+    state: Dict[str, Any], market_id: str, cooldown_sec: float
+) -> None:
+    """Block re-buying market_id for cooldown_sec seconds after a loss/manual sell."""
+    if not market_id or cooldown_sec <= 0:
+        return
+    root = state.setdefault("sell_cooldown_30m", {})
+    if not isinstance(root, dict):
+        root = {}
+        state["sell_cooldown_30m"] = root
+    root[str(market_id).strip()] = time.time() + float(cooldown_sec)
+
+
+def sell_cooldown_30m_active(state: Dict[str, Any], market_id: str) -> bool:
+    """Return True if the 30-min post-sell blacklist is still in effect."""
+    if not market_id:
+        return False
+    root = state.get("sell_cooldown_30m")
+    if not isinstance(root, dict):
+        return False
+    now = time.time()
+    until = float(root.get(str(market_id).strip()) or 0.0)
+    if until <= 0 or now >= until:
+        root.pop(str(market_id).strip(), None)
+        return False
+    return True
+
+
 # ─── Per-event churn ──────────────────────────────────────────────────
+
 
 def churn_event_allows_buy(state: Dict[str, Any], event_id: str) -> bool:
     """Check if event-level churn cooldown allows a new buy for this event."""

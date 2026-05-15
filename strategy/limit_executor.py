@@ -104,6 +104,9 @@ def execute_buy(
     to buy_limit_order_timeout_sec, then cancel if still unfilled.
     when disabled: go straight to market order (legacy behavior).
     """
+    cap = max(0.0, float(getattr(settings, "max_buy_notional_usd", 0.0) or 0.0))
+    if cap > 0:
+        usd_amount = min(float(usd_amount), cap)
     timeout_sec = int(getattr(settings, "buy_limit_order_timeout_sec", 8))
     live_clob_before = _effective_best_ask_yes(client, market, float(decision_price))
 

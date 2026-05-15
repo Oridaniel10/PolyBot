@@ -108,27 +108,43 @@ def build_open_temp_forecast_quick_html(client: PolymarketClient) -> str:
 
         adj = cons if cons is not None else om
         if mark > 1e-9 and adj is not None:
+            sigma_c = float(getattr(settings, "research_sigma_c", 0.0))
             rd = research_edge_decision(
                 p,
                 float(adj),
                 float(mark),
-                sigma_c=float(settings.research_sigma_c),
-                min_edge=float(settings.research_min_edge),
-                min_edge_after_fees_add=float(settings.research_min_edge_after_fees_add),
-                fee_rate_for_drag=float(settings.research_weather_taker_fee_rate),
-                gate_enabled=bool(settings.research_edge_gate_buy),
-                soft_match_enabled=bool(settings.research_crowd_soft_match),
-                soft_band=float(settings.research_crowd_soft_band),
-                soft_edge_factor=float(settings.research_crowd_soft_edge_factor),
-                disagree_extra_edge=float(settings.research_crowd_disagree_extra_edge),
-                disagree_gap=float(settings.research_crowd_disagree_gap),
-                implied_soft_floor=float(settings.research_edge_implied_soft_floor),
-                implied_soft_boost_mult=float(settings.research_edge_implied_soft_boost),
+                sigma_c=sigma_c,
+                min_edge=float(getattr(settings, "research_min_edge", 0.08)),
+                min_edge_after_fees_add=float(
+                    getattr(settings, "research_min_edge_after_fees_add", 0.0)
+                ),
+                fee_rate_for_drag=float(
+                    getattr(settings, "research_weather_taker_fee_rate", 0.05)
+                ),
+                gate_enabled=bool(getattr(settings, "research_edge_gate_buy", False)),
+                soft_match_enabled=bool(
+                    getattr(settings, "research_crowd_soft_match", False)
+                ),
+                soft_band=float(getattr(settings, "research_crowd_soft_band", 0.04)),
+                soft_edge_factor=float(
+                    getattr(settings, "research_crowd_soft_edge_factor", 0.75)
+                ),
+                disagree_extra_edge=float(
+                    getattr(settings, "research_crowd_disagree_extra_edge", 0.03)
+                ),
+                disagree_gap=float(getattr(settings, "research_crowd_disagree_gap", 0.08)),
+                implied_soft_floor=float(
+                    getattr(settings, "research_edge_implied_soft_floor", 0.30)
+                ),
+                implied_soft_boost_mult=float(
+                    getattr(settings, "research_edge_implied_soft_boost", 1.0)
+                ),
             )
-            gate_lbl = "on" if settings.research_edge_gate_buy else "off"
+            gate_on = bool(getattr(settings, "research_edge_gate_buy", False))
+            gate_lbl = "on" if gate_on else "off"
             parts.append(
                 "   <b>model_stats</b> "
-                f"(σ=<code>{settings.research_sigma_c:g}</code> °C, gate <code>{gate_lbl}</code>): "
+                f"(σ=<code>{sigma_c:g}</code> °C, gate <code>{gate_lbl}</code>): "
                 f"P_model≈<code>{rd.implied_yes:.1%}</code> "
                 f"· Δ vs mark <code>{rd.edge * 100:+.1f} pp</code> "
                 f"· hurdle≈<code>{rd.required_edge * 100:.1f} pp</code>"

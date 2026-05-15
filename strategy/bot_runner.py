@@ -25,7 +25,6 @@ from config.settings import (
     get_effective_settings,
     load_runtime_config_file,
 )
-from notifications.forecast_quick_report import build_open_temp_forecast_quick_html
 from notifications.portfolio import (
     maybe_send_portfolio_status_heartbeat,
     send_daily_report,
@@ -44,14 +43,11 @@ from state.store import load_env_file, read_state, write_state
 from strategy.fingerprint import portfolio_snapshot_fingerprint
 from strategy.momentum import prune_old_price_sample_files, warm_ring_buffer_from_disk
 from strategy import redis_store
-from forecast.digest_runner import (
-    run_forecast_digest_once,
-    start_forecast_digest_background,
-)
 from strategy.loop import run_once
 from strategy.sync_portfolio import sync_state_with_portfolio
 from strategy.time_utils import format_report_local_hhmm, now_in_report_timezone
 from telegram_bot import TelegramBot, normalize_telegram_command_text, tg_escape
+from notifications.post_buy_plot import schedule_post_buy_event_chart
 
 from notifications.openrouter_advisor import (
     advisor_enabled,
@@ -124,38 +120,23 @@ def dispatch_telegram_commands(
                     },
                     daemon=True,
                 ).start()
-            elif cmd_lower in ("/forecast", "/fc", "forecast"):
-                threading.Thread(
-                    target=lambda: telegram.send_html_chunks(
-                        build_open_temp_forecast_quick_html(client)
-                    ),
-                    daemon=True,
-                ).start()
-            elif cmd_lower in ("/digest", "/forecast_digest", "digest"):
-                if telegram.is_configured():
-                    try:
-                        telegram.send_message(
-                            "⏳ Building full forecast digest (all parsable city-days). "
-                            "May take 1–3 minutes; messages will follow in chunks."
+                # send event siblings plots for every open position
+                _active = (state.get("active_trades") or {})
+                for _mid, _row in (
+                    _active.items() if isinstance(_active, dict) else []
+                ):
+                    _real_mid = str(
+                        (_row.get("market_id") if isinstance(_row, dict) else None)
+                        or _mid
+                    ).strip()
+                    if _real_mid:
+                        schedule_post_buy_event_chart(
+                            client, telegram, _real_mid, context="STATUS"
                         )
-                    except Exception:
-                        pass
-
-                def run_full_digest() -> None:
-                    run_forecast_digest_once(
-                        client,
-                        telegram,
-                        force=True,
-                        send_telegram=True,
-                    )
-
-                threading.Thread(target=run_full_digest, daemon=True).start()
             elif cmd_lower in ("/help", "help", "עזרה"):
                 telegram.send_html_chunks(
                     "📖 <b>Commands:</b>\n"
                     "<code>/status</code> — portfolio report\n"
-                    "<code>/forecast</code> — all open positions + OM/calibration per row\n"
-                    "<code>/digest</code> — full forecast digest, all city-days (Telegram, one shot)\n"
                     "<code>/ask …</code> — OpenRouter advisor (needs <code>OPENROUTER_API_KEY</code>)\n"
                     "<code>/help</code> — this message\n"
                     "<i>Advisor also listens when your message contains the word "
@@ -285,19 +266,6 @@ def run_bot() -> None:
     except Exception as err:
         print(term_wrap(TERM_RED, f"[startup fingerprint failed] {err!r}"))
 
-    if get_effective_settings().forecast_digest_enabled:
-        try:
-            start_forecast_digest_background(telegram, config)
-            print(
-                term_wrap(
-                    TERM_DIM,
-                    "[forecast] background digest thread started (Telegram every N min)",
-                )
-            )
-        except Exception as err:
-            print(term_wrap(TERM_RED, f"[forecast digest thread failed] {err!r}"))
-
-    # fast exit watcher: daemon thread polling CLOB price every ~5 seconds
     from strategy.fast_exit_watcher import FastExitWatcher
     _fast_watcher = FastExitWatcher(
         client=client,

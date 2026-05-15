@@ -14,6 +14,7 @@ from strategy.market_match import (
     warn_gamma_trade_mismatch_once,
 )
 from strategy.momentum import record_samples_for_market_dicts
+from strategy.momentum_alert import check_and_alert
 from strategy.probability import parse_market_probability
 from strategy.time_utils import build_target_day_label, now_in_report_timezone
 from strategy.trades import process_single_market
@@ -229,6 +230,14 @@ def run_once(
     # from fast_exit_watcher (giving smooth plot curves without parallel connection overload).
     threading.Thread(
         target=record_samples_for_market_dicts, args=(samples,), daemon=True
+    ).start()
+
+    # Momentum debug alert: fire Telegram + plot if any sibling moves significantly.
+    # Runs in daemon thread — never blocks the scan loop.
+    threading.Thread(
+        target=check_and_alert,
+        args=(event_cache, telegram, client, settings),
+        daemon=True,
     ).start()
 
     return state

@@ -1,6 +1,7 @@
 import time
 from typing import Any, Dict, List
 
+from config.constants import MANUAL_SYNC_MIN_ENTRY_PRICE
 from notifications.post_buy_plot import schedule_post_buy_event_chart
 from polymarket_client import PolymarketClient, condition_ids_equivalent
 from state.pnl_ledger import append_trade_csv_row
@@ -177,6 +178,9 @@ def sync_state_with_portfolio(
             "order_ref": prev.get("order_ref", ""),
         }
         if not prev:
+            # skip dust positions — avg_price near zero is a sync artifact, not a real trade
+            if avg_px < MANUAL_SYNC_MIN_ENTRY_PRICE:
+                continue
             row["last_action"] = "manual_sync_open"
             append_trade_csv_row(
                 build_manual_trade_log_row(

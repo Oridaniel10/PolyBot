@@ -379,6 +379,7 @@ class PolymarketClient:
         self.trading_address = config.proxy_address or self.wallet_address
         self._condition_market_cache: Dict[str, str] = {}
         self._slug_market_cache: Dict[str, str] = {}
+        self._slug_event_id_cache: Dict[str, str] = {}
         self._temp_id_range: Optional[tuple] = None
         self._temp_id_range_lock = threading.Lock()
         self._highest_temp_public_search_cache: Optional[
@@ -471,6 +472,37 @@ class PolymarketClient:
             if str(first.get("id") or "") == mid:
                 return first
         return None
+
+    def get_event_id_from_market_slug(self, market_slug: str) -> Optional[str]:
+        """Derive event ID from a market slug by stripping the bucket suffix.
+
+        E.g. 'highest-temperature-in-warsaw-on-may-11-2026-23c'
+          → event slug 'highest-temperature-in-warsaw-on-may-11-2026'
+          → Gamma /events/slug/{slug} → event ID.
+        Used as fallback when gamma_event_ids_for_market() returns empty.
+        Results are cached in-process (slugs are stable within a run).
+        """
+        slug = (market_slug or "").strip()
+        if not slug:
+            return None
+        cached = self._slug_event_id_cache.get(slug)
+        if cached is not None:
+            return cached if cached else None
+        # strip the last bucket segment (e.g. '-23c', '-24c-or-higher', '-exact-22c')
+        event_slug = re.sub(r"-[^-]+$", "", slug)
+        if not event_slug or event_slug == slug:
+            self._slug_event_id_cache[slug] = ""
+            return None
+        root = self.config.gamma_base_url.rstrip("/")
+        try:
+            ev = self._request("GET", f"{root}/events/slug/{event_slug}", with_auth=False)
+        except Exception:
+            return None
+        eid = ""
+        if isinstance(ev, dict):
+            eid = str(ev.get("id") or "").strip()
+        self._slug_event_id_cache[slug] = eid
+        return eid if eid else None
 
     def get_markets_for_event_id(self, event_id: str) -> List[Dict[str, Any]]:
         """

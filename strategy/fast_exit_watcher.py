@@ -182,6 +182,16 @@ class FastExitWatcher:
         if clob_price > cur_peak:
             trade_row["highest_seen_price"] = round(float(clob_price), 6)
 
+        # --- check 0: take-profit (checked first so a spike isn't missed by slow loop) ---
+        tp_bar = float(getattr(settings, "take_profit", C.TAKE_PROFIT_THRESHOLD)) - C.TAKE_PROFIT_COMPARE_SLACK
+        if clob_price >= tp_bar - 1e-9:
+            _log(
+                f"take-profit trigger market={market_id} clob={clob_price:.4f} "
+                f"tp_bar={tp_bar:.4f} entry={entry:.4f}"
+            )
+            self._trigger_exit(market_id, trade_row, clob_price, "take-profit", settings)
+            return
+
         # --- check 1: per-type stop-loss / trailing stop (live mark) ---
         entry_type = str(trade_row.get("entry_type") or "normal").strip()
         peak = float(trade_row.get("highest_seen_price") or 0.0)
