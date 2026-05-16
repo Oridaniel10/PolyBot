@@ -84,6 +84,7 @@ def default_runtime_dict() -> Dict[str, Any]:
         "momentum_fast_window_seconds": C.MOMENTUM_FAST_WINDOW_SECONDS,
         "double_momentum_fast_window_seconds": C.DOUBLE_MOMENTUM_FAST_WINDOW_SECONDS,
         "momentum_fast_exit_drop": C.MOMENTUM_FAST_EXIT_DROP,
+        "momentum_fast_exit_enabled": C.MOMENTUM_FAST_EXIT_ENABLED,
         "momentum_competitor_surge": C.MOMENTUM_COMPETITOR_SURGE,
         "time_decay_hours": C.TIME_DECAY_HOURS,
         "time_decay_min_gain": C.TIME_DECAY_MIN_GAIN,
@@ -148,6 +149,16 @@ def default_runtime_dict() -> Dict[str, Any]:
         "persistent_leader_pct_rise": C.PERSISTENT_LEADER_PCT_RISE,
         "persistent_leader_min_price": C.PERSISTENT_LEADER_MIN_PRICE,
         "persistent_leader_max_price": C.PERSISTENT_LEADER_MAX_PRICE,
+        # normal_winner strategy
+        "normal_winner_enabled": C.NORMAL_WINNER_ENABLED,
+        "normal_winner_min_entry": C.NORMAL_WINNER_MIN_ENTRY,
+        "normal_winner_max_entry": C.NORMAL_WINNER_MAX_ENTRY,
+        "normal_winner_take_profit": C.NORMAL_WINNER_TAKE_PROFIT,
+        "normal_winner_stability_floor": C.NORMAL_WINNER_STABILITY_FLOOR,
+        "normal_winner_stability_min_sec": C.NORMAL_WINNER_STABILITY_MIN_SEC,
+        "normal_winner_stability_max_sec": C.NORMAL_WINNER_STABILITY_MAX_SEC,
+        "stop_loss_normal_winner": C.STOP_LOSS_NORMAL_WINNER,
+        "stop_loss_normal_winner_entry_drop_pct": C.STOP_LOSS_NORMAL_WINNER_ENTRY_DROP_PCT,
     }
 
 
@@ -260,6 +271,7 @@ class RuntimeSettings:
     momentum_fast_window_seconds: float
     double_momentum_fast_window_seconds: float
     momentum_fast_exit_drop: float
+    momentum_fast_exit_enabled: bool
     momentum_competitor_surge: float
     momentum_entry_rise: float
     momentum_pct_rise: float
@@ -315,6 +327,16 @@ class RuntimeSettings:
     persistent_leader_pct_rise: float = C.PERSISTENT_LEADER_PCT_RISE
     persistent_leader_min_price: float = C.PERSISTENT_LEADER_MIN_PRICE
     persistent_leader_max_price: float = C.PERSISTENT_LEADER_MAX_PRICE
+    # normal_winner
+    normal_winner_enabled: bool = C.NORMAL_WINNER_ENABLED
+    normal_winner_min_entry: float = C.NORMAL_WINNER_MIN_ENTRY
+    normal_winner_max_entry: float = C.NORMAL_WINNER_MAX_ENTRY
+    normal_winner_take_profit: float = C.NORMAL_WINNER_TAKE_PROFIT
+    normal_winner_stability_floor: float = C.NORMAL_WINNER_STABILITY_FLOOR
+    normal_winner_stability_min_sec: float = C.NORMAL_WINNER_STABILITY_MIN_SEC
+    normal_winner_stability_max_sec: float = C.NORMAL_WINNER_STABILITY_MAX_SEC
+    stop_loss_normal_winner: float = C.STOP_LOSS_NORMAL_WINNER
+    stop_loss_normal_winner_entry_drop_pct: float = C.STOP_LOSS_NORMAL_WINNER_ENTRY_DROP_PCT
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "RuntimeSettings":
@@ -398,6 +420,9 @@ class RuntimeSettings:
         dbl_fast_wsec = max(60.0, min(3600.0, dbl_fast_wsec))
         mom_drop = float(d.get("momentum_fast_exit_drop", C.MOMENTUM_FAST_EXIT_DROP))
         mom_drop = max(0.01, min(0.95, mom_drop))
+        mom_fast_exit_enabled = bool(
+            d.get("momentum_fast_exit_enabled", C.MOMENTUM_FAST_EXIT_ENABLED)
+        )
         mom_surge = float(
             d.get("momentum_competitor_surge", C.MOMENTUM_COMPETITOR_SURGE)
         )
@@ -568,6 +593,7 @@ class RuntimeSettings:
             momentum_fast_window_seconds=mom_fast_wsec,
             double_momentum_fast_window_seconds=dbl_fast_wsec,
             momentum_fast_exit_drop=mom_drop,
+            momentum_fast_exit_enabled=mom_fast_exit_enabled,
             momentum_competitor_surge=mom_surge,
             momentum_entry_rise=mom_entry_rise,
             momentum_pct_rise=mom_pct_rise,
@@ -952,6 +978,31 @@ class RuntimeSettings:
             persistent_leader_max_price=max(
                 0.01,
                 min(0.99, float(d.get("persistent_leader_max_price", C.PERSISTENT_LEADER_MAX_PRICE))),
+            ),
+            normal_winner_enabled=bool(d.get("normal_winner_enabled", C.NORMAL_WINNER_ENABLED)),
+            normal_winner_min_entry=max(
+                0.5, min(0.9999, float(d.get("normal_winner_min_entry", C.NORMAL_WINNER_MIN_ENTRY)))
+            ),
+            normal_winner_max_entry=max(
+                0.5, min(0.9999, float(d.get("normal_winner_max_entry", C.NORMAL_WINNER_MAX_ENTRY)))
+            ),
+            normal_winner_take_profit=max(
+                0.5, min(1.0, float(d.get("normal_winner_take_profit", C.NORMAL_WINNER_TAKE_PROFIT)))
+            ),
+            normal_winner_stability_floor=max(
+                0.01, min(0.99, float(d.get("normal_winner_stability_floor", C.NORMAL_WINNER_STABILITY_FLOOR)))
+            ),
+            normal_winner_stability_min_sec=max(
+                60.0, min(86400.0, float(d.get("normal_winner_stability_min_sec", C.NORMAL_WINNER_STABILITY_MIN_SEC)))
+            ),
+            normal_winner_stability_max_sec=max(
+                60.0, min(86400.0, float(d.get("normal_winner_stability_max_sec", C.NORMAL_WINNER_STABILITY_MAX_SEC)))
+            ),
+            stop_loss_normal_winner=max(
+                0.01, min(0.99, float(d.get("stop_loss_normal_winner", C.STOP_LOSS_NORMAL_WINNER)))
+            ),
+            stop_loss_normal_winner_entry_drop_pct=max(
+                0.0, min(0.5, float(d.get("stop_loss_normal_winner_entry_drop_pct", C.STOP_LOSS_NORMAL_WINNER_ENTRY_DROP_PCT)))
             ),
         )
 

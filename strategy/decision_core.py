@@ -96,6 +96,13 @@ def momentum_fast_exit_drop(settings: RuntimeSettings) -> float:
     return max(0.01, min(0.95, d))
 
 
+def momentum_fast_exit_window_enabled(settings: RuntimeSettings) -> bool:
+    """hour-window peak→trough exit (reason momentum-stop-loss).  not per-type SL bars."""
+    return bool(
+        getattr(settings, "momentum_fast_exit_enabled", C.MOMENTUM_FAST_EXIT_ENABLED)
+    )
+
+
 def seconds_since_entry_iso(
     entry_time_utc: str,
     *,
@@ -1180,6 +1187,23 @@ def evaluate_entry(
                 active_leader_meta = {"reason": "persistent_leader_2h"}
                 leader_yield_win_sec = _pl_lookback
 
+    # ── Section 7: normal_winner path ────────────────────────────────────────
+    # "Collect end-of-day winners": buy a high-conviction near-resolved market.
+    # Conditions:
+    #   1. Strategy is enabled and market is not already momentum/PL entry.
+    #   2. Current YES in [normal_winner_min_entry, normal_winner_max_entry].
+    #   3. Price has been *continuously* above normal_winner_stability_floor for
+    #      >= normal_winner_stability_min_sec (contiguous tail in ring buffer).
+    # This entry does NOT require a momentum rise — it's a stability-based buy.
+    is_normal_winner = False
+    _nw_enabled = bool(getattr(settings, "normal_winner_enabled", C.NORMAL_WINNER_ENABLED))
+    if _nw_enabled and not is_momentum_entry:
+        nw_min = float(getattr(settings, "normal_winner_min_entry", C.NORMAL_WINNER_MIN_ENTRY))
+        nw_max = float(getattr(settings, "normal_winner_max_entry", C.NORMAL_WINNER_MAX_ENTRY))
+        if nw_min <= mkt <= nw_max:
+            if normal_winner_stability_check(market_id, settings):
+                is_normal_winner = True
+
     # surgical diagnostic — single line, grep-friendly. logs every entry eval so
     # we can see *which* gate failed when an obvious surge gets skipped.
     emit_mom_diag(
@@ -1215,6 +1239,8 @@ def evaluate_entry(
             return "double_momentum"
         if is_momentum_entry:
             return "momentum"
+        if is_normal_winner:
+            return "normal_winner"
         return "normal"
 
     def finish(
@@ -1351,9 +1377,10 @@ def evaluate_entry(
     if market_id in active:
         return finish("SKIP", "already_holding_this_market")
 
-    # 3. max positions per event
+    # 3. max positions per event — skipped for normal_winner: it buys independently
+    # of sibling buckets (e.g. a dead 0% bucket shouldn't block the clear winner).
     max_pos = int(getattr(settings, "max_positions_per_event", 1))
-    if max_pos > 0 and ev_mids:
+    if max_pos > 0 and ev_mids and not is_normal_winner:
         open_n = 0
         for ak, row in active.items():
             if not isinstance(row, dict):
@@ -1378,8 +1405,8 @@ def evaluate_entry(
             skip_lk = f"leader_yield_blocked:{lk}" if lk else "leader_yield_blocked"
         return finish("SKIP", skip_lk)
 
-    # 4–6 model path gates (skipped when momentum path qualifies)
-    if not is_momentum_entry and consensus_c is not None:
+    # 4–6 model path gates (skipped when momentum or normal_winner path qualifies)
+    if not is_momentum_entry and not is_normal_winner and consensus_c is not None:
         max_mkt = float(getattr(settings, "max_market_prob_for_buy", 0.75))
         if mkt > max_mkt + 1e-9:
             return finish("SKIP", f"market_prob {mkt:.4f} > max {max_mkt:.4f}")
@@ -1403,7 +1430,7 @@ def evaluate_entry(
         consensus_c=consensus_c,
         sigma_c_setting=0.0,
     )
-    if settings.enable_competition_filter and not is_momentum_entry:
+    if settings.enable_competition_filter and not is_momentum_entry and not is_normal_winner:
         min_mkt_gap = float(
             getattr(
                 settings,
@@ -1420,7 +1447,8 @@ def evaluate_entry(
             )
 
     # 9. negative momentum — don't buy into a falling bucket
-    if momentum_15m < -0.10 and not is_momentum_entry:
+    # normal_winner is immune: price near 1.0 won't have meaningful downward momentum
+    if momentum_15m < -0.10 and not is_momentum_entry and not is_normal_winner:
         return finish(
             "SKIP",
             f"negative_momentum {momentum_15m:+.3f} points in 15m",
@@ -1428,6 +1456,13 @@ def evaluate_entry(
         )
 
     # 10. research edge gate removed — price-first entries
+
+    if is_normal_winner:
+        reason = (
+            f"normal_winner_stable_high "
+            f"price={mkt:.4f} floor={C.NORMAL_WINNER_STABILITY_FLOOR:.2f}"
+        )
+        return finish("BUY", reason, competition=comp)
 
     reason = (
         "momentum_entry_ride_the_wave" if is_momentum_entry else "passed_all_filters"
@@ -1438,6 +1473,48 @@ def evaluate_entry(
         competition=comp,
         momentum_relaxed=is_momentum_entry,
     )
+
+
+def normal_winner_stability_check(
+    market_id: str,
+    settings: RuntimeSettings,
+) -> bool:
+    """Return True if market has been stably above normal_winner_stability_floor.
+
+    Loads samples in the max-lookback window and checks that:
+    - The span of samples covers >= stability_min_sec.
+    - Every sample in the window was above stability_floor.
+    """
+    floor = float(getattr(settings, "normal_winner_stability_floor", C.NORMAL_WINNER_STABILITY_FLOOR))
+    min_sec = float(getattr(settings, "normal_winner_stability_min_sec", C.NORMAL_WINNER_STABILITY_MIN_SEC))
+    max_sec = float(getattr(settings, "normal_winner_stability_max_sec", C.NORMAL_WINNER_STABILITY_MAX_SEC))
+
+    samples = load_samples_for_market(market_id, max_sec)
+    if len(samples) < C.MOMENTUM_MIN_SAMPLE_POINTS:
+        return False
+
+    # filter to the usable portion where all prices are above floor
+    above = [(ts, px) for ts, px in samples if float(px) >= floor]
+    if len(above) < C.MOMENTUM_MIN_SAMPLE_POINTS:
+        return False
+
+    # require the *contiguous tail* (most recent run) to span >= min_sec
+    # walk backward from newest sample; stop when we find a break below floor
+    now_ts = samples[-1][0]
+    cutoff_ts = now_ts - max_sec
+    contiguous_start_ts = now_ts
+    prev_ts = now_ts
+    for ts, px in reversed(samples):
+        if float(px) < floor:
+            break
+        if prev_ts - ts > 120:
+            # gap of > 2 minutes breaks continuity
+            break
+        contiguous_start_ts = float(ts)
+        prev_ts = float(ts)
+
+    span = now_ts - contiguous_start_ts
+    return span >= min_sec
 
 
 def stop_loss_bar_for_entry_type(
@@ -1454,6 +1531,8 @@ def stop_loss_bar_for_entry_type(
         return float(getattr(settings, "stop_loss_momentum", C.STOP_LOSS_MOMENTUM))
     if et in ("manual", "ui"):
         return float(getattr(settings, "stop_loss_manual", C.STOP_LOSS_MANUAL))
+    if et == "normal_winner":
+        return float(getattr(settings, "stop_loss_normal_winner", C.STOP_LOSS_NORMAL_WINNER))
     return float(getattr(settings, "stop_loss_normal", C.STOP_LOSS_NORMAL))
 
 
@@ -1484,6 +1563,14 @@ def stop_loss_entry_drop_pct_for_entry_type(
                 settings,
                 "stop_loss_manual_entry_drop_pct",
                 C.STOP_LOSS_MANUAL_ENTRY_DROP_PCT,
+            )
+        )
+    if et == "normal_winner":
+        return float(
+            getattr(
+                settings,
+                "stop_loss_normal_winner_entry_drop_pct",
+                C.STOP_LOSS_NORMAL_WINNER_ENTRY_DROP_PCT,
             )
         )
     return float(
@@ -1596,7 +1683,7 @@ def check_exits(
     Returns (exit_reason, reference_price) or (None, None) if HOLD.
 
     Exit priority:
-    1. Momentum fast exit — absolute 0.15 price drop from peak in 15 min window
+    1. Momentum fast exit (optional) — peak→trough in momentum_window vs entry
     2. Competitor dominance / surge
     3. Time-decay exit
     """
@@ -1605,36 +1692,36 @@ def check_exits(
     entry = float(trade.get("entry_price") or 0)
     entry_time_utc = str(trade.get("entry_time_utc") or "").strip()
 
-    # 1. fast stop-loss: absolute drop from rolling peak — since entry if known,
-    # otherwise legacy window anchored to earliest sample (e.g. manual trades).
-    wsec = momentum_window_sec(settings)
-    fast_exit = False
-    dd = 0.0
-    entry_ts = 0.0
-    if entry_time_utc:
-        try:
-            entry_ts = datetime.fromisoformat(entry_time_utc).timestamp()
-        except (ValueError, TypeError):
-            entry_ts = 0.0
-    drop_thr = momentum_fast_exit_drop(settings)
-    if entry_ts > 0:
-        fast_exit, dd = should_fast_exit_since_ts(
-            market_id,
-            since_ts=entry_ts,
-            drop_threshold=drop_thr,
-            window_sec=wsec,
-        )
-    else:
-        fast_exit, dd = should_fast_exit(
-            market_id,
-            drop_threshold=drop_thr,
-            window_sec=wsec,
-        )
-    if fast_exit and mark < entry:
-        # tag SL category so close_position can label it in logs/telegram.
-        trade["sl_category"] = C.SL_CATEGORY_MOMENTUM
-        trade["sl_drawdown_points"] = round(float(dd), 6)
-        return "momentum-stop-loss", gamma_prob
+    # 1. fast window exit (momentum-stop-loss): optional; off when momentum_fast_exit_enabled=false
+    if momentum_fast_exit_window_enabled(settings):
+        wsec = momentum_window_sec(settings)
+        fast_exit = False
+        dd = 0.0
+        entry_ts = 0.0
+        if entry_time_utc:
+            try:
+                entry_ts = datetime.fromisoformat(entry_time_utc).timestamp()
+            except (ValueError, TypeError):
+                entry_ts = 0.0
+        drop_thr = momentum_fast_exit_drop(settings)
+        if entry_ts > 0:
+            fast_exit, dd = should_fast_exit_since_ts(
+                market_id,
+                since_ts=entry_ts,
+                drop_threshold=drop_thr,
+                window_sec=wsec,
+            )
+        else:
+            fast_exit, dd = should_fast_exit(
+                market_id,
+                drop_threshold=drop_thr,
+                window_sec=wsec,
+            )
+        if fast_exit and mark < entry:
+            # tag SL category so close_position can label it in logs/telegram.
+            trade["sl_category"] = C.SL_CATEGORY_MOMENTUM
+            trade["sl_drawdown_points"] = round(float(dd), 6)
+            return "momentum-stop-loss", gamma_prob
 
     crash_thr = float(getattr(settings, "crash_drop_pct_from_peak", 0.0))
     crash_grace = float(
@@ -1663,8 +1750,14 @@ def check_exits(
                     )
                     return "stop-loss", gamma_prob
 
-    # 2. trailing stop / per-type SL breach (live mark vs effective stop)
+    # take-profit for normal_winner: exit when market is about to resolve YES
     entry_type = str(trade.get("entry_type") or "normal").strip()
+    if entry_type == "normal_winner":
+        tp = float(getattr(settings, "normal_winner_take_profit", C.NORMAL_WINNER_TAKE_PROFIT))
+        if mark + 1e-9 >= tp:
+            return "take-profit", gamma_prob
+
+    # 2. trailing stop / per-type SL breach (live mark vs effective stop)
     highest_seen = float(trade.get("highest_seen_price") or 0.0)
     breach = classify_stop_loss_breach(
         entry_type,

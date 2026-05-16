@@ -29,7 +29,7 @@ run_bot → sync_state_with_portfolio → run_once → process_single_market
    ┌────────────────────────────────────────────┐
    │  FAST EXIT WATCHER (daemon thread)         │
    │  polls CLOB /price every 2 seconds         │
-   │  checks: per-type SL + momentum fast exit  │
+   │  checks: per-type SL + optional window momentum exit │
    │  strategy/fast_exit_watcher.py             │
    └────────────────────────────────────────────┘
 ```
@@ -124,6 +124,7 @@ At buy time, `evaluate_entry()` sets `TradeDecision.entry_type` using **`momentu
 
 - `"double_momentum"` → double thresholds + leader-yield on the **same** winning `W`, and current YES in the double band.
 - `"momentum"` → standard thresholds + leader-yield on the **same** winning `W`, and current YES in the momentum band — **only if** double aligned path did not fire first.
+- `"normal_winner"` → stability-based: YES ≥ 0.945 and price stably above 0.75 for ≥ 30 min. Bypasses rise/leader-yield/competition/model gates.
 - `"normal"` → passes the normal price band + competition (+ optional model gates). No leader-yield requirement.
 
 If **rise-alone** would pass on some window (`momentum_multi_window_check`) but **no** `W` has both rise + leader-yield (or the event has &lt;2 buckets), the bot returns **`SKIP`** `leader_yield_blocked…`.
@@ -142,6 +143,36 @@ The `TradeDecision` carries `trigger_window` (e.g. `7m_win`), `trigger_*` for th
 | `leader_yield_fall_min_frac` | **0.41** | [FRAC] fraction of sibling’s own old YES | Cond **(A)** alternative: sibling dropped ≥ this fraction of its own start price |
 | `collective_fall_min_abs_pts` | **0.40** | [PRICE] sum of drops | Cond **(B)**: total drop across all qualifying siblings ≥ this many points |
 | `collective_fall_min_frac` | **0.41** | [FRAC] weighted collective | Cond **(B)** alternative: total drop ÷ sum(siblings’ old YES) ≥ this |
+
+### Normal Winner Entry (End-of-Day High-Conviction) 🏆
+
+A **stability-based entry** for markets that are near-resolved: YES has been **stably above a floor** for at least 30 minutes (up to 2h) and is now trading in the **≥ 0.945** zone. The goal is to collect small end-of-day gains when a market is virtually certain to resolve YES.
+
+> **Does NOT require a momentum rise** — purely based on price stability and current level.
+
+| Variable | Default | Where |
+|----------|---------|-------|
+| `normal_winner_enabled` | **true** | `config/constants.py` / `data/runtime_config.json` |
+| `normal_winner_min_entry` | **0.945** | minimum YES to buy |
+| `normal_winner_max_entry` | **0.97** | maximum YES to buy (avoid buying at market-resolve) |
+| `normal_winner_take_profit` | **0.9987** | exit (take-profit) when YES reaches this |
+| `normal_winner_stability_floor` | **0.75** | price must have been above this throughout the window |
+| `normal_winner_stability_min_sec` | **1800** (30 min) | minimum contiguous run above floor |
+| `normal_winner_stability_max_sec` | **7200** (2h) | lookback window for checking stability |
+| `stop_loss_normal_winner` | **0.88** | hard stop floor |
+| `stop_loss_normal_winner_entry_drop_pct` | **0.05** (5%) | also exit if drops >5% from entry |
+
+**Entry conditions (all must pass):**
+1. `normal_winner_min_entry ≤ current_yes ≤ normal_winner_max_entry`
+2. The **contiguous tail** of price samples (walking backward from now) stays above `normal_winner_stability_floor` for ≥ `normal_winner_stability_min_sec` seconds with no gap > 2 minutes
+
+**Exit:**
+- **Take-profit** when YES ≥ `normal_winner_take_profit` (0.9997) — market resolving YES
+- **Stop-loss** effective floor = max(`stop_loss_normal_winner=0.88`, `entry * (1 - 0.05)`)
+
+**Bypasses:** model/edge gates, competition filter, negative momentum gate (all irrelevant at this price level).
+
+**Interaction with other strategies:** evaluated only if no momentum/double-momentum/persistent-leader signal fired first. Normal BUY is unaffected.
 
 ### Persistent Leader Entry (2h Dominance) 🏆
 
@@ -218,7 +249,7 @@ A buy is executed only when **ALL** conditions pass, checked in order:
 
 Exits are checked in priority order (first match wins). There are **two loops** checking exits:
 
-1. **Fast exit watcher** (daemon thread, every **2 seconds**) — checks per-type SL + momentum fast exit only
+1. **Fast exit watcher** (daemon thread, every **2 seconds**) — checks per-type SL + optional hour-window momentum fast exit
 2. **Main loop** (every **30 seconds**) — checks all exit conditions
 
 ### Exit Priority Table
@@ -226,7 +257,7 @@ Exits are checked in priority order (first match wins). There are **two loops** 
 | # | Condition | Rule | Speed | Variable | Defined in |
 |---|-----------|------|-------|----------|------------|
 | 1 | **Market resolved** | status = closed/claimable/resolved → CLAIM | 30s | `STATUS_CLOSED` | `config/constants.py` |
-| 2 | **Momentum fast exit** 🚨 | ABSOLUTE peak-to-trough ≥ `momentum_fast_exit_drop` (default **0.30**) inside `momentum_window_seconds`; slice starts at **`entry_time_utc`** when set, else earliest sample in window. Requires mark **< entry**. | **2s** (watcher) + 30s (main) | `momentum_fast_exit_drop` | `strategy/momentum_engine.py`, `strategy/decision_core.py::check_exits`, `strategy/fast_exit_watcher.py` |
+| 2 | **Momentum fast exit** 🚨 *(optional)* | When **`momentum_fast_exit_enabled`** is `true`: ABSOLUTE peak-to-trough ≥ `momentum_fast_exit_drop` inside `momentum_window_seconds`; slice starts at **`entry_time_utc`**. Requires mark **< entry** → reason **`momentum-stop-loss`**. When **`false`**, this row is skipped — only per-type SL + trailing + crash + TP (and other rows) apply. | **2s** (watcher) + 30s (main) | `momentum_fast_exit_enabled`, `momentum_fast_exit_drop`, `momentum_window_seconds` | `strategy/momentum_engine.py`, `strategy/decision_core.py::check_exits`, `strategy/fast_exit_watcher.py` |
 | 2b | **Crash from peak** 🧨 | loss from `highest_seen_price` ≥ `crash_drop_pct_from_peak × peak` **and** mark below entry → **`stop-loss`**, `sl_category=SL_CRASH_PEAK`. Set `crash_drop_pct_from_peak` to **0** to disable. | **2s** + 30s | `crash_drop_pct_from_peak` | `strategy/decision_core.py`, `strategy/fast_exit_watcher.py` |
 | 3 | **Dominant competitor** | sibling #1 by YES has momentum + gap ≥ held + 0.15 → EXIT | 30s | `MOMENTUM_SWITCH_ABOVE_HELD_GAP` | `strategy/decision_core.py` |
 | 4 | **Competitor surge** 🔥 | any sibling rose ≥ `momentum_competitor_surge` **absolute** points in `momentum_window_seconds` | 30s | `MOMENTUM_COMPETITOR_SURGE` (default **0.25**) | `config/constants.py` + `data/runtime_config.json` → `strategy/decision_core.py::check_exits` → `peer_surge_detected` |
@@ -236,12 +267,16 @@ Exits are checked in priority order (first match wins). There are **two loops** 
 | 8 | **Take-profit** | mark ≥ 0.94 | 30s | `TAKE_PROFIT_THRESHOLD = 0.94` | `config/constants.py` |
 | 9 | **2h stagnation** 🆕 | mark < entry AND max rise in 2h < 5% → exit dead position | **2s** (watcher) | `stagnation_sl_enabled`, `stagnation_sl_min_rise_pct` | `strategy/fast_exit_watcher.py` |
 
-### Momentum Fast Exit — Absolute Drop 🆕
+### Momentum fast exit — hour-window peak→trough *(optional)*
 
-Momentum entry, competitor surge, and fast exit use **absolute price points**, not percentage:
+**Toggle:** `momentum_fast_exit_enabled` in `data/runtime_config.json` (default **`true`** in `config/constants.py` as `MOMENTUM_FAST_EXIT_ENABLED`). Set to **`false`** to **disable** exits with reason **`momentum-stop-loss`** (no more “look back one hour for a deep dip vs peak” exit). **Per-type** stop-loss (`stop_loss_momentum`, `stop_loss_double_momentum`, `stop_loss_normal`, `stop_loss_normal_winner`, …), **entry-relative %**, and **trailing stop** are unchanged — they still use `effective_stop_price_for_trade` / `classify_stop_loss_breach`.
+
+Momentum entry signals and **competitor surge** still use **absolute price points** in windows (separate from this toggle for surge — only the **`momentum-stop-loss`** path is gated).
+
+When enabled, fast exit uses:
 - Entry: 0.40 → 0.46 is **not** +0.15 momentum; 0.40 → 0.55 is.
 - Surge: peer 0.30 → 0.45 qualifies; 0.30 → 0.345 does not.
-- Fast exit: peak-to-trough ≥ **`momentum_fast_exit_drop`** (default **0.30**) in points (runtime-tunable).
+- Fast exit: peak-to-trough ≥ **`momentum_fast_exit_drop`** in points (runtime `momentum_fast_exit_drop`).
 
 #### Where to change competitor surge (not the same as price stop-loss)
 
@@ -297,7 +332,7 @@ When a stop-loss fires, the bot tags the breach so reports and Telegram messages
 | `SL_ABSOLUTE` | mark below per-type hard floor |
 | `SL_RELATIVE` | mark below `entry_price × (1 − entry_drop_pct)` |
 | `SL_TRAILING` | mark below `entry_price + lock_gain` after activation |
-| `SL_MOMENTUM` | momentum drawdown fast exit (`momentum_fast_exit_drop`) |
+| `SL_MOMENTUM` | only when **`momentum_fast_exit_enabled`**: hour-window fast exit hit `momentum_fast_exit_drop` + mark &lt; entry (`momentum-stop-loss`) |
 
 The category is stored on the trade row (`trade["sl_category"]` / `trade["sl_level"]` / `trade["sl_drawdown_points"]`) so it survives the close path, ledger write, and the Telegram template (`🔴 SELL: [STOP LOSS] - Reason: Trailing Stop (Trigger: 0.60, Max Seen: 0.72)`).
 
@@ -533,7 +568,7 @@ Every trade (buy/sell/claim) and every scheduled report sends a rich portfolio m
 | **Fast exit watcher** 🆕 | `strategy/fast_exit_watcher.py` — daemon thread, 2s CLOB polling |
 | **Price samples (infra)** | `strategy/momentum.py` |
 | **Anti-churn** | `strategy/churn.py` — per-market + per-event churn |
-| **Portfolio sync** | `strategy/sync_portfolio.py` — preserves `entry_type` through sync |
+| **Portfolio sync** | `strategy/sync_portfolio.py` — merges Data API; late-fill reclaim only when `avg_price` ≈ bot `intended_price` (see “Late-fill reclaim” below) |
 | **Bot runner** | `strategy/bot_runner.py` — starts fast exit watcher at boot |
 | **Portfolio Telegram** | `notifications/portfolio.py` |
 | **Dashboard API** | `app/dashboard.py` |
@@ -541,6 +576,14 @@ Every trade (buy/sell/claim) and every scheduled report sends a rich portfolio m
 | **Constants** | `config/constants.py` — grouped by entry type |
 | **Runtime settings** | `config/settings.py`, `data/runtime_config.json` |
 | **Calibration data** | `data/research/calibration_latest.json` |
+
+### Late-fill reclaim vs manual site buy
+
+After **`BUY UNFILLED` / `limit_cancelled`**, `place_buy` removes `recent_buy_attempts` for that market (the limit executor already re-polls after cancel — no hidden fill). The next scan can retry without `recent_buy_attempt_pending`, and a **manual** UI buy cannot inherit the bot’s old `entry_type` (e.g. `double_momentum`) or **momentum-stop-loss** rules.
+
+If reclaim is considered, it runs **only** when Data-API `avg_price` is within **`LATE_FILL_RECLAIM_MAX_AVG_VS_INTENDED`** in `config/constants.py` (plus 5% of `intended_price`) of the stored `intended_price`. A manual buy near **0.88** after a bot attempt at **0.69** does **not** reclaim — sync opens **`manual_sync_open`** / `entry_type=manual`, logs **`MANUAL BUY DETECTED`** to CSV, and uses **manual** SL.
+
+**Retry after unfilled:** each new scan runs `evaluate_entry` again; if it still returns **BUY**, `place_buy` runs again. Notional stays capped by **`max_buy_notional_usd`** / **`MAX_BUY_NOTIONAL_USD`**. If the CLOB still shows an **OPEN** GTC after timeout, `limit_executor` runs extra cancel+poll rounds; any stubborn order id is stored in **`state["orphan_limit_buy_orders"]`** and the **next** `place_buy` for that market calls cancel again **before** posting a new limit, so two live bids should not stack.
 
 ---
 
@@ -576,7 +619,8 @@ Every trade (buy/sell/claim) and every scheduled report sends a rich portfolio m
 | `momentum_pct_rise` | **1.0** | Min **fractional** YES rise alternative (+100%) |
 | `momentum_min_start_price` | 0.0 | Floor on *old* price for pct gate (0 = allow e.g. 0.05 → 0.15 on pct) |
 | `momentum_min_price` / `momentum_max_entry` | **0.55 / 0.85** | Live-price band at decision time |
-| `momentum_fast_exit_drop` | **0.40** | Min **absolute** peak-to-trough drop inside the window for momentum fast exit |
+| `momentum_fast_exit_enabled` | **`true`** | **`false`** = never fire **`momentum-stop-loss`** (hour-window peak→trough); keep per-type SL + trailing only |
+| `momentum_fast_exit_drop` | **0.35** | Min **absolute** peak-to-trough drop inside the window (only if `momentum_fast_exit_enabled`) |
 | `crash_drop_pct_from_peak` | 0.50 | Fractional drop from `highest_seen_price` triggering crash exit (0 = off) |
 | `buy_escalate_notional_on_submit_fail` | `true` | Ladder buys after submit-side limit failure |
 | `buy_escalate_notional_step_usd` | 1.0 | USD increment per escalation step |

@@ -16,7 +16,7 @@ from typing import Any, Dict
 
 from config import constants as C
 from config.settings import RuntimeSettings
-from polymarket_client import PolymarketClient, order_fully_filled
+from polymarket_client import PolymarketClient, order_fully_filled, order_resting_unfilled
 
 # poll cadence for an open limit order while we wait for the fill timeout.
 _LIMIT_POLL_INTERVAL_SEC = 0.5
@@ -43,6 +43,8 @@ class LimitExecutionResult:
     market_response: Dict[str, Any] = field(default_factory=dict)
     error: str = ""
     slippage_estimate: float = 0.0
+    # set when cancel+poll could not clear a GTC rest order from the book (UI may show open).
+    stale_exchange_order: bool = False
 
 
 def is_emergency_sell_reason(reason: str) -> bool:
@@ -182,10 +184,7 @@ def execute_buy(
     # means price moved away from our limit.
     live_at_end = _effective_best_ask_yes(client, market, float(decision_price))
 
-    # RACE GUARD: re-poll after cancel — the fill may have landed in flight between
-    # the last poll and the cancel call.  Polymarket processes cancel + fill atomically
-    # on their side only when the fill arrived first; if so, get_order_state will show
-    # a non-zero size_matched even though cancel returned success.
+    final_state: Dict[str, Any] = {}
     try:
         final_state = client.get_order_state(order_id) or {}
         matched = float(
@@ -214,7 +213,55 @@ def execute_buy(
                 slippage_estimate=slippage,
             )
     except Exception:
+        final_state = {}
+
+    # cancel hardening: GTC can remain "live" if cancel races or the UI still shows OPEN.
+    for _ in range(15):
+        if not order_resting_unfilled(final_state):
+            break
+        client.cancel_order(order_id)
+        time.sleep(0.22)
+        try:
+            final_state = client.get_order_state(order_id) or {}
+        except Exception:
+            final_state = {}
+
+    try:
+        matched2 = float(
+            final_state.get("size_matched")
+            or final_state.get("filled_size")
+            or final_state.get("sizeMatched")
+            or 0.0
+        )
+        if matched2 > 0:
+            fill_px = _filled_price(final_state, fallback=float(limit_px))
+            slippage = max(0.0, fill_px - float(decision_price))
+            print(
+                f"[limit_executor] late-fill during cancel-harden "
+                f"order={order_id} matched={matched2:.4f} fill_px={fill_px:.4f}"
+            )
+            return LimitExecutionResult(
+                mode="limit_filled_late",
+                filled=True,
+                fill_price=fill_px,
+                filled_shares=matched2,
+                order_id=order_id,
+                decision_price=float(decision_price),
+                live_clob_price_before_order=float(live_at_end or live_clob_before),
+                limit_price=float(limit_px),
+                timeout_sec=int(timeout_sec),
+                slippage_estimate=slippage,
+            )
+    except Exception:
         pass
+
+    stale = order_resting_unfilled(final_state)
+    if stale:
+        print(
+            f"[limit_executor] WARNING: buy limit may still be OPEN on exchange "
+            f"order_id={order_id} market={market.get('id')} — next place_buy will "
+            f"retry cancel via orphan_limit_buy_orders"
+        )
 
     return LimitExecutionResult(
         mode="limit_cancelled",
@@ -224,7 +271,9 @@ def execute_buy(
         live_clob_price_before_order=float(live_at_end or live_clob_before),
         limit_price=float(limit_px),
         timeout_sec=int(timeout_sec),
-        market_response=last_state,
+        market_response=final_state,
+        error=("open_order_may_remain_on_exchange" if stale else ""),
+        stale_exchange_order=stale,
     )
 
 

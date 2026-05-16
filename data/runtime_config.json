@@ -23,7 +23,7 @@
   "stop_loss_double_momentum": 0.20,
   "stop_loss_double_momentum_entry_drop_pct": 0.50,
 
-  "take_profit_threshold": 0.92,
+  "take_profit_threshold": 0.94,
   "min_lead_over_runner_up": 0.15,
   "min_market_yes_lead_gap_normal": 0.5,
   "enable_competition_filter": true,
@@ -35,7 +35,7 @@
   "churn_cooldown_sec": 1800,
   "blacklist_market_ids": [],
   "scan_interval_seconds": 20,
-  "min_order_notional_usd": 3.0,
+  "min_order_notional_usd": 4.0,
   "max_buy_notional_usd": 5.0,
   "max_trade_fraction_of_cash": 0.9,
   "dashboard_weather_max_pages": 6,
@@ -64,6 +64,7 @@
   "momentum_fast_window_seconds": 300,
   "double_momentum_fast_window_seconds": 300,
   "momentum_fast_exit_drop": 0.35,
+  "momentum_fast_exit_enabled": false,
   "crash_drop_pct_from_peak": 0.5,
   "crash_from_peak_grace_sec_after_entry": 180,
   "momentum_competitor_surge": 0.30,
@@ -104,7 +105,7 @@
   "post_buy_plot_window_min": 120,
   "telegram_message_thread_id": 0,
 
-  "stagnation_sl_enabled": true,
+  "stagnation_sl_enabled": false,
   "stagnation_sl_window_hours": 2.0,
   "stagnation_sl_min_rise_pct": 0.05,
 
@@ -119,5 +120,19 @@
 
   "persistent_leader_enabled": true,
   "persistent_leader_lookback_sec": 7200,
-  "persistent_leader_min_fraction": 0.80
+  "persistent_leader_min_fraction": 0.80,
+  "persistent_leader_entry_rise": 0.10,
+  "persistent_leader_pct_rise": 0.25,
+  "persistent_leader_min_price": 0.55,
+  "persistent_leader_max_price": 0.85,
+
+  "normal_winner_enabled": true,
+  "normal_winner_min_entry": 0.92,
+  "normal_winner_max_entry": 0.96,
+  "normal_winner_take_profit": 0.9987,
+  "normal_winner_stability_floor": 0.75,
+  "normal_winner_stability_min_sec": 900,
+  "normal_winner_stability_max_sec": 7200,
+  "stop_loss_normal_winner": 0.75,
+  "stop_loss_normal_winner_entry_drop_pct": 0.20
 }

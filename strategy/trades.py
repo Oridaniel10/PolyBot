@@ -11,6 +11,9 @@ from config.constants import (
     DUST_SHARES_EPS,
     MAX_BUY_NOTIONAL_USD,
     MAX_CONCURRENT_POSITIONS,
+    NORMAL_WINNER_ENABLED,
+    NORMAL_WINNER_MAX_ENTRY,
+    NORMAL_WINNER_MIN_ENTRY,
     DOUBLE_MOMENTUM_ENTRY_RISE,
     DOUBLE_MOMENTUM_MAX_PRICE,
     DOUBLE_MOMENTUM_MIN_PRICE,
@@ -35,7 +38,11 @@ from config.constants import (
     TRADE_RECENT_SELL_TTL_SEC,
     TRADE_SELL_LOCK_TTL_SEC,
 )
-from config.settings import RuntimeSettings, get_effective_settings, get_city_buy_earliest_hour
+from config.settings import (
+    RuntimeSettings,
+    get_effective_settings,
+    get_city_buy_earliest_hour,
+)
 from notifications.portfolio import send_portfolio_telegram
 from notifications.post_buy_plot import schedule_post_buy_event_chart
 from notifications.research_trade_fmt import (
@@ -60,6 +67,8 @@ from polymarket_client import (
     SELL_EXECUTION_LIMIT_GTC,
     SELL_EXECUTION_SKIPPED,
     gamma_event_ids_for_market,
+    order_fully_filled,
+    order_resting_unfilled,
 )
 from state.pnl_ledger import append_ledger_row, append_trade_csv_row
 from strategy.city_tz import _extract_city_from_title, city_local_time_str
@@ -188,6 +197,8 @@ _TRADE_CSV_PLAN_PAD = {
 
 def entry_type_max_price(entry_type: str, settings: RuntimeSettings) -> float:
     """resolve the max allowed live CLOB price for a buy of this entry type."""
+    from config.constants import NORMAL_WINNER_MAX_ENTRY
+
     et = str(entry_type or "normal").strip()
     if et == "double_momentum":
         return float(
@@ -195,10 +206,16 @@ def entry_type_max_price(entry_type: str, settings: RuntimeSettings) -> float:
         )
     if et == "momentum":
         return float(getattr(settings, "momentum_max_entry", MOMENTUM_MAX_ENTRY))
+    if et == "normal_winner":
+        return float(
+            getattr(settings, "normal_winner_max_entry", NORMAL_WINNER_MAX_ENTRY)
+        )
     return float(getattr(settings, "buy_max", 0.84))
 
 
 def entry_type_min_price(entry_type: str, settings: RuntimeSettings) -> float:
+    from config.constants import NORMAL_WINNER_MIN_ENTRY
+
     et = str(entry_type or "normal").strip()
     if et == "double_momentum":
         return float(
@@ -206,6 +223,10 @@ def entry_type_min_price(entry_type: str, settings: RuntimeSettings) -> float:
         )
     if et == "momentum":
         return float(getattr(settings, "momentum_min_price", MOMENTUM_MIN_PRICE))
+    if et == "normal_winner":
+        return float(
+            getattr(settings, "normal_winner_min_entry", NORMAL_WINNER_MIN_ENTRY)
+        )
     return float(getattr(settings, "buy_min", 0.80))
 
 
@@ -240,6 +261,8 @@ def _entry_type_label(entry_type: str) -> str:
         return "DOUBLE MOMENTUM"
     if et == "momentum":
         return "MOMENTUM"
+    if et == "normal_winner":
+        return "NORMAL WINNER"
     return "NORMAL"
 
 
@@ -733,6 +756,51 @@ def market_recently_sold(state: Dict[str, Any], market_id: str) -> bool:
     return time.time() < float(bucket.get(market_id) or 0.0)
 
 
+def cancel_orphan_limit_buy_for_market(
+    client: PolymarketClient, market_id: str, state: Dict[str, Any]
+) -> None:
+    """best-effort cancel of a prior GTC buy that may still be resting on the CLOB."""
+    if not market_id:
+        return
+    bucket = state.setdefault("orphan_limit_buy_orders", {})
+    if not isinstance(bucket, dict):
+        state["orphan_limit_buy_orders"] = {}
+        bucket = state["orphan_limit_buy_orders"]
+    oid = str(bucket.get(market_id) or "").strip()
+    if not oid:
+        return
+    for _ in range(20):
+        client.cancel_order(oid)
+        try:
+            st = client.get_order_state(oid) or {}
+        except Exception:
+            st = {}
+        if order_fully_filled(st):
+            bucket.pop(market_id, None)
+            print(
+                f"[place_buy] cleared orphan buy — was filled market={market_id} oid={oid}"
+            )
+            return
+        if not order_resting_unfilled(st):
+            bucket.pop(market_id, None)
+            return
+        time.sleep(0.25)
+    try:
+        st2 = client.get_order_state(oid) or {}
+    except Exception:
+        st2 = {}
+    if not order_resting_unfilled(st2):
+        bucket.pop(market_id, None)
+    else:
+        print(
+            term_wrap(
+                TERM_YELLOW,
+                f"[place_buy] orphan buy limit still live market_id={market_id} "
+                f"order_id={oid} — will retry cancel next scan",
+            )
+        )
+
+
 def place_buy(
     client: PolymarketClient,
     market: Dict[str, Any],
@@ -746,6 +814,7 @@ def place_buy(
     market_id = str(market.get("id") or "")
     if not market_id:
         return
+    cancel_orphan_limit_buy_for_market(client, market_id, state)
     event_id = market_event_id(market)
     active_trades = state.setdefault("active_trades", {})
 
@@ -774,6 +843,20 @@ def place_buy(
     if active_trade_key_and_row(active_trades, market)[1] is not None:
         emit_post_decision_skip("already_holding")
         return
+    # guard: if we recently submitted a buy for this market (within 5 min) and it's
+    # not yet reclaimed by sync_portfolio, skip to avoid double-buying a late fill.
+    _recent_attempts = state.get("recent_buy_attempts") or {}
+    _recent_rec = (
+        _recent_attempts.get(market_id) if isinstance(_recent_attempts, dict) else None
+    )
+    if _recent_rec and isinstance(_recent_rec, dict):
+        _attempt_age = time.time() - float(_recent_rec.get("ts") or 0)
+        if _attempt_age < 300:
+            emit_post_decision_skip(
+                "recent_buy_attempt_pending",
+                age_sec=f"{_attempt_age:.0f}",
+            )
+            return
     if trade_lock_active(state, "buy_market", market_id):
         emit_post_decision_skip("buy_market_lock_active")
         return
@@ -783,9 +866,7 @@ def place_buy(
     if market_id in settings.blacklist_market_ids:
         emit_post_decision_skip("blacklist_market_id")
         return
-    _place_buy_title = str(
-        market.get("question") or market.get("title") or ""
-    )
+    _place_buy_title = str(market.get("question") or market.get("title") or "")
     _city_for_bl = _extract_city_from_title(_place_buy_title).lower()
     if _city_for_bl and any(
         c.lower() == _city_for_bl
@@ -1002,6 +1083,17 @@ def place_buy(
         clear_trade_lock(state, "buy_market", market_id)
         if event_id:
             clear_trade_lock(state, "buy_event", event_id)
+        # no late fill possible here — execute_buy already re-polled after cancel.
+        # drop attempt so sync cannot mis-classify a later manual site buy as bot,
+        # and so the next scan can retry without recent_buy_attempt_pending.
+        state.setdefault("recent_buy_attempts", {}).pop(market_id, None)
+        if (
+            getattr(exec_result, "stale_exchange_order", False)
+            and str(getattr(exec_result, "order_id", "") or "").strip()
+        ):
+            state.setdefault("orphan_limit_buy_orders", {})[market_id] = str(
+                exec_result.order_id
+            ).strip()
         print(
             term_wrap(
                 TERM_YELLOW,
@@ -1058,10 +1150,26 @@ def place_buy(
         if exec_result.filled_shares > 0
         else (round(usd / probability, 6) if probability else 0.0)
     )
-    tp_bar = max(
-        0.0,
-        min(1.0, float(settings.take_profit) - TAKE_PROFIT_COMPARE_SLACK),
-    )
+    if entry_type == "normal_winner":
+        from config.constants import NORMAL_WINNER_TAKE_PROFIT
+
+        tp_bar = max(
+            0.0,
+            min(
+                1.0,
+                float(
+                    getattr(
+                        settings, "normal_winner_take_profit", NORMAL_WINNER_TAKE_PROFIT
+                    )
+                )
+                - TAKE_PROFIT_COMPARE_SLACK,
+            ),
+        )
+    else:
+        tp_bar = max(
+            0.0,
+            min(1.0, float(settings.take_profit) - TAKE_PROFIT_COMPARE_SLACK),
+        )
     # effective SL combines per-type floor + entry-relative drop.
     sl_bar = effective_stop_price_for_trade(entry_type, float(probability), settings)
     est_tp_pnl = (tp_bar - float(probability)) * float(shares)
@@ -1128,6 +1236,8 @@ def place_buy(
             else 0.0
         ),
     }
+    state.setdefault("recent_buy_attempts", {}).pop(market_id, None)
+    state.setdefault("orphan_limit_buy_orders", {}).pop(market_id, None)
     clear_trade_lock(state, "buy_market", market_id)
     if event_id:
         clear_trade_lock(state, "buy_event", event_id)
@@ -1738,15 +1848,17 @@ def close_position(
             "full_reason": full_reason_sell,
         }
     )
-    _SELL_LOSS_REASONS = frozenset({
-        "stop-loss",
-        "trailing-stop",
-        "peer-yes-surge",
-        "momentum-stop-loss",
-        "competitor-surge",
-        "momentum-competitor-dominant",
-        "time-decay",
-    })
+    _SELL_LOSS_REASONS = frozenset(
+        {
+            "stop-loss",
+            "trailing-stop",
+            "peer-yes-surge",
+            "momentum-stop-loss",
+            "competitor-surge",
+            "momentum-competitor-dominant",
+            "time-decay",
+        }
+    )
     if reason in _SELL_LOSS_REASONS:
         churn_on_stop_loss_exit(
             state,
@@ -1992,21 +2104,23 @@ def process_single_market(
         )
         return
 
-    # take-profit
-    prob_take_profit = take_profit_decision_probability(market, trade_row)
-    tp_bar = settings.take_profit - TAKE_PROFIT_COMPARE_SLACK
-    if has_position and (prob_take_profit + 1e-9 >= tp_bar):
-        close_position(
-            client,
-            market,
-            state,
-            telegram,
-            prob_take_profit,
-            "take-profit",
-            settings,
-            state_trade_key=sk,
-        )
-        return
+    # take-profit — normal_winner uses its own threshold; handled by check_exits above.
+    # the fallback here only applies to non-normal_winner positions.
+    if entry_type != "normal_winner":
+        prob_take_profit = take_profit_decision_probability(market, trade_row)
+        tp_bar = settings.take_profit - TAKE_PROFIT_COMPARE_SLACK
+        if has_position and (prob_take_profit + 1e-9 >= tp_bar):
+            close_position(
+                client,
+                market,
+                state,
+                telegram,
+                prob_take_profit,
+                "take-profit",
+                settings,
+                state_trade_key=sk,
+            )
+            return
 
     if has_position and not market_can_post_clob_orders(market):
         tr = active_trades[trade_key]
@@ -2059,9 +2173,7 @@ def process_single_market(
 
     # time gate: same calendar day in the market city as event_date, and hour window
     _pm_timegate = parse_highest_temp_title(_title)
-    _city_for_tg = str(
-        (_pm_timegate.city_key if _pm_timegate else None) or ""
-    )
+    _city_for_tg = str((_pm_timegate.city_key if _pm_timegate else None) or "")
     _earliest_hour = get_city_buy_earliest_hour(_city_for_tg, settings)
     time_ok, _city_hour, _time_skip = entry_time_allowed(
         _title,
@@ -2134,39 +2246,68 @@ def process_single_market(
         mom_sig and mom_lo - 1e-12 <= gamma_probability <= mom_hi + 1e-12
     ) or double_momentum_price_ok
 
-    sw = detect_momentum_switch(
-        market,
-        market_id,
-        float(gamma_probability),
-        state,
-        client,
-        event_cache,
-        settings,
+    # normal_winner candidates buy independently — skip bucket switch entirely.
+    # they represent high-conviction end-of-day positions and should not be gated
+    # on selling a (possibly illiquid / "In Review") sibling bucket first.
+    _nw_enabled_sw = bool(
+        getattr(settings, "normal_winner_enabled", NORMAL_WINNER_ENABLED)
     )
-    if sw is not None:
-        held_mkt, held_key = sw
-        cleared = _execute_bucket_switch_sell(
-            client=client,
-            telegram=telegram,
-            state=state,
-            settings=settings,
-            held_market=held_mkt,
-            held_key=held_key,
-            target_title=str(_title),
-            target_market_id=market_id,
+    _nw_min_sw = float(
+        getattr(settings, "normal_winner_min_entry", NORMAL_WINNER_MIN_ENTRY)
+    )
+    _nw_max_sw = float(
+        getattr(settings, "normal_winner_max_entry", NORMAL_WINNER_MAX_ENTRY)
+    )
+    _nw_price_ok = _nw_enabled_sw and (
+        _nw_min_sw - 1e-12 <= gamma_probability <= _nw_max_sw + 1e-12
+    )
+    sw = None
+    if not _nw_price_ok:
+        sw = detect_momentum_switch(
+            market,
+            market_id,
+            float(gamma_probability),
+            state,
+            client,
+            event_cache,
+            settings,
         )
-        if not cleared:
-            return
+        if sw is not None:
+            held_mkt, held_key = sw
+            cleared = _execute_bucket_switch_sell(
+                client=client,
+                telegram=telegram,
+                state=state,
+                settings=settings,
+                held_market=held_mkt,
+                held_key=held_key,
+                target_title=str(_title),
+                target_market_id=market_id,
+            )
+            if not cleared:
+                return
 
-    # price band gate (normal buy band OR momentum surge band)
+    # price band gate (normal buy band OR momentum surge band OR normal_winner band)
     band_off = bool(getattr(settings, "buy_disable_price_band", False))
     if not band_off:
         normal_band = settings.buy_min <= gamma_probability <= settings.buy_max
-        if not normal_band and not momentum_price_ok:
+        nw_enabled = bool(
+            getattr(settings, "normal_winner_enabled", NORMAL_WINNER_ENABLED)
+        )
+        nw_min = float(
+            getattr(settings, "normal_winner_min_entry", NORMAL_WINNER_MIN_ENTRY)
+        )
+        nw_max = float(
+            getattr(settings, "normal_winner_max_entry", NORMAL_WINNER_MAX_ENTRY)
+        )
+        nw_band_ok = nw_enabled and (
+            nw_min - 1e-12 <= gamma_probability <= nw_max + 1e-12
+        )
+        if not normal_band and not momentum_price_ok and not nw_band_ok:
             print(
                 term_wrap(
                     TERM_DIM,
-                    f"[decision] skip buy — outside buy_min/buy_max and momentum band\n"
+                    f"[decision] skip buy — outside buy_min/buy_max, momentum, and normal_winner bands\n"
                     f"  {_title}",
                 )
             )

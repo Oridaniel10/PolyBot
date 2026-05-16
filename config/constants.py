@@ -51,6 +51,29 @@ STOP_LOSS_NORMAL = 0.20
 # Effective stop = max(STOP_LOSS_NORMAL, entry*(1-drop_pct)).
 STOP_LOSS_NORMAL_ENTRY_DROP_PCT = 0.30
 
+# ─── NORMAL_WINNER: end-of-day high-conviction "collect winners" entry ───────
+# Buy only when YES has been stably above a floor for ≥ min window AND is now at
+# or above the entry price.  Take profit is much higher than normal (near resolve).
+#
+# Entry gate:
+#   1. current YES in [NORMAL_WINNER_MIN_ENTRY, NORMAL_WINNER_MAX_ENTRY] (0.92–0.96)
+#   2. the *contiguous price tail* ending at now has stayed >= NORMAL_WINNER_STABILITY_FLOOR
+#      (0.75) for at least NORMAL_WINNER_STABILITY_MIN_SEC (30 min), with no gap > 2 min
+#      between samples (ring buffer; up to NORMAL_WINNER_STABILITY_MAX_SEC lookback)
+#      and at least MOMENTUM_MIN_SAMPLE_POINTS samples exist in the buffer.
+#
+# Exit: take-profit when YES >= NORMAL_WINNER_TAKE_PROFIT (0.9997) — market is
+#       about to resolve YES.  SL is tight: stop if price drops from entry.
+NORMAL_WINNER_MIN_ENTRY = 0.92  # buy band floor
+NORMAL_WINNER_MAX_ENTRY = 0.96  # buy band ceiling (avoid buying right at resolve)
+NORMAL_WINNER_TAKE_PROFIT = 0.9987  # sell (market resolving YES)
+NORMAL_WINNER_STABILITY_FLOOR = 0.75  # price must have been above this throughout
+NORMAL_WINNER_STABILITY_MIN_SEC = 900  # minimum contiguous tail above floor (15 min)
+NORMAL_WINNER_STABILITY_MAX_SEC = 7200  # maximum lookback considered (2h)
+STOP_LOSS_NORMAL_WINNER = 0.75  # hard floor — if it dumps hard, exit
+STOP_LOSS_NORMAL_WINNER_ENTRY_DROP_PCT = 0.20  # also exit if drops >20% from entry
+NORMAL_WINNER_ENABLED = True
+
 # ─── MANUAL / UI: custom stop loss for user trades ───────────────────
 # [PRICE] hard stop floor for manual/UI trades. Higher than momentum because
 # manually entered positions may be at lower probability.
@@ -108,7 +131,7 @@ STOP_LOSS_DOUBLE_MOMENTUM_ENTRY_DROP_PCT = 0.50
 # EXIT THRESHOLDS
 # ═══════════════════════════════════════════════════════════════════════
 
-TAKE_PROFIT_THRESHOLD = 0.92
+TAKE_PROFIT_THRESHOLD = 0.94
 # float slack vs gamma/mark rounding; also helps when take_profit is 0.99 and mark is 0.988
 TAKE_PROFIT_COMPARE_SLACK = 0.002
 
@@ -119,6 +142,7 @@ TAKE_PROFIT_COMPARE_SLACK = 0.002
 # To exit SOONER on smaller drops: lower (e.g. 0.15).
 # To tolerate bigger swings: raise (e.g. 0.40).
 MOMENTUM_FAST_EXIT_DROP = 0.35
+MOMENTUM_FAST_EXIT_ENABLED = False
 # [SECONDS] rolling window for fast exit drawdown + competitor surge checks.
 MOMENTUM_WINDOW_SECONDS = 3600
 # [PRICE] if any SIBLING bucket in the same event rises this many YES points
@@ -198,7 +222,7 @@ MOMENTUM_ALERT_COOLDOWN_SEC = 300.0
 # Exits a position if price has been stuck (no meaningful rise in 2 hours)
 # AND price is below entry. Prevents holding dead positions.
 # Enable/disable via stagnation_sl_enabled in runtime_config.json.
-STAGNATION_SL_ENABLED = True
+STAGNATION_SL_ENABLED = False
 # [HOURS] lookback window to measure "has price risen at all?"
 STAGNATION_SL_WINDOW_HOURS = 2.0
 # [FRAC] minimum fractional rise in the window to KEEP the position.
@@ -295,11 +319,11 @@ BUY_ESCALATE_NOTIONAL_STEP_USD = 1.0
 # SIZING
 # ═══════════════════════════════════════════════════════════════════════
 
-DEFAULT_ORDER_SIZE = 3.0
+DEFAULT_ORDER_SIZE = 4.0
 MAX_TRADE_FRACTION_OF_CASH = 0.90
 # bot order cap (USD); runtime max_buy_notional_usd cannot exceed this value
 MAX_BUY_NOTIONAL_USD = 5.0
-MIN_ORDER_NOTIONAL_USD = 3.0
+MIN_ORDER_NOTIONAL_USD = 4.0
 # never allocate buys from this portion of free cash (runtime + UI override)
 CASH_RESERVE_USD = 0.0
 
@@ -459,6 +483,10 @@ SELL_COOLDOWN_30M_SEC = 1800
 # [PRICE] external positions with avg_price below this are treated as dust
 # and not registered as manual trades (prevents phantom 0.01 CSV rows).
 MANUAL_SYNC_MIN_ENTRY_PRICE = 0.10
+# [PRICE] sync_portfolio reclaims `recent_buy_attempts` as a bot late-fill only
+# if Data-API avg_price is within this many points of the attempt's intended_price.
+# wider gaps mean a manual site buy — do not inherit bot entry_type / SL / fast-exit.
+LATE_FILL_RECLAIM_MAX_AVG_VS_INTENDED = 0.04
 
 # ═══════════════════════════════════════════════════════════════════════
 # PERSISTENT LEADER — new buy trigger: first place for 2h + momentum jump

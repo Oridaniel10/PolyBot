@@ -321,6 +321,38 @@ def order_terminal_cancelled(payload: Dict[str, Any]) -> bool:
     return st in ("cancelled", "canceled", "expired", "rejected", "failed")
 
 
+def order_resting_unfilled(payload: Dict[str, Any]) -> bool:
+    """True if CLOB order still appears on the book (not fully filled, not terminal)."""
+    if not payload:
+        return False
+    if order_fully_filled(payload):
+        return False
+    if order_terminal_cancelled(payload):
+        return False
+    st = order_status_lower(payload)
+    if st in ("live", "open", "resting", "active", "pending", "new"):
+        return True
+    try:
+        orig = float(
+            payload.get("original_size")
+            or payload.get("originalSize")
+            or payload.get("size")
+            or 0.0
+        )
+        matched = float(
+            payload.get("size_matched")
+            or payload.get("filled_size")
+            or payload.get("filledSize")
+            or payload.get("sizeMatched")
+            or 0.0
+        )
+        if orig > 1e-9 and matched + 1e-6 < orig:
+            return True
+    except (TypeError, ValueError):
+        pass
+    return False
+
+
 def format_sell_attempt_summary(
     market: Dict[str, Any],
     share_size: float,

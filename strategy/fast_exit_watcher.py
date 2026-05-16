@@ -35,6 +35,7 @@ from strategy.decision_core import (
     classify_stop_loss_breach,
     effective_stop_price_for_trade,
     momentum_fast_exit_drop,
+    momentum_fast_exit_window_enabled,
     momentum_window_sec,
     seconds_since_entry_iso,
     trailing_stop_level,
@@ -107,9 +108,16 @@ class FastExitWatcher:
         while not self._stop_event.is_set():
             try:
                 settings = self._get_settings()
-                interval = max(2, int(
-                    getattr(settings, "fast_exit_watcher_interval_sec", C.FAST_EXIT_WATCHER_INTERVAL_SEC)
-                ))
+                interval = max(
+                    2,
+                    int(
+                        getattr(
+                            settings,
+                            "fast_exit_watcher_interval_sec",
+                            C.FAST_EXIT_WATCHER_INTERVAL_SEC,
+                        )
+                    ),
+                )
             except Exception:
                 interval = C.FAST_EXIT_WATCHER_INTERVAL_SEC
             try:
@@ -173,6 +181,7 @@ class FastExitWatcher:
         # record every CLOB poll to Redis so plots show smooth live curves for held positions.
         try:
             from strategy.momentum import append_price_sample
+
             append_price_sample(market_id, clob_price)
         except Exception:
             pass
@@ -183,17 +192,31 @@ class FastExitWatcher:
             trade_row["highest_seen_price"] = round(float(clob_price), 6)
 
         # --- check 0: take-profit (checked first so a spike isn't missed by slow loop) ---
-        tp_bar = float(getattr(settings, "take_profit", C.TAKE_PROFIT_THRESHOLD)) - C.TAKE_PROFIT_COMPARE_SLACK
-        if clob_price >= tp_bar - 1e-9:
+        # normal_winner uses its own TP threshold (near-resolve). other types use
+        # the global take_profit setting.
+        entry_type = str(trade_row.get("entry_type") or "normal").strip()
+        if entry_type == "normal_winner":
+            tp_bar = float(
+                getattr(
+                    settings, "normal_winner_take_profit", C.NORMAL_WINNER_TAKE_PROFIT
+                )
+            )
+        else:
+            tp_bar = (
+                float(getattr(settings, "take_profit", C.TAKE_PROFIT_THRESHOLD))
+                - C.TAKE_PROFIT_COMPARE_SLACK
+            )
+        if clob_price + 1e-9 >= tp_bar:
             _log(
                 f"take-profit trigger market={market_id} clob={clob_price:.4f} "
-                f"tp_bar={tp_bar:.4f} entry={entry:.4f}"
+                f"tp_bar={tp_bar:.4f} entry={entry:.4f} type={entry_type}"
             )
-            self._trigger_exit(market_id, trade_row, clob_price, "take-profit", settings)
+            self._trigger_exit(
+                market_id, trade_row, clob_price, "take-profit", settings
+            )
             return
 
         # --- check 1: per-type stop-loss / trailing stop (live mark) ---
-        entry_type = str(trade_row.get("entry_type") or "normal").strip()
         peak = float(trade_row.get("highest_seen_price") or 0.0)
         sl_bar = effective_stop_price_for_trade(
             entry_type, entry, settings, highest_seen_price=peak
@@ -212,9 +235,7 @@ class FastExitWatcher:
             trade_row["sl_level"] = round(float(level), 6)
             trade_row["sl_effective"] = round(float(sl_bar), 6)
             exit_reason = (
-                "trailing-stop"
-                if category == C.SL_CATEGORY_TRAILING
-                else "stop-loss"
+                "trailing-stop" if category == C.SL_CATEGORY_TRAILING else "stop-loss"
             )
             _log(
                 f"{category} trigger market={market_id} clob={clob_price:.4f} "
@@ -224,19 +245,30 @@ class FastExitWatcher:
             self._trigger_exit(market_id, trade_row, clob_price, exit_reason, settings)
             return
 
-        # --- check 2: momentum fast exit (absolute drop in 15m window) ---
+        # --- check 2: momentum fast exit (peak→trough in momentum_window) ---
+        # skipped when momentum_fast_exit_enabled=false — per-type SL + trailing only.
+        # skipped for normal_winner: tight own SL path.
         from strategy.momentum_engine import max_drawdown_since_ts
+
         wsec = momentum_window_sec(settings)
         dd = 0.0
         entry_time_utc = str(trade_row.get("entry_time_utc") or "").strip()
-        if entry_time_utc:
+        if (
+            momentum_fast_exit_window_enabled(settings)
+            and entry_type != "normal_winner"
+            and entry_time_utc
+        ):
             try:
                 entry_ts = datetime.fromisoformat(entry_time_utc).timestamp()
             except ValueError:
                 entry_ts = 0.0
             if entry_ts > 0:
                 dd = max_drawdown_since_ts(market_id, entry_ts, wsec)
-        if dd >= momentum_fast_exit_drop(settings) and clob_price < entry:
+        if (
+            momentum_fast_exit_window_enabled(settings)
+            and dd >= momentum_fast_exit_drop(settings)
+            and clob_price < entry
+        ):
             trade_row["sl_category"] = C.SL_CATEGORY_MOMENTUM
             trade_row["sl_drawdown_points"] = round(float(dd), 6)
             _log(
@@ -251,15 +283,21 @@ class FastExitWatcher:
         # --- check 3: 2-hour stagnation stop-loss ---
         # if price is below entry AND hasn't risen ≥ stagnation_sl_min_rise_pct
         # in the last stagnation_sl_window_hours → position is dead weight → exit.
+        # skipped for normal_winner: already near 1.0 by design, tiny rise range is normal.
         stag_enabled = settings.stagnation_sl_enabled
-        if stag_enabled and clob_price < entry - 1e-9:
+        if stag_enabled and entry_type != "normal_winner" and clob_price < entry - 1e-9:
             from strategy import redis_store
+
             stag_hours = settings.stagnation_sl_window_hours
             stag_min_rise = settings.stagnation_sl_min_rise_pct
             stag_window_sec = stag_hours * 3600.0
-            price_oldest = redis_store.get_oldest_price_in_window(market_id, stag_window_sec)
+            price_oldest = redis_store.get_oldest_price_in_window(
+                market_id, stag_window_sec
+            )
             if price_oldest is not None and price_oldest > 1e-9:
-                max_seen = redis_store.get_max_price_in_window(market_id, stag_window_sec)
+                max_seen = redis_store.get_max_price_in_window(
+                    market_id, stag_window_sec
+                )
                 rise_in_window = ((max_seen or 0.0) - price_oldest) / price_oldest
                 if rise_in_window < stag_min_rise - 1e-9:
                     _log(
@@ -344,6 +382,7 @@ class FastExitWatcher:
                 return
 
             from strategy.trades import close_position
+
             close_position(
                 self._client,
                 market,
