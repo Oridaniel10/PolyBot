@@ -98,7 +98,7 @@ DOUBLE_MOMENTUM_PCT_RISE = 9.0
 DOUBLE_MOMENTUM_MIN_START_PRICE = 0.05
 # [PRICE] live YES band for double momentum entry (same band as standard momentum here).
 DOUBLE_MOMENTUM_MIN_PRICE = 0.40
-DOUBLE_MOMENTUM_MAX_PRICE = 0.91
+DOUBLE_MOMENTUM_MAX_PRICE = 0.85
 # [PRICE] stop-loss floor for double momentum entries.
 STOP_LOSS_DOUBLE_MOMENTUM = 0.20
 # [FRAC] entry-relative drop for double momentum stop.

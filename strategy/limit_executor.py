@@ -104,9 +104,10 @@ def execute_buy(
     to buy_limit_order_timeout_sec, then cancel if still unfilled.
     when disabled: go straight to market order (legacy behavior).
     """
-    cap = max(0.0, float(getattr(settings, "max_buy_notional_usd", 0.0) or 0.0))
-    if cap > 0:
-        usd_amount = min(float(usd_amount), cap)
+    # hard cap: never submit an order above the constant ceiling, regardless of settings
+    hard_cap = float(C.MAX_BUY_NOTIONAL_USD)
+    soft_cap = float(getattr(settings, "max_buy_notional_usd", hard_cap) or hard_cap)
+    usd_amount = min(float(usd_amount), soft_cap, hard_cap)
     timeout_sec = int(getattr(settings, "buy_limit_order_timeout_sec", 8))
     live_clob_before = _effective_best_ask_yes(client, market, float(decision_price))
 
@@ -176,12 +177,47 @@ def execute_buy(
             )
         time.sleep(_LIMIT_POLL_INTERVAL_SEC)
 
-    cancelled = client.cancel_order(order_id)
+    client.cancel_order(order_id)
     # refresh for telemetry: initial ask may have been 0 (book gap); unfilled often
     # means price moved away from our limit.
     live_at_end = _effective_best_ask_yes(client, market, float(decision_price))
+
+    # RACE GUARD: re-poll after cancel — the fill may have landed in flight between
+    # the last poll and the cancel call.  Polymarket processes cancel + fill atomically
+    # on their side only when the fill arrived first; if so, get_order_state will show
+    # a non-zero size_matched even though cancel returned success.
+    try:
+        final_state = client.get_order_state(order_id) or {}
+        matched = float(
+            final_state.get("size_matched")
+            or final_state.get("filled_size")
+            or final_state.get("sizeMatched")
+            or 0.0
+        )
+        if matched > 0:
+            fill_px = _filled_price(final_state, fallback=float(limit_px))
+            slippage = max(0.0, fill_px - float(decision_price))
+            print(
+                f"[limit_executor] late-fill detected after cancel "
+                f"order={order_id} matched={matched:.4f} fill_px={fill_px:.4f}"
+            )
+            return LimitExecutionResult(
+                mode="limit_filled_late",
+                filled=True,
+                fill_price=fill_px,
+                filled_shares=matched,
+                order_id=order_id,
+                decision_price=float(decision_price),
+                live_clob_price_before_order=float(live_at_end or live_clob_before),
+                limit_price=float(limit_px),
+                timeout_sec=int(timeout_sec),
+                slippage_estimate=slippage,
+            )
+    except Exception:
+        pass
+
     return LimitExecutionResult(
-        mode="limit_cancelled" if cancelled else "limit_unsupported",
+        mode="limit_cancelled",
         filled=False,
         order_id=order_id,
         decision_price=float(decision_price),

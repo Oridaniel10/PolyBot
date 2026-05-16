@@ -178,6 +178,32 @@ def sync_state_with_portfolio(
             "order_ref": prev.get("order_ref", ""),
         }
         if not prev:
+            # RACE GUARD: bot recently attempted to buy this market — a late-fill
+            # arrived after cancel/timeout.  Reclaim as bot trade, not manual.
+            attempts = state.setdefault("recent_buy_attempts", {})
+            now_t = time.time()
+            for k in list(attempts.keys()):
+                if now_t - float(attempts[k].get("ts") or 0) > 300:
+                    attempts.pop(k, None)
+            match_key = next(
+                (k for k in (state_key, pos_key, mid, cid) if k and k in attempts),
+                None,
+            )
+            if match_key:
+                rec = attempts.pop(match_key)
+                prev = {
+                    "entry_price": float(rec.get("intended_price") or avg_px),
+                    "entry_type": str(rec.get("entry_type") or "momentum"),
+                    "position_title": str(rec.get("title") or pos_title),
+                    "last_action": "buy_late_fill_reclaimed",
+                }
+                print(
+                    f"[sync] late-fill reclaimed market={mid or pos_key} "
+                    f"entry_type={rec.get('entry_type')} "
+                    f"intended_px={rec.get('intended_price'):.4f}"
+                )
+
+        if not prev:
             # skip dust positions — avg_price near zero is a sync artifact, not a real trade
             if avg_px < MANUAL_SYNC_MIN_ENTRY_PRICE:
                 continue

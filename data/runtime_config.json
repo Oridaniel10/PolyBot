@@ -19,7 +19,7 @@
   "double_momentum_pct_rise": 9.0,
   "double_momentum_min_start_price": 0.05,
   "double_momentum_min_price": 0.40,
-  "double_momentum_max_price": 0.91,
+  "double_momentum_max_price": 0.85,
   "stop_loss_double_momentum": 0.20,
   "stop_loss_double_momentum_entry_drop_pct": 0.50,
 
@@ -114,7 +114,7 @@
   "momentum_alert_window_sec": 900.0,
   "momentum_alert_cooldown_sec": 300.0,
 
-  "permanent_blacklist_cities": ["Madrid"],
+  "permanent_blacklist_cities": [],
   "sell_cooldown_30m_sec": 1800,
 
   "persistent_leader_enabled": true,

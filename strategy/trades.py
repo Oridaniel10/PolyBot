@@ -9,6 +9,7 @@ from config.constants import (
     CLOB_SELL_TOPUP_MAX_ROUNDS,
     DEFAULT_ORDER_SIZE,
     DUST_SHARES_EPS,
+    MAX_BUY_NOTIONAL_USD,
     MAX_CONCURRENT_POSITIONS,
     DOUBLE_MOMENTUM_ENTRY_RISE,
     DOUBLE_MOMENTUM_MAX_PRICE,
@@ -315,7 +316,8 @@ def buy_notional_attempts_for_submit_retries(
     settings: RuntimeSettings,
 ) -> List[float]:
     """Ordered notionals when retrying buys after submit-side limit failures."""
-    max_n = float(settings.max_buy_notional_usd)
+    # clamp against the hard constant so escalation can never exceed it
+    max_n = min(float(settings.max_buy_notional_usd), float(MAX_BUY_NOTIONAL_USD))
     min_n = float(settings.min_order_notional_usd)
     base_clamped = max(min_n, min(max(0.0, base_usd), max_n))
     if not bool(getattr(settings, "buy_escalate_notional_on_submit_fail", False)):
@@ -916,6 +918,16 @@ def place_buy(
     set_trade_lock(state, "buy_market", market_id, TRADE_BUY_LOCK_TTL_SEC)
     if event_id:
         set_trade_lock(state, "buy_event", event_id, TRADE_BUY_LOCK_TTL_SEC)
+
+    # record attempt so sync_portfolio can reclaim a late-fill instead of tagging it manual
+    state.setdefault("recent_buy_attempts", {})[market_id] = {
+        "ts": time.time(),
+        "intended_price": float(probability),
+        "intended_usd": float(usd),
+        "entry_type": str(entry_type or "normal"),
+        "title": str(title or ""),
+    }
+
     require_fill = bool(getattr(settings, "require_fill_before_state_buy", True))
     exec_result: Optional[LimitExecutionResult] = None
     try:
