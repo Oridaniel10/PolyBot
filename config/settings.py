@@ -144,6 +144,10 @@ def default_runtime_dict() -> Dict[str, Any]:
         "persistent_leader_enabled": C.PERSISTENT_LEADER_ENABLED,
         "persistent_leader_lookback_sec": C.PERSISTENT_LEADER_LOOKBACK_SEC,
         "persistent_leader_min_fraction": C.PERSISTENT_LEADER_MIN_FRACTION,
+        "persistent_leader_entry_rise": C.PERSISTENT_LEADER_ENTRY_RISE,
+        "persistent_leader_pct_rise": C.PERSISTENT_LEADER_PCT_RISE,
+        "persistent_leader_min_price": C.PERSISTENT_LEADER_MIN_PRICE,
+        "persistent_leader_max_price": C.PERSISTENT_LEADER_MAX_PRICE,
     }
 
 
@@ -307,6 +311,10 @@ class RuntimeSettings:
     persistent_leader_enabled: bool = C.PERSISTENT_LEADER_ENABLED
     persistent_leader_lookback_sec: float = C.PERSISTENT_LEADER_LOOKBACK_SEC
     persistent_leader_min_fraction: float = C.PERSISTENT_LEADER_MIN_FRACTION
+    persistent_leader_entry_rise: float = C.PERSISTENT_LEADER_ENTRY_RISE
+    persistent_leader_pct_rise: float = C.PERSISTENT_LEADER_PCT_RISE
+    persistent_leader_min_price: float = C.PERSISTENT_LEADER_MIN_PRICE
+    persistent_leader_max_price: float = C.PERSISTENT_LEADER_MAX_PRICE
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "RuntimeSettings":
@@ -928,6 +936,22 @@ class RuntimeSettings:
                         )
                     ),
                 ),
+            ),
+            persistent_leader_entry_rise=max(
+                0.01,
+                min(0.95, float(d.get("persistent_leader_entry_rise", C.PERSISTENT_LEADER_ENTRY_RISE))),
+            ),
+            persistent_leader_pct_rise=max(
+                0.01,
+                min(10.0, float(d.get("persistent_leader_pct_rise", C.PERSISTENT_LEADER_PCT_RISE))),
+            ),
+            persistent_leader_min_price=max(
+                0.01,
+                min(0.99, float(d.get("persistent_leader_min_price", C.PERSISTENT_LEADER_MIN_PRICE))),
+            ),
+            persistent_leader_max_price=max(
+                0.01,
+                min(0.99, float(d.get("persistent_leader_max_price", C.PERSISTENT_LEADER_MAX_PRICE))),
             ),
         )
 

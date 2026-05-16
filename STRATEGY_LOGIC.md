@@ -75,14 +75,14 @@ All values below are **live runtime values** from `data/runtime_config.json`. Un
 
 | Variable | **Live Value** | Unit | Where |
 |----------|---------------|------|-------|
-| `momentum_entry_rise` | **0.15** | [PRICE] absolute rise | `data/runtime_config.json` |
+| `momentum_entry_rise` | **0.20** | [PRICE] absolute rise | `data/runtime_config.json` |
 | `momentum_pct_rise` | **1.0** (+100%) | [PCT] fractional rise | `data/runtime_config.json` |
 | `momentum_min_start_price` | **0.0001** | [PRICE] min window-start YES for pct gate | `data/runtime_config.json` |
-| `momentum_min_price` | **0.20** | [PRICE] min live YES at entry | `data/runtime_config.json` |
-| `momentum_max_entry` | **0.90** | [PRICE] max live YES at entry | `data/runtime_config.json` |
-| `momentum_entry_max_window_seconds` | **900** (15 min cap) | [SECONDS] | `data/runtime_config.json` |
-| `momentum_window_seconds` | **900** (15 min, exits / churn) | [SECONDS] | `data/runtime_config.json` |
-| `stop_loss_momentum` | **0.10** | [PRICE] hard floor | `data/runtime_config.json` |
+| `momentum_min_price` | **0.55** | [PRICE] min live YES at entry | `data/runtime_config.json` |
+| `momentum_max_entry` | **0.85** | [PRICE] max live YES at entry | `data/runtime_config.json` |
+| `momentum_entry_max_window_seconds` | **3600** (60 min cap) | [SECONDS] | `data/runtime_config.json` |
+| `momentum_window_seconds` | **3600** | [SECONDS] | `data/runtime_config.json` |
+| `stop_loss_momentum` | **0.35** | [PRICE] hard floor | `data/runtime_config.json` |
 | `stop_loss_momentum_entry_drop_pct` | **0.50** (50% from entry) | [FRAC] relative drop | `data/runtime_config.json` |
 
 Entry when YES rose by **absolute** rise OR **fractional percent** rise **and** leader-yield passes on the **same** lookback length `W`, where `W` runs over the entry grid **1m, 2m, …, 15m** (60s steps up to `momentum_entry_max_window_seconds`, default **900s**) via `momentum_entry_candidate_windows()` + `momentum_leader_same_window_check()` in `decision_core.py`. The bot picks the **smallest** such `W` where **both** legs pass. All windows share the same guardrails: `momentum_min_start_price`, `momentum_min_price`, `momentum_max_entry`.
@@ -104,12 +104,12 @@ Rank and runner-up gap are logged for context but are **not** substitutes for le
 
 | Variable | **Live Value** | Unit | Where |
 |----------|---------------|------|-------|
-| `double_momentum_entry_rise` | **0.30** | [PRICE] absolute rise | `data/runtime_config.json` |
-| `double_momentum_pct_rise` | **2.0** (+200%) | [PCT] fractional rise | `data/runtime_config.json` |
+| `double_momentum_entry_rise` | **0.40** | [PRICE] absolute rise | `data/runtime_config.json` |
+| `double_momentum_pct_rise` | **9.0** (+900%) | [PCT] fractional rise | `data/runtime_config.json` |
 | `double_momentum_min_start_price` | **0.0001** | [PRICE] min window-start for pct gate | `data/runtime_config.json` |
-| `double_momentum_min_price` | **0.20** | [PRICE] min live YES at entry | `data/runtime_config.json` |
-| `double_momentum_max_price` | **0.90** | [PRICE] max live YES at entry | `data/runtime_config.json` |
-| `stop_loss_double_momentum` | **0.10** | [PRICE] hard floor | `data/runtime_config.json` |
+| `double_momentum_min_price` | **0.10** | [PRICE] min live YES at entry | `data/runtime_config.json` |
+| `double_momentum_max_price` | **0.91** | [PRICE] max live YES at entry | `data/runtime_config.json` |
+| `stop_loss_double_momentum` | **0.05** | [PRICE] hard floor | `data/runtime_config.json` |
 | `stop_loss_double_momentum_entry_drop_pct` | **0.50** | [FRAC] relative drop from entry | `data/runtime_config.json` |
 
 Same **aligned-window** rule as standard momentum: smallest grid `W` where double rise **and** leader-yield both pass, with thresholds/band from `double_momentum_*`.
@@ -137,11 +137,33 @@ The `TradeDecision` carries `trigger_window` (e.g. `7m_win`), `trigger_*` for th
 | Key / constant | **Live Value** | Unit | Meaning |
 |----------------|---------------|------|---------|
 | `momentum_entry_max_window_seconds` | **900** | [SECONDS] | Max window on the 1m…15m grid for rise check |
-| `leader_yield_min_leader_old_price` | **0.05** | [PRICE] | Ignore siblings whose window-start YES ≤ this (noise filter) |
-| `leader_yield_fall_min_abs_pts` | **0.25** | [PRICE] absolute drop | Cond **(A)**: sibling must drop ≥ this many YES **points** |
-| `leader_yield_fall_min_frac` | **0.45** | [FRAC] fraction of sibling’s own old YES | Cond **(A)** alternative: sibling dropped ≥ this fraction of its own start price |
-| `collective_fall_min_abs_pts` | **0.25** | [PRICE] sum of drops | Cond **(B)**: total drop across all qualifying siblings ≥ this many points |
-| `collective_fall_min_frac` | **0.45** | [FRAC] weighted collective | Cond **(B)** alternative: total drop ÷ sum(siblings’ old YES) ≥ this |
+| `leader_yield_min_leader_old_price` | **0.03** | [PRICE] | Ignore siblings whose window-start YES ≤ this (noise filter) |
+| `leader_yield_fall_min_abs_pts` | **0.40** | [PRICE] absolute drop | Cond **(A)**: sibling must drop ≥ this many YES **points** |
+| `leader_yield_fall_min_frac` | **0.41** | [FRAC] fraction of sibling’s own old YES | Cond **(A)** alternative: sibling dropped ≥ this fraction of its own start price |
+| `collective_fall_min_abs_pts` | **0.40** | [PRICE] sum of drops | Cond **(B)**: total drop across all qualifying siblings ≥ this many points |
+| `collective_fall_min_frac` | **0.41** | [FRAC] weighted collective | Cond **(B)** alternative: total drop ÷ sum(siblings’ old YES) ≥ this |
+
+### Persistent Leader Entry (2h Dominance) 🏆
+
+A **dedicated entry path** for markets that have held **#1 rank** among siblings for a large fraction of the last 2 hours. Because the setup already provides strong conviction, only a **small momentum nudge** is required — no sibling fall (leader-yield) needed.
+
+| Variable | Default | Where |
+|----------|---------|-------|
+| `persistent_leader_enabled` | **true** | `data/runtime_config.json` |
+| `persistent_leader_lookback_sec` | **7200** (2h) | `data/runtime_config.json` |
+| `persistent_leader_min_fraction` | **0.80** | must be #1 in ≥ 80% of samples in the lookback |
+| `persistent_leader_entry_rise` | **0.10** | min absolute rise (+0.10 pts) to trigger buy |
+| `persistent_leader_pct_rise` | **0.25** | OR min fractional rise (+25%) to trigger buy |
+| `persistent_leader_min_price` | **0.55** | buy band floor (only buy if YES ≥ 0.55) |
+| `persistent_leader_max_price` | **0.85** | buy band ceiling |
+
+**Flow (Section 6 in `evaluate_entry`):**
+1. Standard and double-momentum paths run first; if either fires, this path is skipped.
+2. `is_persistent_leader(market_id, siblings, lookback_sec, min_fraction)` checks the in-memory ring buffer.
+3. If the market qualifies, `momentum_multi_window_check` runs with the **lower PL thresholds** and the `[pl_min_price, pl_max_price]` band.
+4. If the rise check passes → `entry_type = momentum`, `decision_reason = persistent_leader_2h`. No sibling fall required.
+
+This targets scenarios like: YES has been at 0.60 for 2 hours, competitors are flat, and then it nudges to 0.72 — the standard path would require a sibling to fall first, but the historical dominance makes it a low-risk buy.
 
 ### Legacy: `pair_reversal.py`
 
@@ -211,7 +233,7 @@ Exits are checked in priority order (first match wins). There are **two loops** 
 | 5 | **Time-decay** ⏰ | held >2h AND **(mark − entry) < min_gain_points** AND mark < max_price | 30s | `time_decay_hours`, `time_decay_min_gain`, `time_decay_max_price` (defaults in `TIME_DECAY_*`) | `strategy/time_filter.py`, `data/runtime_config.json` |
 | 6 | **Research model flip** | forecast contradict (optional, default off) | 30s | `RESEARCH_EXIT_ON_MODEL_FLIP` | `config/constants.py` |
 | 7 | **Per-type stop-loss** 🆕 | mark < effective stop (hard floor + entry-relative + trailing) | **2s** (watcher) + 30s (main) | see per-type constants / `runtime_config.json` (defaults align with `config/constants.py`) | `strategy/decision_core.py` |
-| 8 | **Take-profit** | mark ≥ 0.97 | 30s | `TAKE_PROFIT_THRESHOLD = 0.97` | `config/constants.py` |
+| 8 | **Take-profit** | mark ≥ 0.94 | 30s | `TAKE_PROFIT_THRESHOLD = 0.94` | `config/constants.py` |
 | 9 | **2h stagnation** 🆕 | mark < entry AND max rise in 2h < 5% → exit dead position | **2s** (watcher) | `stagnation_sl_enabled`, `stagnation_sl_min_rise_pct` | `strategy/fast_exit_watcher.py` |
 
 ### Momentum Fast Exit — Absolute Drop 🆕
@@ -243,10 +265,10 @@ The stop-loss bar depends on how the position was entered (defaults from `config
 
 | Entry Type | SL Bar (constants default) | Example |
 |------------|---------------------------|---------|
-| `normal` | **0.65** | Hard floor vs `STOP_LOSS_NORMAL` |
-| `momentum` | **0.20** | Vs `STOP_LOSS_MOMENTUM` (+ entry-relative + trailing) |
-| `double_momentum` | **0.20** | Vs `STOP_LOSS_DOUBLE_MOMENTUM` |
-| `manual` / `ui` | **0.40** | `STOP_LOSS_MANUAL` |
+| `normal` | **0.20** | Hard floor vs `STOP_LOSS_NORMAL` |
+| `momentum` | **0.35** | Vs `STOP_LOSS_MOMENTUM` (+ entry-relative + trailing) |
+| `double_momentum` | **0.05** | Vs `STOP_LOSS_DOUBLE_MOMENTUM` |
+| `manual` / `ui` | **0.20** | `STOP_LOSS_MANUAL` |
 
 Effective stop also includes entry-relative drop **and** the trailing stop level:
 
@@ -424,7 +446,7 @@ Price samples are stored in **Redis sorted sets** (primary) + `data/price_sample
 - **Warm-up on restart**: `warm_ring_buffer_from_disk()` bulk-loads today's JSONL into Redis so momentum calculations work immediately
 - **Window queries**: `ZRANGEBYSCORE prices:{mid} {cutoff} +inf` — sub-millisecond; includes one anchor point before the window for accurate rise calculations
 - The bot records one sample per scanned/held market every 30 seconds across all BUCKETS/SIBLINGS in every active gamma event
-- Momentum decisions require at least `MOMENTUM_MIN_SAMPLE_POINTS = 2` samples in the window
+- Momentum decisions require at least `MOMENTUM_MIN_SAMPLE_POINTS = 3` samples in the window (filters single-tick spikes — signal must appear across ≥ 3 windows, ~30s apart)
 
 ### 2-Hour Stagnation Stop-Loss 🆕
 
@@ -466,7 +488,7 @@ if planned < min_order_notional_usd → skip
 | Variable | **Live Value** | Defined in |
 |----------|--------------|------------|
 | `cash_reserve_usd` | **0.0** | `data/runtime_config.json` |
-| `max_buy_notional_usd` | **5.0** | `data/runtime_config.json` |
+| `max_buy_notional_usd` | **5.0** (hard cap in `config/constants.py`) | `data/runtime_config.json` |
 | `min_order_notional_usd` | **1.0** | `data/runtime_config.json` |
 | `max_trade_fraction_of_cash` | **0.90** | `data/runtime_config.json` |
 
@@ -539,35 +561,35 @@ Every trade (buy/sell/claim) and every scheduled report sends a rich portfolio m
 ### Double Momentum Entry 🆕
 | Key | Default | Description |
 |-----|---------|-------------|
-| `double_momentum_entry_rise` | 0.40 | Min absolute price-point rise to qualify as double momentum |
-| `double_momentum_pct_rise` | 4.0 | Min **fractional** rise alternative (+400%) |
-| `double_momentum_min_start_price` | 0.0 | Floor on *old* price in-window for pct leg (0 = allow low-start surges) |
-| `double_momentum_min_price` | 0.40 | Min YES price for double momentum entry |
-| `double_momentum_max_price` | 0.85 | Max YES price for double momentum entry |
+| `double_momentum_entry_rise` | **0.40** | Min absolute price-point rise to qualify as double momentum |
+| `double_momentum_pct_rise` | **9.0** | Min **fractional** rise alternative (+900%) |
+| `double_momentum_min_start_price` | **0.0001** | Floor on *old* price in-window for pct leg |
+| `double_momentum_min_price` | **0.10** | Min YES price for double momentum entry |
+| `double_momentum_max_price` | **0.91** | Max YES price for double momentum entry |
 
 ### Momentum window + exits (runtime) 🆕
 | Key | Default | Description |
 |-----|---------|-------------|
 | `momentum_window_seconds` | 900 | Rolling window for peer surge, fast-exit drawdown, and other exit logic (seconds) |
 | `momentum_entry_max_window_seconds` | 900 | Max aligned window **W** (seconds); grid is 60…900 in steps of 60 |
-| `momentum_entry_rise` | 0.20 | Min **absolute** YES rise for standard momentum entry (any qualifying window) |
-| `momentum_pct_rise` | 2.0 | Min **fractional** YES rise alternative (+200%) |
+| `momentum_entry_rise` | **0.20** | Min **absolute** YES rise for standard momentum entry (any qualifying window) |
+| `momentum_pct_rise` | **1.0** | Min **fractional** YES rise alternative (+100%) |
 | `momentum_min_start_price` | 0.0 | Floor on *old* price for pct gate (0 = allow e.g. 0.05 → 0.15 on pct) |
-| `momentum_min_price` / `momentum_max_entry` | 0.40 / 0.85 | Live-price band at decision time |
-| `momentum_fast_exit_drop` | 0.30 | Min **absolute** peak-to-trough drop inside the window for momentum fast exit |
+| `momentum_min_price` / `momentum_max_entry` | **0.55 / 0.85** | Live-price band at decision time |
+| `momentum_fast_exit_drop` | **0.40** | Min **absolute** peak-to-trough drop inside the window for momentum fast exit |
 | `crash_drop_pct_from_peak` | 0.50 | Fractional drop from `highest_seen_price` triggering crash exit (0 = off) |
 | `buy_escalate_notional_on_submit_fail` | `true` | Ladder buys after submit-side limit failure |
 | `buy_escalate_notional_step_usd` | 1.0 | USD increment per escalation step |
-| `momentum_competitor_surge` | 0.25 | Min **absolute** YES rise on **any sibling** in the event (within `momentum_window_seconds`) to fire exit **`competitor-surge`** — raise to require a bigger peer jump; lower to exit earlier on peer strength |
+| `momentum_competitor_surge` | **0.35** | Min **absolute** YES rise on **any sibling** in the event (within `momentum_window_seconds`) to fire exit **`competitor-surge`** — raise to require a bigger peer jump; lower to exit earlier on peer strength |
 
 ### Leader-yield (runtime) 🆕
 | Key | Default | Description |
 |-----|---------|-------------|
-| `leader_yield_min_leader_old_price` | 0.05 | Ignore peers at/below this window-start YES when evaluating sibling drops |
-| `leader_yield_fall_min_abs_pts` | 0.30 | Condition **(A)**: min absolute YES **points** dropped by **some** qualifying sibling (or frac leg vs its old YES) |
-| `leader_yield_fall_min_frac` | 0.50 | Condition **(A)**: **or** fractional drop vs **that sibling’s** old YES |
-| `collective_fall_min_abs_pts` | 0.30 | Condition **(B)**: min **sum** of sibling drops in YES **points** (qualifying siblings only) |
-| `collective_fall_min_frac` | 0.30 | Condition **(B)**: **or** total drop points ÷ sum of siblings’ old YES (weighted fraction) |
+| `leader_yield_min_leader_old_price` | **0.03** | Ignore peers at/below this window-start YES when evaluating sibling drops |
+| `leader_yield_fall_min_abs_pts` | **0.40** | Condition **(A)**: min absolute YES **points** dropped by **some** qualifying sibling (or frac leg vs its old YES) |
+| `leader_yield_fall_min_frac` | **0.41** | Condition **(A)**: **or** fractional drop vs **that sibling’s** old YES |
+| `collective_fall_min_abs_pts` | **0.40** | Condition **(B)**: min **sum** of sibling drops in YES **points** (qualifying siblings only) |
+| `collective_fall_min_frac` | **0.41** | Condition **(B)**: **or** total drop points ÷ sum of siblings’ old YES (weighted fraction) |
 
 ### Time decay (runtime) 🆕
 | Key | Default | Description |
@@ -607,8 +629,8 @@ Every trade (buy/sell/claim) and every scheduled report sends a rich portfolio m
 | Key | Default | Description |
 |-----|---------|-------------|
 | `trailing_stop_enabled` | `true` | enable trailing stop for all entry types |
-| `trailing_stop_activation_gain` | `0.20` | unlock trailing stop when peak ≥ entry + this |
-| `trailing_stop_lock_gain` | `0.10` | once unlocked, lock stop at entry + this |
+| `trailing_stop_activation_gain` | **0.20** | unlock trailing stop when peak ≥ entry + this |
+| `trailing_stop_lock_gain` | **0.03** | once unlocked, lock stop at entry + this |
 
 ### Fast Momentum Window 🆕
 | Key | Default | Description |
@@ -627,3 +649,20 @@ Every trade (buy/sell/claim) and every scheduled report sends a rich portfolio m
 |-----|---------|-------------|
 | `trade_log_full_reason_enabled` | `true` | write the full reason string to the trade ledger |
 | `telegram_verbose_trade_reason` | `true` | render trigger window/metric/band lines in Telegram |
+
+### Persistent Leader Entry 🆕
+| Key | Default | Description |
+|-----|---------|-------------|
+| `persistent_leader_enabled` | `true` | master toggle for 2h-dominance entry path |
+| `persistent_leader_lookback_sec` | `7200` | lookback window in seconds |
+| `persistent_leader_min_fraction` | `0.80` | min fraction of samples where market was #1 |
+| `persistent_leader_entry_rise` | `0.10` | min absolute YES rise to trigger PL entry |
+| `persistent_leader_pct_rise` | `0.25` | min fractional YES rise (OR with absolute) |
+| `persistent_leader_min_price` | `0.55` | buy band floor for PL path |
+| `persistent_leader_max_price` | `0.85` | buy band ceiling for PL path |
+
+### Order Size Cap
+| Key | Default | Description |
+|-----|---------|-------------|
+| `max_buy_notional_usd` | `5.0` | per-order USD cap; **hard ceiling** enforced by `config/constants.py::MAX_BUY_NOTIONAL_USD` — runtime cannot exceed this |
+| `min_order_notional_usd` | `1.0` | skip buy if computed size is below this |

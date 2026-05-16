@@ -1139,10 +1139,11 @@ def evaluate_entry(
     is_momentum_entry = bool(is_double_momentum or is_momentum_from_std)
 
     # ── Section 6: persistent-leader path ────────────────────────────────────
-    # If market held #1 rank among siblings for ≥ fraction of the last 2h AND now
-    # shows a momentum rise (but no sibling fall), allow buy without leader-yield gate.
+    # Market held #1 rank for ≥ fraction of the last 2h → use dedicated (lower)
+    # rise thresholds instead of the strict double/standard ones.  The high-dominance
+    # setup already provides conviction; only a small nudge is needed.
     _pl_enabled = bool(getattr(settings, "persistent_leader_enabled", True))
-    if _pl_enabled and not is_momentum_entry and (dbl_rise_only or mom_rise_only):
+    if _pl_enabled and not is_momentum_entry:
         _pl_lookback = float(
             getattr(settings, "persistent_leader_lookback_sec", 7200.0)
         )
@@ -1152,12 +1153,29 @@ def evaluate_entry(
         if is_persistent_leader(
             market_id, list(all_event_ids), _pl_lookback, _pl_min_frac
         ):
-            is_momentum_entry = True
-            if dbl_rise_only:
-                is_double_momentum = True
-                active_leader_meta = {"reason": "persistent_leader_2h"}
-                leader_yield_win_sec = _pl_lookback
-            else:
+            pl_rise_thr = float(
+                getattr(settings, "persistent_leader_entry_rise", C.PERSISTENT_LEADER_ENTRY_RISE)
+            )
+            pl_pct_thr = float(
+                getattr(settings, "persistent_leader_pct_rise", C.PERSISTENT_LEADER_PCT_RISE)
+            )
+            pl_min = float(
+                getattr(settings, "persistent_leader_min_price", C.PERSISTENT_LEADER_MIN_PRICE)
+            )
+            pl_max = float(
+                getattr(settings, "persistent_leader_max_price", C.PERSISTENT_LEADER_MAX_PRICE)
+            )
+            pl_rise_ok, pl_trigger, _ = momentum_multi_window_check(
+                market_id=market_id,
+                abs_rise_threshold=pl_rise_thr,
+                pct_rise_threshold=pl_pct_thr,
+                windows_sec=entry_windows,
+                min_start_price=0.10,
+                min_current_price=pl_min,
+                max_current_price=pl_max,
+            )
+            if pl_rise_ok:
+                is_momentum_entry = True
                 is_momentum_from_std = True
                 active_leader_meta = {"reason": "persistent_leader_2h"}
                 leader_yield_win_sec = _pl_lookback

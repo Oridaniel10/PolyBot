@@ -74,7 +74,7 @@ MOMENTUM_PCT_RISE = 1.0
 # [PRICE] minimum window-start YES price for the percent gate to count.
 # Filters out noise (e.g. 0.001 → 0.003 looks like +200% but is meaningless).
 # 0.0 = allow all; 0.05 = ignore entries starting below 0.05.
-MOMENTUM_MIN_START_PRICE = 0.0001
+MOMENTUM_MIN_START_PRICE = 0.05
 # [PRICE] live YES band for momentum entry at decision time.
 # Bot won't buy if current price is below MOMENTUM_MIN_PRICE or above MOMENTUM_MAX_ENTRY.
 # Example: 0.20 min means don't buy if YES is < 0.20 (too cheap = too risky).
@@ -95,12 +95,12 @@ DOUBLE_MOMENTUM_ENTRY_RISE = 0.40
 # [PCT] fractional alternative for double momentum (9.0 = ninefold = +900%).
 DOUBLE_MOMENTUM_PCT_RISE = 9.0
 # [PRICE] minimum window-start price for double momentum pct gate.
-DOUBLE_MOMENTUM_MIN_START_PRICE = 0.0001
+DOUBLE_MOMENTUM_MIN_START_PRICE = 0.05
 # [PRICE] live YES band for double momentum entry (same band as standard momentum here).
-DOUBLE_MOMENTUM_MIN_PRICE = 0.10
+DOUBLE_MOMENTUM_MIN_PRICE = 0.40
 DOUBLE_MOMENTUM_MAX_PRICE = 0.91
 # [PRICE] stop-loss floor for double momentum entries.
-STOP_LOSS_DOUBLE_MOMENTUM = 0.05
+STOP_LOSS_DOUBLE_MOMENTUM = 0.20
 # [FRAC] entry-relative drop for double momentum stop.
 STOP_LOSS_DOUBLE_MOMENTUM_ENTRY_DROP_PCT = 0.50
 
@@ -118,15 +118,16 @@ TAKE_PROFIT_COMPARE_SLACK = 0.002
 # Example: 0.30 means peak was 0.80 and now it's 0.50 → exit.
 # To exit SOONER on smaller drops: lower (e.g. 0.15).
 # To tolerate bigger swings: raise (e.g. 0.40).
-MOMENTUM_FAST_EXIT_DROP = 0.40
+MOMENTUM_FAST_EXIT_DROP = 0.35
 # [SECONDS] rolling window for fast exit drawdown + competitor surge checks.
 MOMENTUM_WINDOW_SECONDS = 3600
 # [PRICE] if any SIBLING bucket in the same event rises this many YES points
 # inside MOMENTUM_WINDOW_SECONDS → our position exits (money flowing to sibling).
 # Example: 0.35 means a sibling jumping from 0.30 to 0.65 triggers our exit.
-MOMENTUM_COMPETITOR_SURGE = 0.35
-# minimum price samples needed before momentum signal counts (2 = very permissive).
-MOMENTUM_MIN_SAMPLE_POINTS = 2
+MOMENTUM_COMPETITOR_SURGE = 0.30
+# minimum price samples needed before momentum signal counts.
+# 3 = requires signal to appear in at least 3 windows (~30s, 60s, 90s) — filters single-tick spikes.
+MOMENTUM_MIN_SAMPLE_POINTS = 3
 
 # [SECONDS] max window for the 1m–60m candidate grid.
 # The bot checks 1-15m (every 1m), 20-60m (every 5m), up to this cap.
@@ -160,10 +161,10 @@ DOUBLE_MOMENTUM_FAST_WINDOW_SECONDS = 300
 # [PRICE] once price rises this much above entry, trailing stop activates.
 # Example: 0.20 means entry 0.50 → trailing unlocks when price reaches 0.70.
 TRAILING_STOP_ENABLED = True
-TRAILING_STOP_ACTIVATION_GAIN = 0.20
+TRAILING_STOP_ACTIVATION_GAIN = 0.30
 # [PRICE] once trailing stop is active, lock stop at entry + this amount.
 # Example: 0.10 means stop locks at 0.50+0.10 = 0.60 (protecting 0.10 gain).
-TRAILING_STOP_LOCK_GAIN = 0.03
+TRAILING_STOP_LOCK_GAIN = 0.05
 
 # ─── Time-decay exit ─────────────────────────────────────────────────
 # [HOURS] exit if held longer than this AND not profitable enough.
@@ -219,7 +220,7 @@ CHURN_EVENT_COOLDOWN_SEC = 1800  # block event for 30 minutes
 CHURN_EVENT_LOSS_1_COOLDOWN_SEC = 900
 CHURN_EVENT_LOSS_2_COOLDOWN_SEC = 3600
 LEADER_SWITCH_WINDOW_SEC = 600
-LEADER_SWITCH_MAX_COUNT = 2
+LEADER_SWITCH_MAX_COUNT = 1
 UNSTABLE_EVENT_COOLDOWN_SEC = 1800
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -294,11 +295,11 @@ BUY_ESCALATE_NOTIONAL_STEP_USD = 1.0
 # SIZING
 # ═══════════════════════════════════════════════════════════════════════
 
-DEFAULT_ORDER_SIZE = 1.0
+DEFAULT_ORDER_SIZE = 3.0
 MAX_TRADE_FRACTION_OF_CASH = 0.90
 # bot order cap (USD); runtime max_buy_notional_usd cannot exceed this value
 MAX_BUY_NOTIONAL_USD = 5.0
-MIN_ORDER_NOTIONAL_USD = 1.0
+MIN_ORDER_NOTIONAL_USD = 3.0
 # never allocate buys from this portion of free cash (runtime + UI override)
 CASH_RESERVE_USD = 0.0
 
@@ -469,3 +470,9 @@ PERSISTENT_LEADER_LOOKBACK_SEC = 7200.0
 PERSISTENT_LEADER_MIN_FRACTION = 0.80
 # master on/off switch for the persistent-leader entry path.
 PERSISTENT_LEADER_ENABLED = True
+# dedicated (lower) rise thresholds for the persistent-leader path.
+# a market that dominated for 2h only needs a small nudge to qualify.
+PERSISTENT_LEADER_ENTRY_RISE = 0.10  # +0.10 pts absolute
+PERSISTENT_LEADER_PCT_RISE = 0.25  # OR +25% fractional
+PERSISTENT_LEADER_MIN_PRICE = 0.55  # buy band floor for PL path
+PERSISTENT_LEADER_MAX_PRICE = 0.85  # buy band ceiling for PL path
