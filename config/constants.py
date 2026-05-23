@@ -64,14 +64,14 @@ STOP_LOSS_NORMAL_ENTRY_DROP_PCT = 0.30
 #
 # Exit: take-profit when YES >= NORMAL_WINNER_TAKE_PROFIT (0.9997) — market is
 #       about to resolve YES.  SL is tight: stop if price drops from entry.
-NORMAL_WINNER_MIN_ENTRY = 0.92  # buy band floor
+NORMAL_WINNER_MIN_ENTRY = 0.88  # buy band floor
 NORMAL_WINNER_MAX_ENTRY = 0.96  # buy band ceiling (avoid buying right at resolve)
-NORMAL_WINNER_TAKE_PROFIT = 0.9987  # sell (market resolving YES)
+NORMAL_WINNER_TAKE_PROFIT = 0.994  # sell (market resolving YES)
 NORMAL_WINNER_STABILITY_FLOOR = 0.75  # price must have been above this throughout
-NORMAL_WINNER_STABILITY_MIN_SEC = 900  # minimum contiguous tail above floor (15 min)
+NORMAL_WINNER_STABILITY_MIN_SEC = 1200  # minimum contiguous tail above floor (20 min)
 NORMAL_WINNER_STABILITY_MAX_SEC = 7200  # maximum lookback considered (2h)
-STOP_LOSS_NORMAL_WINNER = 0.75  # hard floor — if it dumps hard, exit
-STOP_LOSS_NORMAL_WINNER_ENTRY_DROP_PCT = 0.20  # also exit if drops >20% from entry
+STOP_LOSS_NORMAL_WINNER = 0.65  # hard floor — if it dumps hard, exit
+STOP_LOSS_NORMAL_WINNER_ENTRY_DROP_PCT = 0.25  # also exit if drops >25% from entry
 NORMAL_WINNER_ENABLED = True
 
 # ─── MANUAL / UI: custom stop loss for user trades ───────────────────
@@ -101,11 +101,11 @@ MOMENTUM_MIN_START_PRICE = 0.05
 # [PRICE] live YES band for momentum entry at decision time.
 # Bot won't buy if current price is below MOMENTUM_MIN_PRICE or above MOMENTUM_MAX_ENTRY.
 # Example: 0.20 min means don't buy if YES is < 0.20 (too cheap = too risky).
-MOMENTUM_MIN_PRICE = 0.55
-MOMENTUM_MAX_ENTRY = 0.85
+MOMENTUM_MIN_PRICE = 0.88
+MOMENTUM_MAX_ENTRY = 0.92
 # [PRICE] hard stop-loss floor for momentum entries.
 # Momentum entries are more aggressive, so stop floor can be lower.
-STOP_LOSS_MOMENTUM = 0.35
+STOP_LOSS_MOMENTUM = 0.65
 # [FRAC] entry-relative drop before momentum stop triggers.
 # Example: entry 0.40, drop_pct=0.50 → stop at 0.20. Effective = max(0.10, 0.20).
 STOP_LOSS_MOMENTUM_ENTRY_DROP_PCT = 0.50
@@ -120,10 +120,10 @@ DOUBLE_MOMENTUM_PCT_RISE = 9.0
 # [PRICE] minimum window-start price for double momentum pct gate.
 DOUBLE_MOMENTUM_MIN_START_PRICE = 0.05
 # [PRICE] live YES band for double momentum entry (same band as standard momentum here).
-DOUBLE_MOMENTUM_MIN_PRICE = 0.40
-DOUBLE_MOMENTUM_MAX_PRICE = 0.85
+DOUBLE_MOMENTUM_MIN_PRICE = 0.88
+DOUBLE_MOMENTUM_MAX_PRICE = 0.92
 # [PRICE] stop-loss floor for double momentum entries.
-STOP_LOSS_DOUBLE_MOMENTUM = 0.20
+STOP_LOSS_DOUBLE_MOMENTUM = 0.65
 # [FRAC] entry-relative drop for double momentum stop.
 STOP_LOSS_DOUBLE_MOMENTUM_ENTRY_DROP_PCT = 0.50
 

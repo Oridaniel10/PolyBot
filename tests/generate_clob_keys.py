@@ -19,7 +19,9 @@ def generate_keys():
 
     print("--- מתחיל תהליך יצירת מפתחות CLOB (v2) ---")
     print(f"bot is using address: {client.get_address()}")
-    print("tip: if you use magic wallet, set POLY_PROXY_ADDRESS to your app account address")
+    print(
+        "tip: deposit wallet (new accounts): POLY_PROXY_ADDRESS=<deposit>, POLY_SIGNATURE_TYPE=3"
+    )
     try:
         api_creds = client.create_or_derive_api_key()
 

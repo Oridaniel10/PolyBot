@@ -2,7 +2,11 @@
 
 from typing import Any, Dict, Iterator, List, Tuple
 
-from polymarket_client import PolymarketClient
+from polymarket_client import (
+    HIGHEST_TEMP_PUBLIC_SEARCH_QUERIES,
+    PolymarketClient,
+    gamma_public_search_has_more,
+)
 
 from research.jsonl_util import load_json_file, save_json_file
 from research.resolution_parse import resolution_row_from_market
@@ -22,11 +26,7 @@ def iter_highest_temp_with_event_ids(
     """
     root = client.config.gamma_base_url.rstrip("/")
     page_cap = max(1, min(40, int(max_pages)))
-    # extra phrasing reorders Gamma results; kept titles must still include "highest temperature"
-    queries = [
-        "highest temperature",
-        "highest temperature on",
-    ]
+    queries = list(HIGHEST_TEMP_PUBLIC_SEARCH_QUERIES)
     seen_mid: set[str] = set()
     for q in queries:
         for page in range(page_cap):
@@ -69,8 +69,7 @@ def iter_highest_temp_with_event_ids(
                     f"unique_markets={len(seen_mid)}",
                     flush=True,
                 )
-            pag = data.get("pagination")
-            if not isinstance(pag, dict) or not pag.get("hasMore"):
+            if not gamma_public_search_has_more(data):
                 break
 
 

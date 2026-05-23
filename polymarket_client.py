@@ -33,6 +33,15 @@ DATA_API_POSITIONS_CACHE_TTL_SEC = 12.0
 # Gamma /markets offset scans often miss daily weather; public-search finds events reliably.
 HIGHEST_TEMP_PUBLIC_SEARCH_CACHE_TTL_SEC = 120.0
 HIGHEST_TEMP_PUBLIC_SEARCH_MAX_PAGES = 8
+HIGHEST_TEMP_EVENTS_TAG_FALLBACK_MAX_PAGES = 6
+HIGHEST_TEMP_WEATHER_TAG_ID = "84"
+HIGHEST_TEMP_PUBLIC_SEARCH_QUERIES = (
+    "highest temperature",
+    "highest temperature on",
+    "highest temperature in",
+    "daily temperature",
+)
+HIGHEST_TEMP_TAG_SLUGS = ("daily-temperature", "weather")
 CLOB_BALANCE_ALLOWANCE_CACHE_TTL_SEC = 50.0
 CLOB_ORDER_SIDE_BUY = "BUY"
 CLOB_ORDER_SIDE_SELL = "SELL"
@@ -44,9 +53,66 @@ SELL_EXECUTION_SKIPPED = "skipped"
 
 HIGHEST_TEMPERATURE_QUERY_PATTERNS = (
     r"^highest temperature in .+ on .+\?$",
+    r"^highest temperature in .+ on .+, \d{4}\?$",
     r"^highest temperature in .+\?$",
     r"^will the highest temperature in .+ be .+ on .+\?$",
+    r"^will the highest temperature in .+ be .+ on .+, \d{4}\?$",
 )
+HIGHEST_TEMP_EVENT_TITLE_PATTERNS = (
+    r"^highest temperature in .+ on .+\?$",
+    r"^highest temperature in .+ on .+, \d{4}\?$",
+)
+
+
+def gamma_public_search_has_more(data: Dict[str, Any]) -> bool:
+    """true when Gamma public-search (or similar) has another page."""
+    if not isinstance(data, dict):
+        return False
+    pag = data.get("pagination")
+    if isinstance(pag, dict):
+        for key in ("hasMore", "has_more", "more"):
+            val = pag.get(key)
+            if val is True:
+                return True
+            if isinstance(val, str) and val.strip().lower() in ("true", "1", "yes"):
+                return True
+    for key in ("hasMore", "has_more", "more"):
+        val = data.get(key)
+        if val is True:
+            return True
+        if isinstance(val, str) and val.strip().lower() in ("true", "1", "yes"):
+            return True
+    return False
+
+
+def gamma_market_is_active(market: Dict[str, Any]) -> bool:
+    active = market.get("active")
+    if active is True:
+        return True
+    if isinstance(active, str) and active.strip().lower() in ("true", "1", "yes"):
+        return True
+    return False
+
+
+def city_name_to_slug(city: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", (city or "").strip().lower()).strip("-")
+
+
+def highest_temp_event_slug_candidates(
+    city: str, target_day_label: str, *, year: Optional[int] = None
+) -> List[str]:
+    """slug variants for GET /events/slug/{slug} (Gamma omits year on some events)."""
+    city_slug = city_name_to_slug(city)
+    label = (target_day_label or "").strip().lower()
+    parts = label.split()
+    if len(parts) < 2:
+        return []
+    month, day = parts[0], parts[-1]
+    base = f"highest-temperature-in-{city_slug}-on-{month}-{day}"
+    out = [base]
+    if year is not None:
+        out.append(f"{base}-{year}")
+    return out
 
 
 def title_matches_highest_temp_target_day(
@@ -720,12 +786,46 @@ class PolymarketClient:
                 labels.append(s)
         return labels
 
+    def _is_highest_temp_event_title(
+        self,
+        title: str,
+        target_day_label: Optional[str],
+        extra_target_day_labels: Optional[List[str]] = None,
+    ) -> bool:
+        t = (title or "").strip().lower()
+        if "highest temperature" not in t:
+            return False
+        if not any(re.match(p, t) for p in HIGHEST_TEMP_EVENT_TITLE_PATTERNS):
+            return False
+        labels = self._merge_target_day_labels(
+            target_day_label, extra_target_day_labels
+        )
+        if labels and not any(
+            title_matches_highest_temp_target_day(t, lb) for lb in labels
+        ):
+            return False
+        return True
+
     def _is_highest_temp_market(
         self,
         market: Dict[str, Any],
         target_day_label: Optional[str],
         extra_target_day_labels: Optional[List[str]] = None,
+        *,
+        event_title: Optional[str] = None,
     ) -> bool:
+        if event_title and self._is_highest_temp_event_title(
+            event_title, target_day_label, extra_target_day_labels
+        ):
+            title = (market.get("question") or market.get("title") or "").strip().lower()
+            if title and (
+                "highest temperature" in title
+                or "temperature" in title
+                or "°" in title
+                or "f or" in title
+                or "c or" in title
+            ):
+                return True
         title = (market.get("question") or market.get("title") or "").strip().lower()
         if "highest temperature" not in title:
             return False
@@ -739,6 +839,181 @@ class PolymarketClient:
         ):
             return False
         return True
+
+    def _collect_highest_temp_markets_from_events(
+        self,
+        events: List[Any],
+        seen: Set[str],
+        out: List[Dict[str, Any]],
+        target_day_label: Optional[str],
+        extra_target_day_labels: Optional[List[str]],
+        *,
+        include_inactive: bool,
+    ) -> None:
+        for ev in events:
+            if not isinstance(ev, dict):
+                continue
+            event_title = str(ev.get("title") or "")
+            mk = ev.get("markets")
+            if not isinstance(mk, list):
+                continue
+            for m in mk:
+                if not isinstance(m, dict):
+                    continue
+                if not include_inactive and not gamma_market_is_active(m):
+                    continue
+                if not self._is_highest_temp_market(
+                    m,
+                    target_day_label,
+                    extra_target_day_labels,
+                    event_title=event_title,
+                ):
+                    continue
+                mid = str(m.get("id") or "")
+                if mid and mid not in seen:
+                    seen.add(mid)
+                    out.append(m)
+
+    def _gamma_get_tag_id_by_slug(self, slug: str) -> Optional[str]:
+        slug = (slug or "").strip()
+        if not slug:
+            return None
+        root = self.config.gamma_base_url.rstrip("/")
+        try:
+            data = self._request(
+                "GET", f"{root}/tags/slug/{slug}", with_auth=False
+            )
+        except requests.RequestException:
+            return None
+        if isinstance(data, dict):
+            tid = str(data.get("id") or "").strip()
+            return tid or None
+        return None
+
+    def get_event_by_slug(self, slug: str) -> Optional[Dict[str, Any]]:
+        slug = (slug or "").strip()
+        if not slug:
+            return None
+        root = self.config.gamma_base_url.rstrip("/")
+        try:
+            data = self._request(
+                "GET", f"{root}/events/slug/{slug}", with_auth=False
+            )
+        except requests.RequestException:
+            return None
+        return data if isinstance(data, dict) else None
+
+    def _load_city_names_for_slug_scan(self) -> List[str]:
+        try:
+            from config.constants import CITY_BUY_EARLIEST_HOURS_FILE
+
+            raw = json.loads(CITY_BUY_EARLIEST_HOURS_FILE.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            return []
+        if not isinstance(raw, dict):
+            return []
+        cities: List[str] = []
+        for key in raw:
+            if str(key).startswith("_"):
+                continue
+            name = str(key).strip()
+            if name:
+                cities.append(name)
+        return cities
+
+    def _slug_fallback_highest_temperature_markets(
+        self,
+        target_day_label: Optional[str],
+        extra_target_day_labels: Optional[List[str]],
+        *,
+        include_inactive: bool = False,
+    ) -> List[Dict[str, Any]]:
+        labels = self._merge_target_day_labels(
+            target_day_label, extra_target_day_labels
+        )
+        if not labels:
+            return []
+        cities = self._load_city_names_for_slug_scan()
+        if not cities:
+            return []
+        year = time.gmtime().tm_year
+        seen: Set[str] = set()
+        out: List[Dict[str, Any]] = []
+        for city in cities:
+            for label in labels:
+                for slug in highest_temp_event_slug_candidates(
+                    city, label, year=year
+                ):
+                    ev = self.get_event_by_slug(slug)
+                    if not isinstance(ev, dict):
+                        continue
+                    self._collect_highest_temp_markets_from_events(
+                        [ev],
+                        seen,
+                        out,
+                        target_day_label,
+                        extra_target_day_labels,
+                        include_inactive=include_inactive,
+                    )
+        return out
+
+    def _events_tag_fallback_highest_temperature_markets(
+        self,
+        target_day_label: Optional[str],
+        extra_target_day_labels: Optional[List[str]],
+        *,
+        include_inactive: bool = False,
+        max_pages: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        root = self.config.gamma_base_url.rstrip("/")
+        tag_ids: List[str] = []
+        for slug in HIGHEST_TEMP_TAG_SLUGS:
+            tid = self._gamma_get_tag_id_by_slug(slug)
+            if tid and tid not in tag_ids:
+                tag_ids.append(tid)
+        if HIGHEST_TEMP_WEATHER_TAG_ID not in tag_ids:
+            tag_ids.append(HIGHEST_TEMP_WEATHER_TAG_ID)
+        page_cap = max_pages if max_pages is not None else HIGHEST_TEMP_EVENTS_TAG_FALLBACK_MAX_PAGES
+        page_cap = max(1, min(20, int(page_cap)))
+        seen: Set[str] = set()
+        out: List[Dict[str, Any]] = []
+        for tag_id in tag_ids:
+            for page in range(page_cap):
+                try:
+                    data = self._request(
+                        "GET",
+                        f"{root}/events",
+                        params={
+                            "tag_id": tag_id,
+                            "active": "true",
+                            "closed": "false",
+                            "limit": 100,
+                            "offset": page * 100,
+                            "order": "volume_24hr",
+                            "ascending": "false",
+                        },
+                        with_auth=False,
+                    )
+                except requests.RequestException:
+                    break
+                events: List[Any] = []
+                if isinstance(data, list):
+                    events = data
+                elif isinstance(data, dict) and isinstance(data.get("data"), list):
+                    events = data["data"]
+                if not events:
+                    break
+                self._collect_highest_temp_markets_from_events(
+                    events,
+                    seen,
+                    out,
+                    target_day_label,
+                    extra_target_day_labels,
+                    include_inactive=include_inactive,
+                )
+                if len(events) < 100:
+                    break
+        return out
 
     def _discover_temp_id_range(
         self,
@@ -794,9 +1069,9 @@ class PolymarketClient:
         query_phases: List[List[str]] = []
         if specific_queries:
             query_phases.append(specific_queries)
-            query_phases.append(["highest temperature"])
+            query_phases.append(list(HIGHEST_TEMP_PUBLIC_SEARCH_QUERIES))
         else:
-            query_phases.append(["highest temperature"])
+            query_phases.append(list(HIGHEST_TEMP_PUBLIC_SEARCH_QUERIES))
 
         seen: Set[str] = set()
         out: List[Dict[str, Any]] = []
@@ -822,25 +1097,15 @@ class PolymarketClient:
                     events = data.get("events")
                     if not isinstance(events, list):
                         break
-                    for ev in events:
-                        mk = ev.get("markets")
-                        if not isinstance(mk, list):
-                            continue
-                        for m in mk:
-                            if not isinstance(m, dict):
-                                continue
-                            if not include_inactive and not m.get("active"):
-                                continue
-                            if not self._is_highest_temp_market(
-                                m, target_day_label, extra_target_day_labels
-                            ):
-                                continue
-                            mid = str(m.get("id") or "")
-                            if mid and mid not in seen:
-                                seen.add(mid)
-                                out.append(m)
-                    pag = data.get("pagination")
-                    if not isinstance(pag, dict) or not pag.get("hasMore"):
+                    self._collect_highest_temp_markets_from_events(
+                        events,
+                        seen,
+                        out,
+                        target_day_label,
+                        extra_target_day_labels,
+                        include_inactive=include_inactive,
+                    )
+                    if not gamma_public_search_has_more(data):
                         break
 
         for i, phase in enumerate(query_phases):
@@ -882,6 +1147,27 @@ class PolymarketClient:
             include_inactive=include_inactive,
             max_pages=public_search_max_pages,
         )
+        discovery_source = "public_search"
+        if not search_hits:
+            search_hits = self._events_tag_fallback_highest_temperature_markets(
+                target_day_label,
+                extra_target_day_labels,
+                include_inactive=include_inactive,
+                max_pages=public_search_max_pages,
+            )
+            discovery_source = "events_tag"
+        if not search_hits:
+            search_hits = self._slug_fallback_highest_temperature_markets(
+                target_day_label,
+                extra_target_day_labels,
+                include_inactive=include_inactive,
+            )
+            discovery_source = "events_slug"
+        if search_hits:
+            print(
+                f"[market_discovery] source={discovery_source} "
+                f"found {len(search_hits)} highest-temp markets"
+            )
         if search_hits:
             found_ids = [
                 int(m["id"]) for m in search_hits if str(m.get("id", "")).isdigit()
@@ -914,6 +1200,7 @@ class PolymarketClient:
 
         lo, hi = id_range
         if lo == 0 and hi == 0:
+            print("[market_discovery] found 0 highest-temp markets (all paths)")
             return []
 
         # --- step 2: fetch individual markets by ID (parallel, throttled) ---
@@ -943,7 +1230,7 @@ class PolymarketClient:
                 m = resp.json()
                 if not isinstance(m, dict):
                     return None
-                if not m.get("active"):
+                if not gamma_market_is_active(m):
                     return None
                 if self._is_highest_temp_market(
                     m, target_day_label, extra_target_day_labels
@@ -975,7 +1262,101 @@ class PolymarketClient:
             with self._temp_id_range_lock:
                 self._temp_id_range = (min(found_ids) - 20, max(found_ids) + 20)
 
+        if highest_markets:
+            print(
+                f"[market_discovery] source=id_scan "
+                f"found {len(highest_markets)} highest-temp markets"
+            )
+        else:
+            print("[market_discovery] found 0 highest-temp markets (all paths)")
         return highest_markets
+
+    def diagnose_market_discovery(
+        self,
+        *,
+        target_day_label: Optional[str] = None,
+        extra_target_day_labels: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """print Gamma discovery diagnostics; returns summary dict."""
+        root = self.config.gamma_base_url.rstrip("/")
+        labels = self._merge_target_day_labels(
+            target_day_label, extra_target_day_labels
+        )
+        report: Dict[str, Any] = {
+            "gamma_base_url": root,
+            "target_day_labels": labels,
+            "public_search": [],
+            "tags": [],
+            "events_sample": [],
+            "filter_sample": [],
+        }
+        print(f"[market_discovery] diagnose gamma={root} labels={labels}")
+        probe_queries: List[str] = list(HIGHEST_TEMP_PUBLIC_SEARCH_QUERIES[:3])
+        if labels:
+            probe_queries.insert(0, f"highest temperature {labels[0].lower()}")
+        for q in probe_queries:
+            try:
+                data = self._request(
+                    "GET",
+                    f"{root}/public-search",
+                    params={"q": q, "page": 0},
+                    with_auth=False,
+                )
+            except requests.RequestException as exc:
+                row = {"q": q, "error": str(exc)}
+                report["public_search"].append(row)
+                print(f"  public-search q={q!r}: ERROR {exc}")
+                continue
+            events = data.get("events") if isinstance(data, dict) else None
+            n_ev = len(events) if isinstance(events, list) else 0
+            pag = data.get("pagination") if isinstance(data, dict) else None
+            row = {
+                "q": q,
+                "events": n_ev,
+                "pagination": pag,
+                "has_more": gamma_public_search_has_more(data)
+                if isinstance(data, dict)
+                else False,
+            }
+            report["public_search"].append(row)
+            print(
+                f"  public-search q={q!r}: events={n_ev} pagination={pag} "
+                f"has_more={row['has_more']}"
+            )
+            if isinstance(events, list) and events:
+                print(f"    first event: {events[0].get('title')}")
+        for slug in HIGHEST_TEMP_TAG_SLUGS:
+            tid = self._gamma_get_tag_id_by_slug(slug)
+            tag_row = {"slug": slug, "id": tid}
+            report["tags"].append(tag_row)
+            print(f"  tag slug={slug!r} id={tid}")
+        try:
+            sample = self._request(
+                "GET",
+                f"{root}/events",
+                params={"active": "true", "closed": "false", "limit": 5},
+                with_auth=False,
+            )
+            if isinstance(sample, list):
+                for ev in sample[:5]:
+                    title = str(ev.get("title") or "")
+                    report["events_sample"].append(title)
+                    print(f"  active event sample: {title[:80]}")
+        except requests.RequestException as exc:
+            print(f"  events sample: ERROR {exc}")
+        self._highest_temp_public_search_cache = None
+        hits = self.get_highest_temperature_markets(
+            target_day_label=target_day_label,
+            extra_target_day_labels=extra_target_day_labels,
+            public_search_max_pages=2,
+        )
+        report["matched_markets"] = len(hits)
+        for m in hits[:5]:
+            title = (m.get("question") or m.get("title") or "")[:80]
+            report["filter_sample"].append(title)
+            print(f"  matched: {title}")
+        print(f"[market_discovery] diagnose matched={len(hits)}")
+        return report
 
     def get_targeted_weather_markets(self) -> List[Dict[str, Any]]:
         query_params = [
