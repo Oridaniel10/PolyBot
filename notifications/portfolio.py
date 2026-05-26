@@ -11,6 +11,7 @@ from forecast.parse_title import BracketKind, parse_highest_temp_title
 from notifications.forecast_cache_fmt import portfolio_position_forecast_html
 from notifications.terminal import print_terminal_block
 from strategy.blacklist_display import collect_blacklist_status_rows
+from strategy.limit_buy_guard import collect_open_limit_buys_for_display
 from strategy.city_tz import city_local_datetime_now_str, city_local_time_str
 from strategy.time_utils import (
     build_target_day_label,
@@ -286,6 +287,35 @@ def _event_board_top4_html(
         return ""
 
 
+def build_open_limit_buys_html(
+    client: PolymarketClient,
+    state: Optional[Dict[str, Any]] = None,
+) -> str:
+    if not state:
+        return ""
+    try:
+        rows = collect_open_limit_buys_for_display(client, state)
+    except Exception:
+        return ""
+    if not rows:
+        return ""
+    lines: List[str] = [
+        "🟡 <b>OPEN limit BUY orders</b> <i>(GTC resting)</i>",
+    ]
+    for r in rows:
+        title = tg_escape(str(r.get("title") or r.get("market_id") or "?")[:72])
+        limit_px = float(r.get("limit_price") or 0.0)
+        usd = float(r.get("usd") or 0.0)
+        mark = float(r.get("mark") or 0.0)
+        mark_s = f"{mark:.4f}" if mark > 1e-12 else "n/a"
+        lines.append(
+            f"   🟡 <code>{tg_escape(str(r.get('market_id') or ''))}</code> {title}\n"
+            f"      entry limit <code>{limit_px:.4f}</code> · "
+            f"notional <code>${usd:.2f}</code> · mark <code>{mark_s}</code>"
+        )
+    return "\n".join(lines)
+
+
 def build_full_portfolio_html(
     client: PolymarketClient,
     title_line_html: str,
@@ -304,11 +334,17 @@ def build_full_portfolio_html(
         f"💵 <b>Cash</b>  <code>${cash:.2f}</code>",
         f"📈 <b>Positions MTM</b>  <code>${pos_val:.2f}</code>",
         f"💼 <b>Total</b>  <code>${total:.2f}</code>",
-        f"📊 <b>Open</b>  <code>{len(positions)}</code>",
+        f"📊 <b>Open positions</b>  <code>{len(positions)}</code>",
         "",
     ]
+    open_buys_html = build_open_limit_buys_html(client, state)
+    if open_buys_html:
+        parts.append(open_buys_html)
+        parts.append("")
     if not positions:
         parts.append("<i>(no live positions)</i>")
+        if not open_buys_html:
+            return "\n".join(parts)
         return "\n".join(parts)
     event_cache: Dict[str, Any] = {}
     for index, pos in enumerate(positions, start=1):

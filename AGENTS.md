@@ -9,8 +9,10 @@ Polymarket migrated the exchange to **CLOB v2** on **2026-04-28**. The bot uses 
 Decisions are **price-driven** (band, momentum, competition, SL, TP, time-decay). The forecast/research/calibration model still runs and is shown for context, but the runtime gates `research_edge_gate_buy`, `min_model_prob_for_buy`, and `decision_min_model_peak_prob` default to **off / 0.0** in `data/runtime_config.json`. A market with no forecast still trades through price-based gates.
 
 Momentum uses **absolute OR fractional percentage rise** across **multiple sampled windows** (1–15m grid + 2h) via `momentum_multi_window_check` in `strategy/decision_core.py`, plus **pair reversal** (`strategy/pair_reversal.py::detect_pair_reversal`): a sibling YES falls while the target rises in a short window → momentum-class BUY with reason `pair_reversal_crowd_shift`. **`momentum_min_start_price`** (default **0**) gates only the pct leg against a tiny “old price” baseline; **`crash_drop_pct_from_peak`** exits on cliffs vs `highest_seen_price`; **`buy_escalate_notional_on_submit_fail`** steps USD **only after submit failures**, not unfilled-timeout.
-- normal momentum defaults: `momentum_entry_rise=0.15` OR `momentum_pct_rise=1.0` (+100%); band `momentum_min_price..momentum_max_entry` (defaults **0.20–0.85** — override live in `data/runtime_config.json`)
-- double momentum: `double_momentum_entry_rise=0.25` OR `double_momentum_pct_rise=2.0` (+200%); band **`0.10–0.85`**
+- normal momentum defaults: `momentum_entry_rise=0.20` OR `momentum_pct_rise=1.0` (+100%); band `momentum_min_price..momentum_max_entry` (live **`0.88–0.92`** in `data/runtime_config.json`)
+- double momentum: `double_momentum_entry_rise=0.40` OR `double_momentum_pct_rise=9.0` (+900%); band **`0.88–0.92`**
+- normal entries disabled: `buy_min_threshold` / `buy_max_threshold` = **1.1** (band off)
+- limit buys: `buy_limit_order_timeout_sec=15`; duplicate GTC blocked via `pending_limit_buy_orders` + `open_limit_buy_resting` skip
 - manual / UI: trades placed manually track a specific `stop_loss_manual` and `stop_loss_manual_entry_drop_pct` to avoid immediately exiting on normal constraints.
 - normal entries: `buy_max_threshold=0.84` (lowered from 0.91); a re-fetched live CLOB best ask is enforced before submit, otherwise skip with `live_price_above_entry_type_max`
 

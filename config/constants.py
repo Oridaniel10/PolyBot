@@ -64,14 +64,14 @@ STOP_LOSS_NORMAL_ENTRY_DROP_PCT = 0.30
 #
 # Exit: take-profit when YES >= NORMAL_WINNER_TAKE_PROFIT (0.9997) — market is
 #       about to resolve YES.  SL is tight: stop if price drops from entry.
-NORMAL_WINNER_MIN_ENTRY = 0.88  # buy band floor
+NORMAL_WINNER_MIN_ENTRY = 0.80  # buy band floor
 NORMAL_WINNER_MAX_ENTRY = 0.96  # buy band ceiling (avoid buying right at resolve)
 NORMAL_WINNER_TAKE_PROFIT = 0.994  # sell (market resolving YES)
 NORMAL_WINNER_STABILITY_FLOOR = 0.75  # price must have been above this throughout
 NORMAL_WINNER_STABILITY_MIN_SEC = 1200  # minimum contiguous tail above floor (20 min)
 NORMAL_WINNER_STABILITY_MAX_SEC = 7200  # maximum lookback considered (2h)
-STOP_LOSS_NORMAL_WINNER = 0.65  # hard floor — if it dumps hard, exit
-STOP_LOSS_NORMAL_WINNER_ENTRY_DROP_PCT = 0.25  # also exit if drops >25% from entry
+STOP_LOSS_NORMAL_WINNER = 0.30  # hard floor — if it dumps hard, exit
+STOP_LOSS_NORMAL_WINNER_ENTRY_DROP_PCT = 0.50  # also exit if drops >50% from entry
 NORMAL_WINNER_ENABLED = True
 
 # ─── MANUAL / UI: custom stop loss for user trades ───────────────────
@@ -105,7 +105,7 @@ MOMENTUM_MIN_PRICE = 0.88
 MOMENTUM_MAX_ENTRY = 0.92
 # [PRICE] hard stop-loss floor for momentum entries.
 # Momentum entries are more aggressive, so stop floor can be lower.
-STOP_LOSS_MOMENTUM = 0.65
+STOP_LOSS_MOMENTUM = 0.40
 # [FRAC] entry-relative drop before momentum stop triggers.
 # Example: entry 0.40, drop_pct=0.50 → stop at 0.20. Effective = max(0.10, 0.20).
 STOP_LOSS_MOMENTUM_ENTRY_DROP_PCT = 0.50
@@ -123,7 +123,7 @@ DOUBLE_MOMENTUM_MIN_START_PRICE = 0.05
 DOUBLE_MOMENTUM_MIN_PRICE = 0.88
 DOUBLE_MOMENTUM_MAX_PRICE = 0.92
 # [PRICE] stop-loss floor for double momentum entries.
-STOP_LOSS_DOUBLE_MOMENTUM = 0.65
+STOP_LOSS_DOUBLE_MOMENTUM = 0.40
 # [FRAC] entry-relative drop for double momentum stop.
 STOP_LOSS_DOUBLE_MOMENTUM_ENTRY_DROP_PCT = 0.50
 
@@ -131,7 +131,7 @@ STOP_LOSS_DOUBLE_MOMENTUM_ENTRY_DROP_PCT = 0.50
 # EXIT THRESHOLDS
 # ═══════════════════════════════════════════════════════════════════════
 
-TAKE_PROFIT_THRESHOLD = 0.94
+TAKE_PROFIT_THRESHOLD = 0.994
 # float slack vs gamma/mark rounding; also helps when take_profit is 0.99 and mark is 0.988
 TAKE_PROFIT_COMPARE_SLACK = 0.002
 

@@ -17,6 +17,7 @@ from strategy.momentum import record_samples_for_market_dicts
 from strategy.momentum_alert import check_and_alert
 from strategy.probability import parse_market_probability
 from strategy.time_utils import build_target_day_label, now_in_report_timezone
+from strategy.limit_buy_guard import flush_pending_limit_buys
 from strategy.trades import process_single_market
 from telegram_bot import TelegramBot
 
@@ -56,6 +57,7 @@ def run_once(
             anchor_ids=anchor_ids,
         )
         fut_flush = pool.submit(client.flush_pending_limit_sells, active_trades)
+        fut_flush_buys = pool.submit(flush_pending_limit_buys, client, state)
         fut_balance = pool.submit(client.get_portfolio_balance)
 
         markets = fut_markets.result()
@@ -85,6 +87,7 @@ def run_once(
             )
 
         fut_flush.result()
+        fut_flush_buys.result()
         balance = fut_balance.result()
 
     cash = float(balance.get("cash") or 0)

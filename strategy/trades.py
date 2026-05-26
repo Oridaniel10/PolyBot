@@ -67,8 +67,6 @@ from polymarket_client import (
     SELL_EXECUTION_LIMIT_GTC,
     SELL_EXECUTION_SKIPPED,
     gamma_event_ids_for_market,
-    order_fully_filled,
-    order_resting_unfilled,
 )
 from state.pnl_ledger import append_ledger_row, append_trade_csv_row
 from strategy.city_tz import _extract_city_from_title, city_local_time_str
@@ -83,6 +81,12 @@ from strategy.churn import (
     sell_cooldown_30m_active,
 )
 from strategy.gates import market_can_post_clob_orders, market_status
+from strategy.limit_buy_guard import (
+    cancel_resting_limit_buys_for_market,
+    clear_pending_limit_buys,
+    record_pending_limit_buy,
+    resting_limit_buy_blocks_entry,
+)
 from strategy.market_match import (
     active_trade_key_and_row,
     trade_row_matches_gamma_market,
@@ -756,51 +760,6 @@ def market_recently_sold(state: Dict[str, Any], market_id: str) -> bool:
     return time.time() < float(bucket.get(market_id) or 0.0)
 
 
-def cancel_orphan_limit_buy_for_market(
-    client: PolymarketClient, market_id: str, state: Dict[str, Any]
-) -> None:
-    """best-effort cancel of a prior GTC buy that may still be resting on the CLOB."""
-    if not market_id:
-        return
-    bucket = state.setdefault("orphan_limit_buy_orders", {})
-    if not isinstance(bucket, dict):
-        state["orphan_limit_buy_orders"] = {}
-        bucket = state["orphan_limit_buy_orders"]
-    oid = str(bucket.get(market_id) or "").strip()
-    if not oid:
-        return
-    for _ in range(20):
-        client.cancel_order(oid)
-        try:
-            st = client.get_order_state(oid) or {}
-        except Exception:
-            st = {}
-        if order_fully_filled(st):
-            bucket.pop(market_id, None)
-            print(
-                f"[place_buy] cleared orphan buy — was filled market={market_id} oid={oid}"
-            )
-            return
-        if not order_resting_unfilled(st):
-            bucket.pop(market_id, None)
-            return
-        time.sleep(0.25)
-    try:
-        st2 = client.get_order_state(oid) or {}
-    except Exception:
-        st2 = {}
-    if not order_resting_unfilled(st2):
-        bucket.pop(market_id, None)
-    else:
-        print(
-            term_wrap(
-                TERM_YELLOW,
-                f"[place_buy] orphan buy limit still live market_id={market_id} "
-                f"order_id={oid} — will retry cancel next scan",
-            )
-        )
-
-
 def place_buy(
     client: PolymarketClient,
     market: Dict[str, Any],
@@ -814,7 +773,7 @@ def place_buy(
     market_id = str(market.get("id") or "")
     if not market_id:
         return
-    cancel_orphan_limit_buy_for_market(client, market_id, state)
+    cancel_resting_limit_buys_for_market(client, market_id, state)
     event_id = market_event_id(market)
     active_trades = state.setdefault("active_trades", {})
 
@@ -839,6 +798,13 @@ def place_buy(
                 f"entry_type={skip_entry_type} {extras}".rstrip(),
             )
         )
+
+    blocked_open, block_reason = resting_limit_buy_blocks_entry(
+        client, market_id, state
+    )
+    if blocked_open:
+        emit_post_decision_skip("open_limit_buy_resting", detail=block_reason)
+        return
 
     if active_trade_key_and_row(active_trades, market)[1] is not None:
         emit_post_decision_skip("already_holding")
@@ -1032,6 +998,15 @@ def place_buy(
             )
             if exec_result is None:
                 break
+            if str(getattr(exec_result, "order_id", "") or "").strip():
+                record_pending_limit_buy(
+                    state,
+                    market_id=market_id,
+                    order_id=str(exec_result.order_id),
+                    limit_price=float(exec_result.limit_price),
+                    usd=float(attempt_usd),
+                    title=str(title),
+                )
             if exec_result.filled:
                 break
             if exec_result.mode == "limit_cancelled":
@@ -1083,17 +1058,20 @@ def place_buy(
         clear_trade_lock(state, "buy_market", market_id)
         if event_id:
             clear_trade_lock(state, "buy_event", event_id)
-        # no late fill possible here — execute_buy already re-polled after cancel.
-        # drop attempt so sync cannot mis-classify a later manual site buy as bot,
-        # and so the next scan can retry without recent_buy_attempt_pending.
-        state.setdefault("recent_buy_attempts", {}).pop(market_id, None)
-        if (
-            getattr(exec_result, "stale_exchange_order", False)
-            and str(getattr(exec_result, "order_id", "") or "").strip()
-        ):
-            state.setdefault("orphan_limit_buy_orders", {})[market_id] = str(
-                exec_result.order_id
-            ).strip()
+        # keep recent_buy_attempt when a GTC may still be OPEN — blocks duplicate posts.
+        stale_open = bool(getattr(exec_result, "stale_exchange_order", False))
+        if not stale_open:
+            state.setdefault("recent_buy_attempts", {}).pop(market_id, None)
+            clear_pending_limit_buys(state, market_id)
+        elif str(getattr(exec_result, "order_id", "") or "").strip():
+            record_pending_limit_buy(
+                state,
+                market_id=market_id,
+                order_id=str(exec_result.order_id),
+                limit_price=float(exec_result.limit_price),
+                usd=float(usd),
+                title=str(title),
+            )
         print(
             term_wrap(
                 TERM_YELLOW,
@@ -1237,7 +1215,7 @@ def place_buy(
         ),
     }
     state.setdefault("recent_buy_attempts", {}).pop(market_id, None)
-    state.setdefault("orphan_limit_buy_orders", {}).pop(market_id, None)
+    clear_pending_limit_buys(state, market_id)
     clear_trade_lock(state, "buy_market", market_id)
     if event_id:
         clear_trade_lock(state, "buy_event", event_id)

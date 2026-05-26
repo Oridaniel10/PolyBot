@@ -60,9 +60,9 @@ Each entry type defines its own price band and stop-loss threshold. Constants ar
 
 | Variable | Default | Where |
 |----------|---------|-------|
-| `BUY_MIN_THRESHOLD` | **0.65** | `config/constants.py` |
-| `BUY_MAX_THRESHOLD` | **0.84** | `config/constants.py` (runtime) |
-| `STOP_LOSS_NORMAL` | **0.50** | `config/constants.py` |
+| `BUY_MIN_THRESHOLD` | **1.1** (disabled) | `config/constants.py` / `runtime_config.json` |
+| `BUY_MAX_THRESHOLD` | **1.1** (disabled) | `config/constants.py` / `runtime_config.json` |
+| `STOP_LOSS_NORMAL` | **0.20** | `config/constants.py` / `runtime_config.json` |
 | `MAX_MARKET_PROB_FOR_BUY` | **0.99** | `config/constants.py` |
 | `MIN_MODEL_PROB_FOR_BUY` | **0.0** (runtime) | `data/runtime_config.json` |
 | `RESEARCH_EDGE_GATE_BUY` | **false** (runtime) | `data/runtime_config.json` |
@@ -77,12 +77,12 @@ All values below are **live runtime values** from `data/runtime_config.json`. Un
 |----------|---------------|------|-------|
 | `momentum_entry_rise` | **0.20** | [PRICE] absolute rise | `data/runtime_config.json` |
 | `momentum_pct_rise` | **1.0** (+100%) | [PCT] fractional rise | `data/runtime_config.json` |
-| `momentum_min_start_price` | **0.0001** | [PRICE] min window-start YES for pct gate | `data/runtime_config.json` |
-| `momentum_min_price` | **0.55** | [PRICE] min live YES at entry | `data/runtime_config.json` |
-| `momentum_max_entry` | **0.85** | [PRICE] max live YES at entry | `data/runtime_config.json` |
+| `momentum_min_start_price` | **0.05** | [PRICE] min window-start YES for pct gate | `data/runtime_config.json` |
+| `momentum_min_price` | **0.88** | [PRICE] min live YES at entry | `data/runtime_config.json` |
+| `momentum_max_entry` | **0.92** | [PRICE] max live YES at entry | `data/runtime_config.json` |
 | `momentum_entry_max_window_seconds` | **3600** (60 min cap) | [SECONDS] | `data/runtime_config.json` |
 | `momentum_window_seconds` | **3600** | [SECONDS] | `data/runtime_config.json` |
-| `stop_loss_momentum` | **0.35** | [PRICE] hard floor | `data/runtime_config.json` |
+| `stop_loss_momentum` | **0.65** | [PRICE] hard floor | `data/runtime_config.json` |
 | `stop_loss_momentum_entry_drop_pct` | **0.50** (50% from entry) | [FRAC] relative drop | `data/runtime_config.json` |
 
 Entry when YES rose by **absolute** rise OR **fractional percent** rise **and** leader-yield passes on the **same** lookback length `W`, where `W` runs over the entry grid **1m, 2m, …, 15m** (60s steps up to `momentum_entry_max_window_seconds`, default **900s**) via `momentum_entry_candidate_windows()` + `momentum_leader_same_window_check()` in `decision_core.py`. The bot picks the **smallest** such `W` where **both** legs pass. All windows share the same guardrails: `momentum_min_start_price`, `momentum_min_price`, `momentum_max_entry`.
@@ -106,10 +106,10 @@ Rank and runner-up gap are logged for context but are **not** substitutes for le
 |----------|---------------|------|-------|
 | `double_momentum_entry_rise` | **0.40** | [PRICE] absolute rise | `data/runtime_config.json` |
 | `double_momentum_pct_rise` | **9.0** (+900%) | [PCT] fractional rise | `data/runtime_config.json` |
-| `double_momentum_min_start_price` | **0.0001** | [PRICE] min window-start for pct gate | `data/runtime_config.json` |
-| `double_momentum_min_price` | **0.10** | [PRICE] min live YES at entry | `data/runtime_config.json` |
-| `double_momentum_max_price` | **0.91** | [PRICE] max live YES at entry | `data/runtime_config.json` |
-| `stop_loss_double_momentum` | **0.05** | [PRICE] hard floor | `data/runtime_config.json` |
+| `double_momentum_min_start_price` | **0.05** | [PRICE] min window-start for pct gate | `data/runtime_config.json` |
+| `double_momentum_min_price` | **0.88** | [PRICE] min live YES at entry | `data/runtime_config.json` |
+| `double_momentum_max_price` | **0.92** | [PRICE] max live YES at entry | `data/runtime_config.json` |
+| `stop_loss_double_momentum` | **0.65** | [PRICE] hard floor | `data/runtime_config.json` |
 | `stop_loss_double_momentum_entry_drop_pct` | **0.50** | [FRAC] relative drop from entry | `data/runtime_config.json` |
 
 Same **aligned-window** rule as standard momentum: smallest grid `W` where double rise **and** leader-yield both pass, with thresholds/band from `double_momentum_*`.
@@ -579,11 +579,11 @@ Every trade (buy/sell/claim) and every scheduled report sends a rich portfolio m
 
 ### Late-fill reclaim vs manual site buy
 
-After **`BUY UNFILLED` / `limit_cancelled`**, `place_buy` removes `recent_buy_attempts` for that market (the limit executor already re-polls after cancel — no hidden fill). The next scan can retry without `recent_buy_attempt_pending`, and a **manual** UI buy cannot inherit the bot’s old `entry_type` (e.g. `double_momentum`) or **momentum-stop-loss** rules.
+After **`BUY UNFILLED` / `limit_cancelled`** with **no** resting GTC left, `place_buy` clears `recent_buy_attempts` so the next scan can retry. If cancel hardening still leaves an **OPEN** order (`stale_exchange_order`), **`recent_buy_attempts` stays for 5 minutes**, the order id is tracked in **`state["pending_limit_buy_orders"]`** (per market, supports multiple ids), and **`place_buy` skips** with `open_limit_buy_resting` until cancel succeeds — **no second limit is posted**.
 
-If reclaim is considered, it runs **only** when Data-API `avg_price` is within **`LATE_FILL_RECLAIM_MAX_AVG_VS_INTENDED`** in `config/constants.py` (plus 5% of `intended_price`) of the stored `intended_price`. A manual buy near **0.88** after a bot attempt at **0.69** does **not** reclaim — sync opens **`manual_sync_open`** / `entry_type=manual`, logs **`MANUAL BUY DETECTED`** to CSV, and uses **manual** SL.
+If reclaim is considered, it runs **only** when Data-API `avg_price` is within **`LATE_FILL_RECLAIM_MAX_AVG_VS_INTENDED`** in `config/constants.py` (plus 5% of `intended_price`) of the stored `intended_price`. A manual buy at a different price does **not** reclaim — sync opens **`manual_sync_open`** / `entry_type=manual`, logs **`MANUAL BUY DETECTED`** to CSV, and uses **manual** SL. **Double fills** from stacked GTC rests (e.g. Paris ~11 shares) previously looked like “manual” in the CSV when sync saw one position without bot state.
 
-**Retry after unfilled:** each new scan runs `evaluate_entry` again; if it still returns **BUY**, `place_buy` runs again. Notional stays capped by **`max_buy_notional_usd`** / **`MAX_BUY_NOTIONAL_USD`**. If the CLOB still shows an **OPEN** GTC after timeout, `limit_executor` runs extra cancel+poll rounds; any stubborn order id is stored in **`state["orphan_limit_buy_orders"]`** and the **next** `place_buy` for that market calls cancel again **before** posting a new limit, so two live bids should not stack.
+**Retry after unfilled:** each scan runs `flush_pending_limit_buys` then `evaluate_entry`; if still **BUY**, `place_buy` cancels all tracked rests first. Notional stays capped by **`max_buy_notional_usd`** / **`MAX_BUY_NOTIONAL_USD`**. **`buy_limit_order_timeout_sec`** default **15s** (runtime). Telegram **STATUS /report / heartbeat** shows 🟡 **OPEN limit BUY orders** (limit px, USD, live mark).
 
 ---
 
@@ -592,10 +592,10 @@ If reclaim is considered, it runs **only** when Data-API `avg_price` is within *
 ### Per-Type Stop-Loss 🆕
 | Key | Default | Description |
 |-----|---------|-------------|
-| `stop_loss_normal` | 0.65 | hard-floor SL for normal entries |
-| `stop_loss_momentum` | 0.20 | SL for momentum entries |
-| `stop_loss_double_momentum` | 0.20 | SL for double momentum entries |
-| `stop_loss_manual` | 0.40 | hard-floor SL for manual/UI entries |
+| `stop_loss_normal` | 0.20 | hard-floor SL for normal entries |
+| `stop_loss_momentum` | 0.65 | SL for momentum entries |
+| `stop_loss_double_momentum` | 0.65 | SL for double momentum entries |
+| `stop_loss_manual` | 0.20 | hard-floor SL for manual/UI entries |
 | `stop_loss_normal_entry_drop_pct` | 0.30 | entry-relative SL drop for normal |
 | `stop_loss_momentum_entry_drop_pct` | 0.50 | entry-relative SL drop for momentum |
 | `stop_loss_double_momentum_entry_drop_pct` | 0.50 | entry-relative SL drop for double momentum |
@@ -607,8 +607,8 @@ If reclaim is considered, it runs **only** when Data-API `avg_price` is within *
 | `double_momentum_entry_rise` | **0.40** | Min absolute price-point rise to qualify as double momentum |
 | `double_momentum_pct_rise` | **9.0** | Min **fractional** rise alternative (+900%) |
 | `double_momentum_min_start_price` | **0.0001** | Floor on *old* price in-window for pct leg |
-| `double_momentum_min_price` | **0.10** | Min YES price for double momentum entry |
-| `double_momentum_max_price` | **0.91** | Max YES price for double momentum entry |
+| `double_momentum_min_price` | **0.88** | Min YES price for double momentum entry |
+| `double_momentum_max_price` | **0.92** | Max YES price for double momentum entry |
 
 ### Momentum window + exits (runtime) 🆕
 | Key | Default | Description |
