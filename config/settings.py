@@ -43,6 +43,8 @@ def default_runtime_dict() -> Dict[str, Any]:
         "double_momentum_max_price": C.DOUBLE_MOMENTUM_MAX_PRICE,
         "stop_loss_double_momentum": C.STOP_LOSS_DOUBLE_MOMENTUM,
         "stop_loss_double_momentum_entry_drop_pct": C.STOP_LOSS_DOUBLE_MOMENTUM_ENTRY_DROP_PCT,
+        "momentum_confirmation_delay_sec": C.MOMENTUM_CONFIRMATION_DELAY_SEC,
+        "momentum_confirmation_max_age_sec": C.MOMENTUM_CONFIRMATION_MAX_AGE_SEC,
         "take_profit_threshold": C.TAKE_PROFIT_THRESHOLD,
         "min_lead_over_runner_up": C.MIN_LEAD_OVER_RUNNER_UP,
         "min_market_yes_lead_gap_normal": C.MIN_MARKET_YES_LEAD_GAP_NORMAL,
@@ -213,6 +215,8 @@ class RuntimeSettings:
     stop_loss_normal_entry_drop_pct: float
     stop_loss_momentum_entry_drop_pct: float
     stop_loss_double_momentum_entry_drop_pct: float
+    momentum_confirmation_delay_sec: float
+    momentum_confirmation_max_age_sec: float
     take_profit: float
     min_lead_over_runner_up: float
     min_market_yes_lead_gap_normal: float
@@ -253,8 +257,8 @@ class RuntimeSettings:
     flow_peer_window_sec: int
     flow_peer_surge_drop: float
     flow_peer_surge_rise: float
-    buy_earliest_local_hour: int
-    buy_latest_local_hour: int
+    buy_earliest_local_hour: float
+    buy_latest_local_hour: float
     decision_skip_telegram_cooldown_sec: int
     decision_skip_telegram_notify: bool
     max_market_prob_for_buy: float
@@ -362,10 +366,10 @@ class RuntimeSettings:
         fme = max(1, min(40, fme))
         fpw = int(d.get("flow_peer_window_sec", C.FLOW_PEER_WINDOW_SEC))
         fpw = max(120, min(3600, fpw))
-        beh = int(d.get("buy_earliest_local_hour", C.BUY_EARLIEST_HOUR))
-        beh = max(0, min(23, beh))
-        blh = int(d.get("buy_latest_local_hour", C.BUY_LATEST_LOCAL_HOUR))
-        blh = max(0, min(24, blh))
+        beh = float(d.get("buy_earliest_local_hour", C.BUY_EARLIEST_HOUR))
+        beh = max(0.0, min(24.0, beh))
+        blh = float(d.get("buy_latest_local_hour", C.BUY_LATEST_LOCAL_HOUR))
+        blh = max(0.0, min(24.0, blh))
         rsec = int(
             d.get(
                 "decision_skip_telegram_cooldown_sec",
@@ -665,6 +669,30 @@ class RuntimeSettings:
                         d.get(
                             "stop_loss_double_momentum_entry_drop_pct",
                             C.STOP_LOSS_DOUBLE_MOMENTUM_ENTRY_DROP_PCT,
+                        )
+                    ),
+                ),
+            ),
+            momentum_confirmation_delay_sec=max(
+                0.0,
+                min(
+                    600.0,
+                    float(
+                        d.get(
+                            "momentum_confirmation_delay_sec",
+                            C.MOMENTUM_CONFIRMATION_DELAY_SEC,
+                        )
+                    ),
+                ),
+            ),
+            momentum_confirmation_max_age_sec=max(
+                60.0,
+                min(
+                    3600.0,
+                    float(
+                        d.get(
+                            "momentum_confirmation_max_age_sec",
+                            C.MOMENTUM_CONFIRMATION_MAX_AGE_SEC,
                         )
                     ),
                 ),
@@ -1028,12 +1056,13 @@ def load_blacklist_day_ids() -> Set[str]:
     return {str(x).strip() for x in ids if str(x).strip()}
 
 
-def load_city_buy_earliest_hours() -> Dict[str, int]:
-    """Load per-city earliest buy hour map from data/city_buy_earliest_hour.json.
+def load_city_buy_earliest_hours() -> Dict[str, float]:
+    """Load per-city earliest buy hour map.
 
-    Returns a dict mapping lowercase city name → earliest hour (int).
-    Keys starting with '_' (comments/metadata) are skipped.
-    Missing file returns an empty dict (falls back to global setting).
+    Returns a dict mapping lowercase city name -> earliest hour (float).
+    Float values support fractional hours: 15.5 = 15:30, 15.25 = 15:15.
+    Keys starting with '_' (metadata) are skipped.
+    Non-numeric values are silently skipped.
     """
     if not C.CITY_BUY_EARLIEST_HOURS_FILE.is_file():
         return {}
@@ -1045,29 +1074,30 @@ def load_city_buy_earliest_hours() -> Dict[str, int]:
         return {}
     if not isinstance(raw, dict):
         return {}
-    result: Dict[str, int] = {}
+    result: Dict[str, float] = {}
     for k, v in raw.items():
         if str(k).startswith("_"):
             continue
         try:
-            result[str(k).strip().lower()] = max(0, min(23, int(v)))
+            result[str(k).strip().lower()] = max(0.0, min(23.99, float(v)))
         except (TypeError, ValueError):
             pass
     return result
 
 
-def get_city_buy_earliest_hour(city: str, settings: RuntimeSettings) -> int:
-    """Return the earliest buy hour for a specific city.
+def get_city_buy_earliest_hour(city: str, settings: RuntimeSettings) -> float:
+    """Return the earliest buy hour for a specific city, as a fractional hour.
 
     Looks up the city in data/city_buy_earliest_hour.json first.
     Falls back to settings.buy_earliest_local_hour if city not found.
+    Returns float to support fractional hours (15.5 = 15:30).
     """
     city_lower = str(city or "").strip().lower()
     if city_lower:
         city_hours = load_city_buy_earliest_hours()
         if city_lower in city_hours:
-            return city_hours[city_lower]
-    return int(getattr(settings, "buy_earliest_local_hour", C.BUY_EARLIEST_HOUR))
+            return float(city_hours[city_lower])
+    return float(getattr(settings, "buy_earliest_local_hour", C.BUY_EARLIEST_HOUR))
 
 
 def get_effective_settings() -> RuntimeSettings:

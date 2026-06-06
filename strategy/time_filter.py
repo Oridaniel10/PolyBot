@@ -9,7 +9,7 @@ import time
 from datetime import date, datetime
 from typing import Any, Dict, Optional, Tuple
 
-from strategy.city_tz import city_local_hour, city_local_now
+from strategy.city_tz import city_local_now
 
 try:
     from zoneinfo import ZoneInfo
@@ -19,30 +19,31 @@ except ImportError:
 
 def entry_time_allowed(
     title: str,
-    earliest_hour: int = 14,
-    latest_hour: int = 24,
+    earliest_hour: float = 14.0,
+    latest_hour: float = 24.0,
     event_date: Optional[date] = None,
-) -> Tuple[bool, Optional[int], str]:
-    """
-    check if the city's local clock is on the event day and within the buy hour window.
+) -> Tuple[bool, Optional[float], str]:
+    """Check if the city's local clock is within the buy hour window.
 
-    returns:
-    - (allowed, city_hour_or_none, skip_reason empty when allowed).
+    earliest_hour / latest_hour are floats: 15.5 = 15:30, 15.25 = 15:15.
+
+    Returns:
+        (allowed, city_hour_float_or_none, skip_reason_when_blocked)
+        city_hour_float is e.g. 15.5 when the city clock is 15:30:00.
     """
-    hour = city_local_hour(title)
-    if hour is None:
+    now_city = city_local_now(title)
+    if now_city is None:
         return True, None, ""
-    if hour < earliest_hour:
-        return False, hour, "before_earliest_hour"
-    if latest_hour < 24 and hour > latest_hour:
-        return False, hour, "after_latest_hour"
+    # convert local time to fractional hour (minute granularity, drop seconds)
+    city_hour_float = float(now_city.hour) + float(now_city.minute) / 60.0
+    if city_hour_float + 1e-9 < float(earliest_hour):
+        return False, city_hour_float, "before_earliest_hour"
+    if float(latest_hour) < 24.0 and city_hour_float - 1e-9 > float(latest_hour):
+        return False, city_hour_float, "after_latest_hour"
     if event_date is not None:
-        now_city = city_local_now(title)
-        if now_city is None:
-            return False, hour, "no_city_datetime"
         if now_city.date() != event_date:
-            return False, hour, "city_local_date_not_event_day"
-    return True, hour, ""
+            return False, city_hour_float, "city_local_date_not_event_day"
+    return True, city_hour_float, ""
 
 
 def should_time_decay_exit(

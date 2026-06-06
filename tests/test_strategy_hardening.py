@@ -375,10 +375,16 @@ def test_trade_decision_carries_trigger_metadata(tmp_path, monkeypatch):
         0.50,
         market,
         FakeClient(),
-        make_settings(double_momentum_min_start_price=0.05),
+        make_settings(
+            double_momentum_min_start_price=0.05,
+            double_momentum_min_price=0.40,
+            double_momentum_max_price=0.95,
+            momentum_confirmation_delay_sec=0.0,
+        ),
         {},
         {},
     )
+    assert decision.decision == "BUY"
     assert decision.entry_type == "double_momentum"
     assert decision.trigger_window.endswith("m_win") and decision.trigger_window != "none"
     assert decision.trigger_abs_rise > 0

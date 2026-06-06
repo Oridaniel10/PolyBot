@@ -112,7 +112,11 @@ def test_momentum_entry_does_not_require_rank_one(tmp_path, monkeypatch):
         0.69,
         market,
         FakeEventClient(siblings),
-        make_settings(),
+        make_settings(
+            momentum_confirmation_delay_sec=0.0,
+            momentum_min_price=0.40,
+            momentum_max_entry=0.95,
+        ),
         {},
         {},
     )
@@ -233,8 +237,11 @@ def test_double_momentum_buy_skips_market_lead_gap_even_when_tight(tmp_path, mon
 
     settings = make_settings(
         double_momentum_min_start_price=0.05,
+        double_momentum_min_price=0.40,
+        double_momentum_max_price=0.95,
         enable_competition_filter=True,
         min_market_yes_lead_gap_normal=0.99,
+        momentum_confirmation_delay_sec=0.0,
     )
     decision = evaluate_entry(
         parsed_market(),

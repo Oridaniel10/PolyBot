@@ -65,8 +65,8 @@ class RuntimeConfigUpdate(BaseModel):
     flow_peer_window_sec: Optional[int] = Field(None, ge=120, le=3600)
     flow_peer_surge_drop: Optional[float] = Field(None, ge=0.0, le=1.0)
     flow_peer_surge_rise: Optional[float] = Field(None, ge=0.0, le=1.0)
-    buy_earliest_local_hour: Optional[int] = Field(None, ge=0, le=23)
-    buy_latest_local_hour: Optional[int] = Field(None, ge=0, le=24)
+    buy_earliest_local_hour: Optional[float] = Field(None, ge=0.0, le=24.0)
+    buy_latest_local_hour: Optional[float] = Field(None, ge=0.0, le=24.0)
     decision_skip_telegram_cooldown_sec: Optional[int] = Field(None, ge=0, le=86400)
     decision_skip_telegram_notify: Optional[bool] = None
     max_market_prob_for_buy: Optional[float] = Field(None, ge=0.05, le=0.99)

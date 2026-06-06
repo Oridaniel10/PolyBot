@@ -10,8 +10,8 @@
   "momentum_entry_rise": 0.20,
   "momentum_pct_rise": 1.0,
   "momentum_min_start_price": 0.05,
-  "momentum_min_price": 0.88,
-  "momentum_max_entry": 0.92,
+  "momentum_min_price": 1.1,
+  "momentum_max_entry": 1.1,
   "stop_loss_momentum": 0.40,
   "stop_loss_momentum_entry_drop_pct": 0.50,
 
@@ -22,6 +22,8 @@
   "double_momentum_max_price": 0.92,
   "stop_loss_double_momentum": 0.40,
   "stop_loss_double_momentum_entry_drop_pct": 0.50,
+  "momentum_confirmation_delay_sec": 450.0,
+  "momentum_confirmation_max_age_sec": 900.0,
 
   "take_profit_threshold": 0.994,
   "min_lead_over_runner_up": 0.15,
@@ -127,12 +129,12 @@
   "persistent_leader_max_price": 0.85,
 
   "normal_winner_enabled": true,
-  "normal_winner_min_entry": 0.80,
+  "normal_winner_min_entry": 0.75,
   "normal_winner_max_entry": 0.96,
   "normal_winner_take_profit": 0.994,
   "normal_winner_stability_floor": 0.75,
-  "normal_winner_stability_min_sec": 1200,
-  "normal_winner_stability_max_sec": 7200,
+  "normal_winner_stability_min_sec": 3600,
+  "normal_winner_stability_max_sec": 7200, 
   "stop_loss_normal_winner": 0.30,
   "stop_loss_normal_winner_entry_drop_pct": 0.50
 }

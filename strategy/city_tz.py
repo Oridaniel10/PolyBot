@@ -108,3 +108,28 @@ def city_local_datetime_now_str(title: str) -> str:
     """Return 'YYYY-MM-DD HH:MM' (city local clock now), or '' if unknown."""
     dt = city_local_now(title)
     return dt.strftime("%Y-%m-%d %H:%M") if dt else ""
+
+
+def format_hour_float_as_hhmm(hour_float: float) -> str:
+    """Convert fractional-hour to 'HH:MM' display string.
+
+    Examples:
+        15.0  -> '15:00'
+        15.5  -> '15:30'
+        15.25 -> '15:15'
+        16.75 -> '16:45'
+    """
+    if hour_float is None:
+        return ""
+    try:
+        h_float = float(hour_float)
+    except (TypeError, ValueError):
+        return ""
+    # clamp to 0..24
+    h_float = max(0.0, min(24.0, h_float))
+    h = int(h_float)
+    m = int(round((h_float - h) * 60.0))
+    if m == 60:
+        h += 1
+        m = 0
+    return f"{h:02d}:{m:02d}"

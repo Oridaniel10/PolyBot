@@ -147,6 +147,80 @@ def double_momentum_entry_pct_rise_thr(settings: RuntimeSettings) -> float:
     return max(0.01, min(10.0, r))
 
 
+def check_momentum_confirmation(
+    state: Dict[str, Any],
+    market_id: str,
+    entry_type: str,
+    settings: RuntimeSettings,
+) -> Tuple[str, str]:
+    """Manage the momentum confirmation delay state machine.
+
+    Called only when is_momentum_entry is True (so band/rise/leader-yield
+    are already verified for the current tick).
+
+    Returns:
+        ("BUY", "")          -> proceed with buy (delay elapsed OR disabled)
+        ("WAIT", reason)     -> SKIP this tick, still inside the wait window
+    """
+    delay_sec = float(
+        getattr(
+            settings,
+            "momentum_confirmation_delay_sec",
+            C.MOMENTUM_CONFIRMATION_DELAY_SEC,
+        )
+    )
+    if delay_sec <= 0.0:
+        return ("BUY", "")  # feature disabled — immediate buy
+
+    max_age = float(
+        getattr(
+            settings,
+            "momentum_confirmation_max_age_sec",
+            C.MOMENTUM_CONFIRMATION_MAX_AGE_SEC,
+        )
+    )
+
+    pending = state.setdefault("pending_momentum_confirms", {})
+    if not isinstance(pending, dict):
+        pending = {}
+        state["pending_momentum_confirms"] = pending
+
+    now = time.time()
+    rec = pending.get(market_id)
+
+    # GC expired stale records
+    if rec and (now - float(rec.get("ts") or 0)) > max_age:
+        pending.pop(market_id, None)
+        rec = None
+
+    if not rec:
+        # First time signal fires — record and wait
+        pending[market_id] = {
+            "ts": now,
+            "entry_type": entry_type,
+        }
+        return (
+            "WAIT",
+            f"momentum_pending_confirmation entry_type={entry_type} "
+            f"wait={delay_sec:.0f}s",
+        )
+
+    elapsed = now - float(rec.get("ts") or 0)
+    if elapsed < delay_sec:
+        remaining = delay_sec - elapsed
+        return (
+            "WAIT",
+            f"momentum_pending_confirmation remaining={remaining:.0f}s "
+            f"initial_entry_type={rec.get('entry_type', '')}",
+        )
+
+    # Delay elapsed AND signal still qualifies (since we're inside
+    # is_momentum_entry branch, band/rise/leader-yield are already valid).
+    # Clear pending and proceed to BUY.
+    pending.pop(market_id, None)
+    return ("BUY", "")
+
+
 def momentum_multi_window_check(
     *,
     market_id: str,
@@ -448,10 +522,14 @@ def effective_settings_dump_for_momentum_eval(
     return {
         "buy_min": float(getattr(settings, "buy_min", C.BUY_MIN_THRESHOLD)),
         "buy_max": float(getattr(settings, "buy_max", C.BUY_MAX_THRESHOLD)),
-        "buy_earliest_local_hour": int(
-            getattr(settings, "buy_earliest_local_hour", C.BUY_EARLIEST_HOUR)
+        "buy_earliest_local_hour": round(
+            float(getattr(settings, "buy_earliest_local_hour", C.BUY_EARLIEST_HOUR)),
+            4,
         ),
-        "buy_latest_local_hour": int(getattr(settings, "buy_latest_local_hour", 24)),
+        "buy_latest_local_hour": round(
+            float(getattr(settings, "buy_latest_local_hour", C.BUY_LATEST_LOCAL_HOUR)),
+            4,
+        ),
         "momentum_window_seconds": round(float(momentum_window_sec(settings)), 2),
         "momentum_entry_max_window_seconds": float(
             getattr(
@@ -1463,6 +1541,22 @@ def evaluate_entry(
             f"price={mkt:.4f} floor={C.NORMAL_WINNER_STABILITY_FLOOR:.2f}"
         )
         return finish("BUY", reason, competition=comp)
+
+    # Momentum confirmation delay: wait N seconds after first signal and
+    # re-verify the signal still qualifies before buying. Applies only to
+    # momentum / double_momentum. The band check is already implicit because
+    # we only reach this point when is_momentum_entry is True (which
+    # requires the band to pass on the current tick).
+    if is_momentum_entry:
+        confirm_status, confirm_reason = check_momentum_confirmation(
+            state=state,
+            market_id=market_id,
+            entry_type=_resolve_entry_type(),
+            settings=settings,
+        )
+        if confirm_status == "WAIT":
+            return finish("SKIP", confirm_reason, competition=comp)
+        # confirm_status == "BUY" -> fall through to the existing BUY return below
 
     reason = (
         "momentum_entry_ride_the_wave" if is_momentum_entry else "passed_all_filters"

@@ -1215,6 +1215,9 @@ def place_buy(
         ),
     }
     state.setdefault("recent_buy_attempts", {}).pop(market_id, None)
+    pending = state.get("pending_momentum_confirms") or {}
+    if isinstance(pending, dict) and market_id in pending:
+        pending.pop(market_id, None)
     clear_pending_limit_buys(state, market_id)
     clear_trade_lock(state, "buy_market", market_id)
     if event_id:
@@ -1739,6 +1742,9 @@ def close_position(
 
     active_trades.pop(key, None)
     mark_recent_sell(state, market_id)
+    pending = state.get("pending_momentum_confirms") or {}
+    if isinstance(pending, dict) and market_id in pending:
+        pending.pop(market_id, None)
     clear_trade_lock(state, "sell_market", market_id)
     summary = result.get("sell_attempt_summary") or ""
     sell_header_label = _sell_header_label(reason)
@@ -2156,7 +2162,7 @@ def process_single_market(
     time_ok, _city_hour, _time_skip = entry_time_allowed(
         _title,
         earliest_hour=_earliest_hour,
-        latest_hour=int(settings.buy_latest_local_hour or 24),
+        latest_hour=float(settings.buy_latest_local_hour or 24.0),
         event_date=_pm_timegate.event_date if _pm_timegate else None,
     )
     if not time_ok:

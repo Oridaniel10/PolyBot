@@ -534,11 +534,17 @@ def should_send_report(state: Dict[str, Any], now: datetime) -> bool:
 
 
 def should_send_hourly_summary(state: Dict[str, Any], now: datetime) -> bool:
-    if now.hour < 7:
+    """True when a periodic portfolio summary is due (default every 3h from 07:00)."""
+    start_h = int(getattr(C, "PORTFOLIO_SUMMARY_START_HOUR", 7))
+    interval_sec = float(getattr(C, "PORTFOLIO_SUMMARY_INTERVAL_SEC", 10800))
+    if now.hour < start_h:
         return False
-    if now.minute not in (0, 30):
+    if now.minute != 0:
         return False
-    slot = now.strftime("%Y-%m-%d-%H-%M")
+    interval_hours = max(1, int(round(interval_sec / 3600.0)))
+    if (now.hour - start_h) % interval_hours != 0:
+        return False
+    slot = now.strftime("%Y-%m-%d-%H")
     return state.get("last_hourly_summary_slot") != slot
 
 
@@ -548,7 +554,7 @@ def maybe_send_portfolio_status_heartbeat(
     state: Dict[str, Any],
 ) -> bool:
     """
-    sends full portfolio STATUS at least every PORTFOLIO_STATUS_HEARTBEAT_SEC (default 1h).
+    sends full portfolio STATUS at least every PORTFOLIO_STATUS_HEARTBEAT_SEC (default 3h).
 
     returns:
     - true if telegram was sent (caller should write_state).
@@ -565,7 +571,7 @@ def maybe_send_portfolio_status_heartbeat(
         client,
         f"STATUS · heartbeat {loc}",
         headline_html=(
-            "<b>📊 STATUS</b> <i>· every 1h</i>\n"
+            f"<b>📊 STATUS</b> <i>· every {int(C.PORTFOLIO_STATUS_HEARTBEAT_SEC // 3600)}h</i>\n"
             f"<code>{tg_escape(loc)}</code> <i>(Asia/Jerusalem)</i>"
         ),
         state=state,

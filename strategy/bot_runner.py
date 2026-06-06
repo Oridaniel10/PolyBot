@@ -83,12 +83,14 @@ def _safe_send_portfolio_telegram(*args, **kwargs):
         send_portfolio_telegram(*args, **kwargs)
     except Exception as e:
         import traceback
+
         traceback.print_exc()
         if telegram:
             try:
                 telegram.send_message(f"🔴 Error generating report: {e!r}")
             except Exception:
                 pass
+
 
 def dispatch_telegram_commands(
     telegram: TelegramBot,
@@ -121,10 +123,8 @@ def dispatch_telegram_commands(
                     daemon=True,
                 ).start()
                 # send event siblings plots for every open position
-                _active = (state.get("active_trades") or {})
-                for _mid, _row in (
-                    _active.items() if isinstance(_active, dict) else []
-                ):
+                _active = state.get("active_trades") or {}
+                for _mid, _row in _active.items() if isinstance(_active, dict) else []:
                     _real_mid = str(
                         (_row.get("market_id") if isinstance(_row, dict) else None)
                         or _mid
@@ -267,6 +267,7 @@ def run_bot() -> None:
         print(term_wrap(TERM_RED, f"[startup fingerprint failed] {err!r}"))
 
     from strategy.fast_exit_watcher import FastExitWatcher
+
     _fast_watcher = FastExitWatcher(
         client=client,
         state_ref=state,
@@ -294,12 +295,7 @@ def run_bot() -> None:
             tracked_count = len(state.get("active_trades", {}))
             # only alert on structural change when we actually have
             # positions — avoids false alerts from stale/empty API reads
-            if (
-                telegram.is_configured()
-                and prev_fp
-                and fp
-                and fp != prev_fp
-            ):
+            if telegram.is_configured() and prev_fp and fp and fp != prev_fp:
                 threading.Thread(
                     target=send_portfolio_telegram,
                     args=(
@@ -323,7 +319,7 @@ def run_bot() -> None:
                 ).start()
             state = run_once(client, telegram, state)
             if should_send_hourly_summary(state, now):
-                state["last_hourly_summary_slot"] = now.strftime("%Y-%m-%d-%H-%M")
+                state["last_hourly_summary_slot"] = now.strftime("%Y-%m-%d-%H")
                 threading.Thread(
                     target=send_hourly_summary_report,
                     args=(telegram, client, state, now),

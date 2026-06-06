@@ -16,7 +16,11 @@ RESEARCH_CALIBRATION_LATEST_FILE = DATA_DIR / "research" / "calibration_latest.j
 WEATHER_PREVIEW_CACHE_MAX_AGE_SEC = 360
 UI_DIST_DIR = PROJECT_ROOT / "ui" / "dist"
 # mandatory Telegram portfolio STATUS (full snapshot) at least this often
-PORTFOLIO_STATUS_HEARTBEAT_SEC = 3600
+PORTFOLIO_STATUS_HEARTBEAT_SEC = 10800  # 3 hours
+# "hourly" portfolio summary telegram: min seconds between sends (also see SUMMARY_START_HOUR)
+PORTFOLIO_SUMMARY_INTERVAL_SEC = 10800  # 3 hours
+# first local hour (Asia/Jerusalem) when periodic summary may fire; then every SUMMARY_INTERVAL
+PORTFOLIO_SUMMARY_START_HOUR = 7
 
 TIMEZONE = "Asia/Jerusalem"
 REPORT_HOURS = (10, 13, 16, 19)
@@ -64,11 +68,11 @@ STOP_LOSS_NORMAL_ENTRY_DROP_PCT = 0.30
 #
 # Exit: take-profit when YES >= NORMAL_WINNER_TAKE_PROFIT (0.9997) — market is
 #       about to resolve YES.  SL is tight: stop if price drops from entry.
-NORMAL_WINNER_MIN_ENTRY = 0.80  # buy band floor
+NORMAL_WINNER_MIN_ENTRY = 0.75  # buy band floor
 NORMAL_WINNER_MAX_ENTRY = 0.96  # buy band ceiling (avoid buying right at resolve)
 NORMAL_WINNER_TAKE_PROFIT = 0.994  # sell (market resolving YES)
 NORMAL_WINNER_STABILITY_FLOOR = 0.75  # price must have been above this throughout
-NORMAL_WINNER_STABILITY_MIN_SEC = 1200  # minimum contiguous tail above floor (20 min)
+NORMAL_WINNER_STABILITY_MIN_SEC = 3600  # minimum contiguous tail above floor (1 hour)
 NORMAL_WINNER_STABILITY_MAX_SEC = 7200  # maximum lookback considered (2h)
 STOP_LOSS_NORMAL_WINNER = 0.30  # hard floor — if it dumps hard, exit
 STOP_LOSS_NORMAL_WINNER_ENTRY_DROP_PCT = 0.50  # also exit if drops >50% from entry
@@ -101,8 +105,8 @@ MOMENTUM_MIN_START_PRICE = 0.05
 # [PRICE] live YES band for momentum entry at decision time.
 # Bot won't buy if current price is below MOMENTUM_MIN_PRICE or above MOMENTUM_MAX_ENTRY.
 # Example: 0.20 min means don't buy if YES is < 0.20 (too cheap = too risky).
-MOMENTUM_MIN_PRICE = 0.88
-MOMENTUM_MAX_ENTRY = 0.92
+MOMENTUM_MIN_PRICE = 1.1  # כרגע לא פעיל
+MOMENTUM_MAX_ENTRY = 1.1  # כרגע לא פעיל
 # [PRICE] hard stop-loss floor for momentum entries.
 # Momentum entries are more aggressive, so stop floor can be lower.
 STOP_LOSS_MOMENTUM = 0.40
@@ -126,6 +130,21 @@ DOUBLE_MOMENTUM_MAX_PRICE = 0.92
 STOP_LOSS_DOUBLE_MOMENTUM = 0.40
 # [FRAC] entry-relative drop for double momentum stop.
 STOP_LOSS_DOUBLE_MOMENTUM_ENTRY_DROP_PCT = 0.50
+
+# ─── MOMENTUM / DOUBLE_MOMENTUM confirmation delay ───────────────────
+# When a momentum or double_momentum signal first fires, the bot does NOT
+# buy immediately. It records the trigger and SKIPs. After this many
+# seconds have passed, the bot re-evaluates entry conditions. If momentum
+# or double_momentum still qualifies (price still in band, rise still
+# valid, leader-yield still valid) → BUY at the current live price.
+# If not → clear pending and SKIP (it was a noisy spike that reversed).
+# Set to 0.0 to DISABLE the delay (legacy immediate-buy behavior).
+# Example: 60.0 = wait 1 minute. 120.0 = wait 2 minutes.
+MOMENTUM_CONFIRMATION_DELAY_SEC = 450.0
+# [SECONDS] if a pending confirmation is older than this, clear it
+# (treat as expired stale record). Must be > MOMENTUM_CONFIRMATION_DELAY_SEC.
+# Example: 600.0 = pending older than 10 minutes is dropped.
+MOMENTUM_CONFIRMATION_MAX_AGE_SEC = 900.0
 
 # ═══════════════════════════════════════════════════════════════════════
 # EXIT THRESHOLDS
@@ -256,8 +275,8 @@ FAST_EXIT_WATCHER_INTERVAL_SEC = 2
 # ENTRY GATES & FILTERS
 # ═══════════════════════════════════════════════════════════════════════
 
-# earliest local hour to place new buys (city local TZ from title; 0–23)
-BUY_EARLIEST_HOUR = 15
+# earliest local hour to place new buys (city local TZ from title; float: 15.5 = 15:30)
+BUY_EARLIEST_HOUR = 15.0
 # skip new buys when title event date is after today's date in Asia/Jerusalem (report TZ)
 BUY_BLOCK_EVENT_DATE_AFTER_ISRAEL_TODAY = True
 # max open positions at once — limits total portfolio risk
@@ -358,7 +377,7 @@ FLOW_PEER_SURGE_RISE = 0.10
 
 # 0 = disabled; else no new buys after this local hour (city TZ)
 # 23 = last local hour 23:xx; 24 = no upper bound (only BUY_EARLIEST applies)
-BUY_LATEST_LOCAL_HOUR = 24
+BUY_LATEST_LOCAL_HOUR = 24.0
 MAX_MARKET_PROB_FOR_BUY = 0.99
 MIN_MODEL_PROB_FOR_BUY = 0.0
 MAX_POSITIONS_PER_EVENT = 1
