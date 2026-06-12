@@ -56,6 +56,7 @@ def parse_market_probability(market: Dict[str, Any]) -> float:
     if op:
         try:
             import json as _json
+
             prices = _json.loads(op) if isinstance(op, str) else op
             if isinstance(prices, list) and prices:
                 val = float(prices[0])
@@ -77,7 +78,14 @@ def parse_market_probability(market: Dict[str, Any]) -> float:
         except (TypeError, ValueError):
             pass
     # then bestAsk — the real price you'd pay to buy
-    for field in ("bestAsk", "bestBid", "lastTradePrice", "price", "probability", "yesPrice"):
+    for field in (
+        "bestAsk",
+        "bestBid",
+        "lastTradePrice",
+        "price",
+        "probability",
+        "yesPrice",
+    ):
         value = market.get(field)
         if value is None:
             continue

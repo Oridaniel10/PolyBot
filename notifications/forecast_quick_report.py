@@ -104,7 +104,9 @@ def build_open_temp_forecast_quick_html(client: PolymarketClient) -> str:
         bias = bias_for_city(p.city_key)
         parts.append(f"   <b>calibration_bias_c</b>: <code>{bias:+.2f}°C</code>")
         if blend:
-            parts.append("   <i>OpenWeather blend enabled in runtime (digest rows may include OW).</i>")
+            parts.append(
+                "   <i>OpenWeather blend enabled in runtime (digest rows may include OW).</i>"
+            )
 
         adj = cons if cons is not None else om
         if mark > 1e-9 and adj is not None:
@@ -132,7 +134,9 @@ def build_open_temp_forecast_quick_html(client: PolymarketClient) -> str:
                 disagree_extra_edge=float(
                     getattr(settings, "research_crowd_disagree_extra_edge", 0.03)
                 ),
-                disagree_gap=float(getattr(settings, "research_crowd_disagree_gap", 0.08)),
+                disagree_gap=float(
+                    getattr(settings, "research_crowd_disagree_gap", 0.08)
+                ),
                 implied_soft_floor=float(
                     getattr(settings, "research_edge_implied_soft_floor", 0.30)
                 ),

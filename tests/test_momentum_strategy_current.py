@@ -7,9 +7,18 @@ from forecast.parse_title import BracketKind, ParsedTempMarket
 from strategy.decision_core import TradeDecision, evaluate_entry
 from strategy.momentum import append_price_sample, load_samples_for_market
 from strategy import redis_store
-from strategy.momentum_engine import momentum_entry_signal, peer_surge_detected, price_change_in_window
+from strategy.momentum_engine import (
+    momentum_entry_signal,
+    peer_surge_detected,
+    price_change_in_window,
+)
 from strategy.sync_portfolio import sync_state_with_portfolio
-from strategy.trades import close_position, place_buy, process_single_market, set_trade_lock
+from strategy.trades import (
+    close_position,
+    place_buy,
+    process_single_market,
+    set_trade_lock,
+)
 
 
 class DummyTelegram:
@@ -216,7 +225,9 @@ def test_normal_entry_passes_when_market_lead_gap_meets_half():
     assert decision.entry_type == "normal"
 
 
-def test_double_momentum_buy_skips_market_lead_gap_even_when_tight(tmp_path, monkeypatch):
+def test_double_momentum_buy_skips_market_lead_gap_even_when_tight(
+    tmp_path, monkeypatch
+):
     monkeypatch.setattr("strategy.momentum.PRICE_SAMPLES_DIR", tmp_path)
     add_samples("td_leader", [0.75, 0.55, 0.38])
     add_samples("td_meta", [0.05, 0.30, 0.50])
@@ -444,7 +455,11 @@ def test_ring_buffer_cold_start_from_disk(tmp_path, monkeypatch):
     jsonl_path = tmp_path / "2026-05-03.jsonl"
     with jsonl_path.open("w") as f:
         for i in range(10):
-            row = {"market_id": "cold_start", "ts": now - (10 - i) * 30, "yes": 0.50 + i * 0.02}
+            row = {
+                "market_id": "cold_start",
+                "ts": now - (10 - i) * 30,
+                "yes": 0.50 + i * 0.02,
+            }
             f.write(json.dumps(row) + "\n")
 
     # clear Redis for this test market

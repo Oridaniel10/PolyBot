@@ -214,11 +214,32 @@ def momentum_entry_signal_with_pct(
         return False, old_price, new_price, abs_change, 0.0, "insufficient_samples"
     pct_change = (new_price - old_price) / old_price
     if old_price + 1e-12 < float(min_start_price):
-        return False, old_price, new_price, abs_change, pct_change, "start_price_too_low"
+        return (
+            False,
+            old_price,
+            new_price,
+            abs_change,
+            pct_change,
+            "start_price_too_low",
+        )
     if new_price + 1e-12 < float(min_current_price):
-        return False, old_price, new_price, abs_change, pct_change, "current_price_too_low"
+        return (
+            False,
+            old_price,
+            new_price,
+            abs_change,
+            pct_change,
+            "current_price_too_low",
+        )
     if new_price - 1e-12 > float(max_current_price):
-        return False, old_price, new_price, abs_change, pct_change, "current_price_too_high"
+        return (
+            False,
+            old_price,
+            new_price,
+            abs_change,
+            pct_change,
+            "current_price_too_high",
+        )
     passed = (abs_change >= float(abs_rise_threshold)) or (
         pct_change >= float(pct_rise_threshold)
     )

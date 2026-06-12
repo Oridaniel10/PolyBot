@@ -1,7 +1,7 @@
 """Resolution registry rows from Gamma markets (parsing only, no HTTP)."""
 
 import re
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 from config import constants as C
 from forecast.parse_title import parse_highest_temp_title

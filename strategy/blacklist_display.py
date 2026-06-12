@@ -14,7 +14,9 @@ from strategy.time_utils import (
 
 def runtime_blacklist_ids_only() -> Set[str]:
     """Blacklist ids from runtime_config.json only (before day-file merge)."""
-    return set(RuntimeSettings.from_dict(load_runtime_config_file()).blacklist_market_ids)
+    return set(
+        RuntimeSettings.from_dict(load_runtime_config_file()).blacklist_market_ids
+    )
 
 
 def collect_blacklist_status_rows(

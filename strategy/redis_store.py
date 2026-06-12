@@ -10,13 +10,16 @@ from typing import List, Optional, Tuple
 
 _client = None
 _KEY_PREFIX = "prices:"
-_PRICE_TTL_MAX_AGE_SEC = 7500.0  # 2h 5m — keeps full 2h history for stagnation stop-loss
+_PRICE_TTL_MAX_AGE_SEC = (
+    7500.0  # 2h 5m — keeps full 2h history for stagnation stop-loss
+)
 
 
 def connect(host: str = "localhost", port: int = 6379, db: int = 0) -> bool:
     global _client
     try:
         import redis as _redis
+
         pool = _redis.ConnectionPool(
             host=host,
             port=port,
@@ -31,7 +34,9 @@ def connect(host: str = "localhost", port: int = 6379, db: int = 0) -> bool:
         _client = r
         return True
     except Exception as exc:
-        print(f"[redis_store] connection failed: {exc!r} — price data will fall back to JSONL")
+        print(
+            f"[redis_store] connection failed: {exc!r} — price data will fall back to JSONL"
+        )
         _client = None
         return False
 
@@ -105,7 +110,9 @@ def get_price_window(
             key, f"({cutoff}", "-inf", start=0, num=1, withscores=True
         )
         if not anchor:
-            anchor = _client.zrevrangebyscore(key, cutoff, "-inf", start=0, num=1, withscores=True)
+            anchor = _client.zrevrangebyscore(
+                key, cutoff, "-inf", start=0, num=1, withscores=True
+            )
         for member, _score in anchor:
             try:
                 out.insert(0, _decode(member))
@@ -119,7 +126,9 @@ def get_price_window(
         return []
 
 
-def cleanup_old_entries(market_id: str, max_age_sec: float = _PRICE_TTL_MAX_AGE_SEC) -> int:
+def cleanup_old_entries(
+    market_id: str, max_age_sec: float = _PRICE_TTL_MAX_AGE_SEC
+) -> int:
     if _client is None:
         return 0
     try:
@@ -169,7 +178,9 @@ def get_oldest_price_in_window(
     cutoff = now_ts - window_sec
     try:
         key = _key(market_id)
-        rows = _client.zrangebyscore(key, cutoff, "+inf", start=0, num=1, withscores=True)
+        rows = _client.zrangebyscore(
+            key, cutoff, "+inf", start=0, num=1, withscores=True
+        )
         for member, _score in rows:
             try:
                 _ts, price = _decode(member)

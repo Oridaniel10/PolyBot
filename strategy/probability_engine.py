@@ -4,11 +4,10 @@ Computes P(YES) per bucket using calibrated forecast + city-specific MAE sigma.
 Single source of truth for model probabilities used by the decision engine.
 """
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 from forecast.parse_title import ParsedTempMarket, parse_highest_temp_title
 from research.calibration_apply import (
-    adjust_consensus_optional,
     resolved_research_sigma_c,
 )
 from research.probability_from_forecast import implied_yes_prob

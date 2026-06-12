@@ -97,8 +97,12 @@ def _build_truth_map_for_keys(
 def run_backfill_main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Research backfill → data/research/")
     parser.add_argument("--days", type=int, default=14, help="event_date window length")
-    parser.add_argument("--start-date", type=str, default="", help="inclusive lower event_date")
-    parser.add_argument("--end-date", type=str, default="", help="inclusive upper event_date")
+    parser.add_argument(
+        "--start-date", type=str, default="", help="inclusive lower event_date"
+    )
+    parser.add_argument(
+        "--end-date", type=str, default="", help="inclusive upper event_date"
+    )
     parser.add_argument(
         "--back-days",
         type=int,
@@ -106,7 +110,9 @@ def run_backfill_main(argv: Optional[List[str]] = None) -> int:
         metavar="N",
         help="if N>=1, set inclusive window to last N calendar days ending at --end-date or today (overrides --start-date and --days)",
     )
-    parser.add_argument("--max-markets", type=int, default=400, help="cap markets (after parse)")
+    parser.add_argument(
+        "--max-markets", type=int, default=400, help="cap markets (after parse)"
+    )
     parser.add_argument(
         "--workers",
         type=int,
@@ -133,8 +139,15 @@ def run_backfill_main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("-v", "--verbose", action="store_true")
     parser.add_argument("--quick-test", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--search-pages", type=int, default=16, help="Gamma public-search pages (max 40)")
-    parser.add_argument("--skip-truth", action="store_true", help="skip writing truth_daily")
+    parser.add_argument(
+        "--search-pages",
+        type=int,
+        default=16,
+        help="Gamma public-search pages (max 40)",
+    )
+    parser.add_argument(
+        "--skip-truth", action="store_true", help="skip writing truth_daily"
+    )
     parser.add_argument("--refresh-outcomes", action="store_true")
     parser.add_argument(
         "--forecasts-markets-only",
@@ -197,7 +210,14 @@ def run_backfill_main(argv: Optional[List[str]] = None) -> int:
         for p in coord_problems:
             log(f"[research] CRITICAL: {p}")
         print(
-            json.dumps({"ok": False, "error": "city_catalog_incomplete", "problems": coord_problems}, indent=2),
+            json.dumps(
+                {
+                    "ok": False,
+                    "error": "city_catalog_incomplete",
+                    "problems": coord_problems,
+                },
+                indent=2,
+            ),
             file=sys.stderr,
         )
         return 1
@@ -208,8 +228,11 @@ def run_backfill_main(argv: Optional[List[str]] = None) -> int:
         api_secret=os.getenv("API_SECRET", ""),
         api_passphrase=os.getenv("API_PASSPHRASE", ""),
         private_key=os.getenv("POLY_PRIVATE_KEY", ""),
-        proxy_address=os.getenv("POLY_PROXY_ADDRESS", "") or os.getenv("POLY_ADDRESS", ""),
-        gamma_base_url=os.getenv("POLY_GAMMA_BASE_URL", "https://gamma-api.polymarket.com"),
+        proxy_address=os.getenv("POLY_PROXY_ADDRESS", "")
+        or os.getenv("POLY_ADDRESS", ""),
+        gamma_base_url=os.getenv(
+            "POLY_GAMMA_BASE_URL", "https://gamma-api.polymarket.com"
+        ),
         clob_base_url=os.getenv("POLY_CLOB_BASE_URL", "https://clob.polymarket.com"),
     )
     client = PolymarketClient(cfg)
@@ -230,7 +253,9 @@ def run_backfill_main(argv: Optional[List[str]] = None) -> int:
                 verbose=args.verbose,
             )
         )
-        log(f"[research] gamma done: {len(pairs)} market rows in {time.monotonic() - t_gamma:.1f}s")
+        log(
+            f"[research] gamma done: {len(pairs)} market rows in {time.monotonic() - t_gamma:.1f}s"
+        )
         if not args.dry_run:
             write_registry_from_markets(pairs)
             log("[research] wrote resolution_registry.json (schema v2)")
@@ -269,10 +294,7 @@ def run_backfill_main(argv: Optional[List[str]] = None) -> int:
         if p.event_date < start_d or p.event_date > end_d:
             continue
         cid = str(
-            m.get("conditionId")
-            or m.get("condition_id")
-            or m.get("questionID")
-            or ""
+            m.get("conditionId") or m.get("condition_id") or m.get("questionID") or ""
         ).strip()
         parsed_rows.append(
             {
@@ -328,7 +350,9 @@ def run_backfill_main(argv: Optional[List[str]] = None) -> int:
     truth_lock = threading.Lock()
     fc_lock = threading.Lock()
 
-    def process_one_truth(job: Tuple[Any, ...]) -> Optional[Tuple[Tuple[str, str], float]]:
+    def process_one_truth(
+        job: Tuple[Any, ...],
+    ) -> Optional[Tuple[Tuple[str, str], float]]:
         tag = job[0]
         if tag == "poly":
             _, ck, ds, tval = job
@@ -412,9 +436,13 @@ def run_backfill_main(argv: Optional[List[str]] = None) -> int:
                         truth_overlay[kcd2] = tv
                         truth_success.add(kcd2)
                     if prog_step and done_t % prog_step == 0 and n_t:
-                        progress(f"[research] truth {done_t}/{n_t} ({100 * done_t / n_t:.0f}%) …")
+                        progress(
+                            f"[research] truth {done_t}/{n_t} ({100 * done_t / n_t:.0f}%) …"
+                        )
         if n_t:
-            progress(f"[research] truth finished {n_t} jobs in {time.monotonic() - t_truth0:.1f}s")
+            progress(
+                f"[research] truth finished {n_t} jobs in {time.monotonic() - t_truth0:.1f}s"
+            )
 
     forecast_cells: List[Tuple[str, str, date]] = []
     if args.forecasts_markets_only:
@@ -505,7 +533,9 @@ def run_backfill_main(argv: Optional[List[str]] = None) -> int:
                 if fail:
                     fetch_failures.append(fail)
                 if prog_step and i % prog_step == 0 and n_fc:
-                    progress(f"[research] forecasts {i}/{n_fc} ({100 * i / n_fc:.0f}%) …")
+                    progress(
+                        f"[research] forecasts {i}/{n_fc} ({100 * i / n_fc:.0f}%) …"
+                    )
         else:
             w = max(1, min(int(args.workers), 24))
             done = 0
@@ -517,13 +547,19 @@ def run_backfill_main(argv: Optional[List[str]] = None) -> int:
                     if fail:
                         fetch_failures.append(fail)
                     if prog_step and done % prog_step == 0 and n_fc:
-                        progress(f"[research] forecasts {done}/{n_fc} ({100 * done / n_fc:.0f}%) …")
+                        progress(
+                            f"[research] forecasts {done}/{n_fc} ({100 * done / n_fc:.0f}%) …"
+                        )
         if n_fc:
-            progress(f"[research] forecasts finished {n_fc} fetches in {time.monotonic() - t_fc0:.1f}s")
+            progress(
+                f"[research] forecasts finished {n_fc} fetches in {time.monotonic() - t_fc0:.1f}s"
+            )
 
     still_missing: List[List[str]] = []
     if not args.dry_run and forecast_cells:
-        idem_reload = load_forecast_idempotency_success(C.RESEARCH_FORECASTS_HISTORY_FILE)
+        idem_reload = load_forecast_idempotency_success(
+            C.RESEARCH_FORECASTS_HISTORY_FILE
+        )
         for ck, ds, _event_d in forecast_cells:
             ck = ck.strip().lower()
             for model_name, _fn in models:
@@ -536,9 +572,7 @@ def run_backfill_main(argv: Optional[List[str]] = None) -> int:
         "forecast_cells": len(forecast_cells),
         "fetch_failures_this_run": fetch_failures,
         "still_missing_success_keys": still_missing,
-        "complete": None
-        if args.dry_run
-        else (len(still_missing) == 0),
+        "complete": None if args.dry_run else (len(still_missing) == 0),
     }
     if not args.dry_run:
         log(
@@ -616,7 +650,9 @@ def run_backfill_main(argv: Optional[List[str]] = None) -> int:
         "back_days": int(back_days) if back_days >= 1 else 0,
         "forecast_report": fc_report,
         "http_parallel": bool(not args.dry_run and not args.no_parallel),
-        "http_workers": w_cap if (not args.dry_run and not args.no_parallel) else (1 if not args.dry_run else 0),
+        "http_workers": w_cap
+        if (not args.dry_run and not args.no_parallel)
+        else (1 if not args.dry_run else 0),
         "progress_every": int(args.progress_every),
         "cached_mode": bool(args.cached),
         "skip_gamma_search": bool(args.skip_gamma_search),

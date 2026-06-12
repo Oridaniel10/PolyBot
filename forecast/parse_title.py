@@ -165,9 +165,7 @@ def parse_highest_temp_title(title: str) -> Optional[ParsedTempMarket]:
         bracket = BracketKind.EXACT
         threshold = float(me.group(1))
     else:
-        m2 = re.search(
-            r"be\s+(\d+(?:\.\d+)?)\s*°?\s*c\b", raw, re.IGNORECASE
-        )
+        m2 = re.search(r"be\s+(\d+(?:\.\d+)?)\s*°?\s*c\b", raw, re.IGNORECASE)
         if m2:
             bracket = BracketKind.EXACT
             threshold = float(m2.group(1))
@@ -198,9 +196,7 @@ def parse_highest_temp_title(title: str) -> Optional[ParsedTempMarket]:
             bracket = BracketKind.EXACT
             threshold = _fahrenheit_to_celsius(float(me_f.group(1)))
         else:
-            mf2 = re.search(
-                r"be\s+(\d+(?:\.\d+)?)\s*°?\s*f\b", raw, re.IGNORECASE
-            )
+            mf2 = re.search(r"be\s+(\d+(?:\.\d+)?)\s*°?\s*f\b", raw, re.IGNORECASE)
             if mf2:
                 bracket = BracketKind.EXACT
                 threshold = _fahrenheit_to_celsius(float(mf2.group(1)))

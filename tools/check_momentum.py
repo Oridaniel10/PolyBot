@@ -23,13 +23,13 @@ from strategy.momentum import (
 
 
 WINDOWS = [
-    ("1m",  60),
-    ("2m",  120),
-    ("3m",  180),
-    ("4m",  240),
-    ("5m",  300),
+    ("1m", 60),
+    ("2m", 120),
+    ("3m", 180),
+    ("4m", 240),
+    ("5m", 300),
     ("15m", 900),
-    ("2h",  7200),
+    ("2h", 7200),
 ]
 
 
@@ -50,7 +50,13 @@ def momentum_for_market(market_id: str, now_ts: float) -> dict:
     for label, wsec in WINDOWS:
         pts = load_samples_for_market(market_id, wsec, now_ts)
         if len(pts) < 2:
-            result[label] = {"abs": 0.0, "pct": 0.0, "old": 0.0, "new": 0.0, "pts": len(pts)}
+            result[label] = {
+                "abs": 0.0,
+                "pct": 0.0,
+                "old": 0.0,
+                "new": 0.0,
+                "pts": len(pts),
+            }
         else:
             old_p = pts[0][1]
             new_p = pts[-1][1]
@@ -72,31 +78,44 @@ def print_market_momentum(m: dict) -> None:
     age_str = f"{age:.0f}s ago" if age >= 0 else "no data"
     print(f"\n{'═' * 70}")
     print(f"  Market: {mid}")
-    print(f"  Samples: {m['n_samples']}  |  Latest: {m['latest_price']:.4f}  |  Last update: {age_str}")
+    print(
+        f"  Samples: {m['n_samples']}  |  Latest: {m['latest_price']:.4f}  |  Last update: {age_str}"
+    )
     print(f"{'─' * 70}")
-    print(f"  {'Window':<8} {'Old':>8} {'New':>8} {'Abs Rise':>10} {'Pct Rise':>10} {'Points':>8}")
-    print(f"  {'─'*8} {'─'*8} {'─'*8} {'─'*10} {'─'*10} {'─'*8}")
+    print(
+        f"  {'Window':<8} {'Old':>8} {'New':>8} {'Abs Rise':>10} {'Pct Rise':>10} {'Points':>8}"
+    )
+    print(f"  {'─' * 8} {'─' * 8} {'─' * 8} {'─' * 10} {'─' * 10} {'─' * 8}")
     for label, _ in WINDOWS:
         w = m[label]
         abs_str = f"{w['abs']:+.4f}"
         pct_str = f"{w['pct']:+.2f}%"
         # color: green if rising, red if dropping
-        if w['abs'] > 0.001:
+        if w["abs"] > 0.001:
             abs_str = f"\033[92m{abs_str}\033[0m"
             pct_str = f"\033[92m{pct_str}\033[0m"
-        elif w['abs'] < -0.001:
+        elif w["abs"] < -0.001:
             abs_str = f"\033[91m{abs_str}\033[0m"
             pct_str = f"\033[91m{pct_str}\033[0m"
-        print(f"  {label:<8} {w['old']:>8.4f} {w['new']:>8.4f} {abs_str:>18} {pct_str:>18} {w['pts']:>8}")
+        print(
+            f"  {label:<8} {w['old']:>8.4f} {w['new']:>8.4f} {abs_str:>18} {pct_str:>18} {w['pts']:>8}"
+        )
     print(f"{'═' * 70}")
 
 
 def main():
     import argparse
-    parser = argparse.ArgumentParser(description="Check momentum calculations from ring buffer")
+
+    parser = argparse.ArgumentParser(
+        description="Check momentum calculations from ring buffer"
+    )
     parser.add_argument("market_id", nargs="?", help="Specific market_id to check")
-    parser.add_argument("--top", type=int, default=0, help="Show top N movers by 15m absolute rise")
-    parser.add_argument("--all", action="store_true", help="Show ALL markets (can be long)")
+    parser.add_argument(
+        "--top", type=int, default=0, help="Show top N movers by 15m absolute rise"
+    )
+    parser.add_argument(
+        "--all", action="store_true", help="Show ALL markets (can be long)"
+    )
     args = parser.parse_args()
 
     print("\n🔄 Warming ring buffer from disk...")
@@ -115,7 +134,9 @@ def main():
         # specific market
         if args.market_id not in all_ids:
             print(f"⚠️  Market {args.market_id} not found in ring buffer.")
-            print(f"   Available markets ({len(all_ids)}): {', '.join(sorted(all_ids)[:20])}...")
+            print(
+                f"   Available markets ({len(all_ids)}): {', '.join(sorted(all_ids)[:20])}..."
+            )
             return
         m = momentum_for_market(args.market_id, now_ts)
         print_market_momentum(m)
@@ -129,11 +150,15 @@ def main():
     if args.top > 0:
         # sort by 15m absolute rise descending
         results.sort(key=lambda x: abs(x["15m"]["abs"]), reverse=True)
-        results = results[:args.top]
+        results = results[: args.top]
         print(f"🏆 Top {len(results)} movers by 15m absolute change:")
     elif not args.all:
         # default: show markets with non-zero 5m momentum
-        active = [r for r in results if abs(r["5m"]["abs"]) > 0.005 or abs(r["15m"]["abs"]) > 0.01]
+        active = [
+            r
+            for r in results
+            if abs(r["5m"]["abs"]) > 0.005 or abs(r["15m"]["abs"]) > 0.01
+        ]
         if active:
             active.sort(key=lambda x: abs(x["15m"]["abs"]), reverse=True)
             results = active
@@ -141,7 +166,9 @@ def main():
         else:
             results.sort(key=lambda x: abs(x["15m"]["abs"]), reverse=True)
             results = results[:15]
-            print(f"😴 No significant movement. Showing top {len(results)} by 15m change:")
+            print(
+                f"😴 No significant movement. Showing top {len(results)} by 15m change:"
+            )
 
     for m in results:
         print_market_momentum(m)
@@ -153,7 +180,7 @@ def main():
     if stale:
         print(f"  ⚠️  {len(stale)} markets with stale data (>2 min since last sample)")
     else:
-        print(f"  ✅ All shown markets have fresh data (<2 min)")
+        print("  ✅ All shown markets have fresh data (<2 min)")
 
 
 if __name__ == "__main__":

@@ -29,7 +29,9 @@ def bias_for_city(city_key: str) -> float:
     return float(om.get("bias_c", 0.0))
 
 
-def adjust_consensus_optional(consensus_c: Optional[float], city_key: str) -> Optional[float]:
+def adjust_consensus_optional(
+    consensus_c: Optional[float], city_key: str
+) -> Optional[float]:
     if consensus_c is None:
         return None
     return float(consensus_c) + bias_for_city(city_key)

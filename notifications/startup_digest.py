@@ -94,8 +94,16 @@ def _digest_rows(
 
     sec("Stop-loss & take-profit")
     row("stop_loss_normal", settings.stop_loss_normal, "flat SL mark for normal entry")
-    row("stop_loss_momentum", settings.stop_loss_momentum, "flat SL mark for momentum entry")
-    row("stop_loss_double_momentum", settings.stop_loss_double_momentum, "flat SL mark for double momentum entry")
+    row(
+        "stop_loss_momentum",
+        settings.stop_loss_momentum,
+        "flat SL mark for momentum entry",
+    )
+    row(
+        "stop_loss_double_momentum",
+        settings.stop_loss_double_momentum,
+        "flat SL mark for double momentum entry",
+    )
     row(
         "take_profit_threshold",
         settings.take_profit,

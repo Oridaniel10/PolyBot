@@ -34,7 +34,9 @@ def main() -> None:
             60,
             min(3600, int(getattr(eff, "forecast_digest_refresh_interval_sec", 120))),
         )
-        tg_iv = max(0, min(86400, int(getattr(eff, "forecast_digest_telegram_interval_sec", 0))))
+        tg_iv = max(
+            0, min(86400, int(getattr(eff, "forecast_digest_telegram_interval_sec", 0)))
+        )
     except Exception:
         ref = 120
         tg_iv = 0

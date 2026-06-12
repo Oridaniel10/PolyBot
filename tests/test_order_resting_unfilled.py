@@ -9,7 +9,9 @@ def test_empty_payload_not_resting():
 
 def test_filled_not_resting():
     assert (
-        order_resting_unfilled({"status": "filled", "original_size": 10, "size_matched": 10})
+        order_resting_unfilled(
+            {"status": "filled", "original_size": 10, "size_matched": 10}
+        )
         is False
     )
 

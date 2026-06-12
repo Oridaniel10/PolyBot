@@ -31,7 +31,11 @@ import os
 from config import constants as C
 from config.constants import DATA_DIR, PRICE_SAMPLES_DIR, STATE_FILE
 from config.settings import get_effective_settings
-from polymarket_client import PolymarketClient, PolymarketConfig, gamma_event_ids_for_market
+from polymarket_client import (
+    PolymarketClient,
+    PolymarketConfig,
+    gamma_event_ids_for_market,
+)
 from strategy.decision_core import momentum_entry_candidate_windows
 from strategy.momentum_engine import absolute_price_change_in_window
 
@@ -46,10 +50,13 @@ def build_config() -> PolymarketConfig:
         api_passphrase=os.getenv("API_PASSPHRASE", ""),
         private_key=os.getenv("POLY_PRIVATE_KEY", os.getenv("Wallet_PRIVATE_KEY", "")),
         proxy_address=os.getenv("POLY_PROXY_ADDRESS", os.getenv("POLY_ADDRESS", "")),
-        gamma_base_url=os.getenv("POLY_GAMMA_BASE_URL", "https://gamma-api.polymarket.com"),
+        gamma_base_url=os.getenv(
+            "POLY_GAMMA_BASE_URL", "https://gamma-api.polymarket.com"
+        ),
         clob_base_url=os.getenv("POLY_CLOB_BASE_URL", "https://clob.polymarket.com"),
         clob_signature_type=clob_sig,
     )
+
 
 PLOT_DIR = DATA_DIR / "plots"
 
@@ -95,17 +102,15 @@ def _city_date_slug_from_title(title: str) -> str:
     )
     if not city_m:
         city_m = re.search(r"in\s+([A-Za-z][A-Za-z\s.'-]+?)\s+be\s+", t, re.I)
-    city = (
-        city_m.group(1).strip().replace(" ", "") if city_m else "unknown"
-    )
+    city = city_m.group(1).strip().replace(" ", "") if city_m else "unknown"
     dm = re.search(r"\bon\s+([A-Za-z]+\s+\d{1,2})(?:,|\?|$|\s)", t, re.I)
-    date_part = (
-        dm.group(1).replace(" ", "").replace(",", "") if dm else "nodate"
-    )
+    date_part = dm.group(1).replace(" ", "").replace(",", "") if dm else "nodate"
     return _safe_filename(f"{city}_{date_part}")
 
 
-def _read_disk_samples(window_sec: float, now_ts: float) -> Dict[str, List[Tuple[float, float]]]:
+def _read_disk_samples(
+    window_sec: float, now_ts: float
+) -> Dict[str, List[Tuple[float, float]]]:
     cutoff = now_ts - window_sec
     by_market: Dict[str, List[Tuple[float, float]]] = defaultdict(list)
     if not PRICE_SAMPLES_DIR.is_dir():
@@ -142,6 +147,7 @@ def _read_ring_samples(
     try:
         from strategy import redis_store
         from strategy.momentum import warm_ring_buffer_from_disk
+
         if not redis_store.is_connected():
             redis_store.connect()
         if not redis_store.is_connected():
@@ -355,8 +361,7 @@ def _plot_event_all_buckets(
         label_base = _short_title(title) if title else mid[:12]
         if pts:
             xs = [
-                datetime.fromtimestamp(t, tz=timezone.utc).astimezone()
-                for t, _ in pts
+                datetime.fromtimestamp(t, tz=timezone.utc).astimezone() for t, _ in pts
             ]
             ys = [p for _, p in pts]
             ax.plot(
@@ -388,7 +393,11 @@ def _plot_event_all_buckets(
     ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M:%S"))
     fig.autofmt_xdate()
 
-    slug = _city_date_slug_from_title(siblings_ordered[0][1]) if siblings_ordered else "event"
+    slug = (
+        _city_date_slug_from_title(siblings_ordered[0][1])
+        if siblings_ordered
+        else "event"
+    )
     ax.set_title(
         f"Event {event_id} · {slug} · last {int(window_sec / 60)}m\n"
         "(dashed @0 = no rows in price_samples / ring for this bucket in the window)",
@@ -402,7 +411,8 @@ def _plot_event_all_buckets(
     fig.text(
         0.02,
         0.01,
-        "Momentum (same windows as bot / momentum_entry_candidate_windows):\n" + mom_block,
+        "Momentum (same windows as bot / momentum_entry_candidate_windows):\n"
+        + mom_block,
         fontsize=5,
         family="monospace",
         verticalalignment="bottom",
@@ -580,7 +590,9 @@ def run_once(
 
     for eid in sorted(event_cache_lists.keys()):
         full_mkts = event_cache_lists[eid]
-        ordered = sorted(full_mkts, key=lambda m: _bucket_sort_key(str(m.get("question") or "")))
+        ordered = sorted(
+            full_mkts, key=lambda m: _bucket_sort_key(str(m.get("question") or ""))
+        )
 
         sibs: List[Tuple[str, str, List[Tuple[float, float]]]] = []
         title0 = ""
@@ -620,16 +632,24 @@ def run_once(
 
 def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n", 1)[0])
-    ap.add_argument("--window-min", type=float, default=15.0, help="lookback in minutes")
+    ap.add_argument(
+        "--window-min", type=float, default=15.0, help="lookback in minutes"
+    )
     ap.add_argument("--event-id", type=str, default=None, help="only this gamma event")
-    ap.add_argument("--out-dir", type=str, default=str(PLOT_DIR), help="output root directory")
+    ap.add_argument(
+        "--out-dir", type=str, default=str(PLOT_DIR), help="output root directory"
+    )
     ap.add_argument(
         "--per-market",
         action="store_true",
         help="also write one PNG per market with samples (legacy)",
     )
-    ap.add_argument("--watch", action="store_true", help="re-run every interval seconds")
-    ap.add_argument("--watch-interval", type=int, default=30, help="seconds between watch runs")
+    ap.add_argument(
+        "--watch", action="store_true", help="re-run every interval seconds"
+    )
+    ap.add_argument(
+        "--watch-interval", type=int, default=30, help="seconds between watch runs"
+    )
     args = ap.parse_args(argv)
 
     out_root = Path(args.out_dir)

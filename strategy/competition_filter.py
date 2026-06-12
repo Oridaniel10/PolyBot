@@ -39,9 +39,12 @@ def evaluate_competition(
     eids = gamma_event_ids_for_market(market)
     if not eids:
         return CompetitionResult(
-            passes=True, leader_market_id=mid,
-            leader_prob=candidate_market_prob, runner_up_prob=0.0,
-            gap=candidate_market_prob, method="no_event_context",
+            passes=True,
+            leader_market_id=mid,
+            leader_prob=candidate_market_prob,
+            runner_up_prob=0.0,
+            gap=candidate_market_prob,
+            method="no_event_context",
         )
 
     eid = str(eids[0]).strip()
@@ -50,15 +53,16 @@ def evaluate_competition(
     siblings = event_cache.get(eid) or []
     if not siblings:
         return CompetitionResult(
-            passes=True, leader_market_id=mid,
-            leader_prob=candidate_market_prob, runner_up_prob=0.0,
-            gap=candidate_market_prob, method="no_siblings",
+            passes=True,
+            leader_market_id=mid,
+            leader_prob=candidate_market_prob,
+            runner_up_prob=0.0,
+            gap=candidate_market_prob,
+            method="no_siblings",
         )
 
     if consensus_c is not None:
-        bucket_probs = compute_all_bucket_probs(
-            siblings, consensus_c, sigma_c_setting
-        )
+        bucket_probs = compute_all_bucket_probs(siblings, consensus_c, sigma_c_setting)
         if len(bucket_probs) >= 2:
             candidate_model_p = 0.0
             for bmid, mp, _ in bucket_probs:

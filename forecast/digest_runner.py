@@ -18,7 +18,11 @@ from config.constants import ENV_FILE
 from config.settings import get_effective_settings
 from polymarket_client import PolymarketClient, PolymarketConfig
 from state.store import load_env_file, read_state
-from strategy.time_utils import build_target_day_label, format_report_local_hhmm, now_in_report_timezone
+from strategy.time_utils import (
+    build_target_day_label,
+    format_report_local_hhmm,
+    now_in_report_timezone,
+)
 from telegram_bot import TelegramBot, tg_escape
 
 from forecast.cache_store import save_forecast_cache_after_gamma_fetch
@@ -97,15 +101,17 @@ def _digest_group_rows(
     rows: List[Dict[str, Any]] = []
     st = read_state()
     held_ids = {
-        str(k).strip()
-        for k in (st.get("active_trades") or {}).keys()
-        if str(k).strip()
+        str(k).strip() for k in (st.get("active_trades") or {}).keys() if str(k).strip()
     }
     sorted_items = sorted(groups.items(), key=lambda x: (x[0][0], x[0][1]))
     priority: List[Tuple[Tuple[str, str], List[Dict[str, Any]]]] = []
     rest: List[Tuple[Tuple[str, str], List[Dict[str, Any]]]] = []
     for key, mks in sorted_items:
-        mids = {str(m.get("id") or "").strip() for m in mks if str(m.get("id") or "").strip()}
+        mids = {
+            str(m.get("id") or "").strip()
+            for m in mks
+            if str(m.get("id") or "").strip()
+        }
         if held_ids and mids & held_ids:
             priority.append((key, mks))
         else:
@@ -220,11 +226,7 @@ def build_forecast_digest_html(
         )
 
     ow_enabled = bool(getattr(settings, "enable_openweather_forecast", False))
-    ow_key = (
-        os.getenv("OPENWEATHER_API_KEY", "").strip()
-        if ow_enabled
-        else ""
-    )
+    ow_key = os.getenv("OPENWEATHER_API_KEY", "").strip() if ow_enabled else ""
 
     rows = _digest_group_rows(
         scoped,
@@ -292,7 +294,11 @@ def run_forecast_digest_once(
     returns True if a Telegram digest was sent.
     """
     settings = get_effective_settings()
-    if not standalone and not force and not getattr(settings, "forecast_digest_enabled", True):
+    if (
+        not standalone
+        and not force
+        and not getattr(settings, "forecast_digest_enabled", True)
+    ):
         return False
     now = now_in_report_timezone()
     label = build_target_day_label(now)

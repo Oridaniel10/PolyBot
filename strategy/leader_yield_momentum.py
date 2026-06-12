@@ -208,9 +208,9 @@ def market_title_by_id(siblings: List[Dict[str, Any]], mid: str) -> str:
             continue
         if str(m.get("id") or "").strip() != ms:
             continue
-        return str(
-            m.get("question") or m.get("title") or m.get("slug") or ms
-        ).strip()[:200]
+        return str(m.get("question") or m.get("title") or m.get("slug") or ms).strip()[
+            :200
+        ]
     return ms
 
 
@@ -242,7 +242,8 @@ def is_persistent_leader(
 
     # collect all sibling IDs (excluding the candidate itself)
     sibling_ids = [
-        str(s).strip() for s in event_market_ids
+        str(s).strip()
+        for s in event_market_ids
         if str(s).strip() and str(s).strip() != mid
     ]
     if not sibling_ids:

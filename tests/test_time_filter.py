@@ -24,7 +24,11 @@ def test_entry_blocked_day_before_even_late_hour():
     evening_prior = datetime(2026, 4, 16, 22, 6)
     with patch("strategy.time_filter.city_local_now", return_value=evening_prior):
         ok, hour, reason = entry_time_allowed(title, event_date=ev)
-    assert not ok and hour == pytest.approx(22.1) and reason == "city_local_date_not_event_day"
+    assert (
+        not ok
+        and hour == pytest.approx(22.1)
+        and reason == "city_local_date_not_event_day"
+    )
 
 
 def test_entry_blocked_event_morning_before_14():
@@ -41,10 +45,12 @@ def test_entry_blocked_before_fractional_earliest():
     ev = date(2026, 4, 17)
     at_1529 = datetime(2026, 4, 17, 15, 29)
     with patch("strategy.time_filter.city_local_now", return_value=at_1529):
-        ok, hour, reason = entry_time_allowed(
-            title, earliest_hour=15.5, event_date=ev
-        )
-    assert not ok and hour == pytest.approx(15 + 29 / 60.0) and reason == "before_earliest_hour"
+        ok, hour, reason = entry_time_allowed(title, earliest_hour=15.5, event_date=ev)
+    assert (
+        not ok
+        and hour == pytest.approx(15 + 29 / 60.0)
+        and reason == "before_earliest_hour"
+    )
 
 
 def test_entry_allowed_at_fractional_earliest():
@@ -52,9 +58,7 @@ def test_entry_allowed_at_fractional_earliest():
     ev = date(2026, 4, 17)
     at_1530 = datetime(2026, 4, 17, 15, 30)
     with patch("strategy.time_filter.city_local_now", return_value=at_1530):
-        ok, hour, reason = entry_time_allowed(
-            title, earliest_hour=15.5, event_date=ev
-        )
+        ok, hour, reason = entry_time_allowed(title, earliest_hour=15.5, event_date=ev)
     assert ok and hour == 15.5 and reason == ""
 
 

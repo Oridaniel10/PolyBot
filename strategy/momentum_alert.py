@@ -11,7 +11,7 @@ Controlled by constants (or runtime_config.json overrides):
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Set
 
 import config.constants as C
 from strategy.momentum_engine import price_change_in_window
@@ -42,15 +42,25 @@ def check_and_alert(
     Designed to run in a daemon thread — never raises, all errors are swallowed.
     """
     try:
-        enabled = bool(getattr(settings, "momentum_alert_enabled", C.MOMENTUM_ALERT_ENABLED))
-        min_abs = _settings_val(settings, "momentum_alert_min_abs", C.MOMENTUM_ALERT_MIN_ABS)
-        min_pct = _settings_val(settings, "momentum_alert_min_pct", C.MOMENTUM_ALERT_MIN_PCT)
-        window_sec = _settings_val(settings, "momentum_alert_window_sec", C.MOMENTUM_ALERT_WINDOW_SEC)
-        cooldown = _settings_val(settings, "momentum_alert_cooldown_sec", C.MOMENTUM_ALERT_COOLDOWN_SEC)
+        enabled = bool(
+            getattr(settings, "momentum_alert_enabled", C.MOMENTUM_ALERT_ENABLED)
+        )
+        min_abs = _settings_val(
+            settings, "momentum_alert_min_abs", C.MOMENTUM_ALERT_MIN_ABS
+        )
+        min_pct = _settings_val(
+            settings, "momentum_alert_min_pct", C.MOMENTUM_ALERT_MIN_PCT
+        )
+        window_sec = _settings_val(
+            settings, "momentum_alert_window_sec", C.MOMENTUM_ALERT_WINDOW_SEC
+        )
+        cooldown = _settings_val(
+            settings, "momentum_alert_cooldown_sec", C.MOMENTUM_ALERT_COOLDOWN_SEC
+        )
 
         print(
             f"[momentum_alert] tick: enabled={enabled} events={len(event_cache)} "
-            f"min_abs={min_abs} min_pct={min_pct} window={window_sec/60:.0f}m "
+            f"min_abs={min_abs} min_pct={min_pct} window={window_sec / 60:.0f}m "
             f"tg={telegram.is_configured()}"
         )
 
@@ -141,7 +151,9 @@ def _send_event_plot(
         win_min = window_sec / 60.0
         with tempfile.TemporaryDirectory() as tmp:
             out_path = Path(tmp) / f"alert_{event_id}.png"
-            ok = render_post_buy_event_png(market_id, client, win_min, out_path, now_ts=now_ts)
+            ok = render_post_buy_event_png(
+                market_id, client, win_min, out_path, now_ts=now_ts
+            )
             if ok and out_path.is_file():
                 caption = f"Event {event_id} · last {int(win_min)}m"
                 telegram.send_photo(str(out_path), caption=caption)

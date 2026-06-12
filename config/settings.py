@@ -340,7 +340,9 @@ class RuntimeSettings:
     normal_winner_stability_min_sec: float = C.NORMAL_WINNER_STABILITY_MIN_SEC
     normal_winner_stability_max_sec: float = C.NORMAL_WINNER_STABILITY_MAX_SEC
     stop_loss_normal_winner: float = C.STOP_LOSS_NORMAL_WINNER
-    stop_loss_normal_winner_entry_drop_pct: float = C.STOP_LOSS_NORMAL_WINNER_ENTRY_DROP_PCT
+    stop_loss_normal_winner_entry_drop_pct: float = (
+        C.STOP_LOSS_NORMAL_WINNER_ENTRY_DROP_PCT
+    )
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "RuntimeSettings":
@@ -806,14 +808,22 @@ class RuntimeSettings:
                 0.1,
                 min(
                     48.0,
-                    float(d.get("stagnation_sl_window_hours", C.STAGNATION_SL_WINDOW_HOURS)),
+                    float(
+                        d.get(
+                            "stagnation_sl_window_hours", C.STAGNATION_SL_WINDOW_HOURS
+                        )
+                    ),
                 ),
             ),
             stagnation_sl_min_rise_pct=max(
                 0.0,
                 min(
                     1.0,
-                    float(d.get("stagnation_sl_min_rise_pct", C.STAGNATION_SL_MIN_RISE_PCT)),
+                    float(
+                        d.get(
+                            "stagnation_sl_min_rise_pct", C.STAGNATION_SL_MIN_RISE_PCT
+                        )
+                    ),
                 ),
             ),
             buy_escalate_notional_on_submit_fail=bool(
@@ -993,44 +1003,129 @@ class RuntimeSettings:
             ),
             persistent_leader_entry_rise=max(
                 0.01,
-                min(0.95, float(d.get("persistent_leader_entry_rise", C.PERSISTENT_LEADER_ENTRY_RISE))),
+                min(
+                    0.95,
+                    float(
+                        d.get(
+                            "persistent_leader_entry_rise",
+                            C.PERSISTENT_LEADER_ENTRY_RISE,
+                        )
+                    ),
+                ),
             ),
             persistent_leader_pct_rise=max(
                 0.01,
-                min(10.0, float(d.get("persistent_leader_pct_rise", C.PERSISTENT_LEADER_PCT_RISE))),
+                min(
+                    10.0,
+                    float(
+                        d.get(
+                            "persistent_leader_pct_rise", C.PERSISTENT_LEADER_PCT_RISE
+                        )
+                    ),
+                ),
             ),
             persistent_leader_min_price=max(
                 0.01,
-                min(0.99, float(d.get("persistent_leader_min_price", C.PERSISTENT_LEADER_MIN_PRICE))),
+                min(
+                    0.99,
+                    float(
+                        d.get(
+                            "persistent_leader_min_price", C.PERSISTENT_LEADER_MIN_PRICE
+                        )
+                    ),
+                ),
             ),
             persistent_leader_max_price=max(
                 0.01,
-                min(0.99, float(d.get("persistent_leader_max_price", C.PERSISTENT_LEADER_MAX_PRICE))),
+                min(
+                    0.99,
+                    float(
+                        d.get(
+                            "persistent_leader_max_price", C.PERSISTENT_LEADER_MAX_PRICE
+                        )
+                    ),
+                ),
             ),
-            normal_winner_enabled=bool(d.get("normal_winner_enabled", C.NORMAL_WINNER_ENABLED)),
+            normal_winner_enabled=bool(
+                d.get("normal_winner_enabled", C.NORMAL_WINNER_ENABLED)
+            ),
             normal_winner_min_entry=max(
-                0.5, min(0.9999, float(d.get("normal_winner_min_entry", C.NORMAL_WINNER_MIN_ENTRY)))
+                0.5,
+                min(
+                    0.9999,
+                    float(d.get("normal_winner_min_entry", C.NORMAL_WINNER_MIN_ENTRY)),
+                ),
             ),
             normal_winner_max_entry=max(
-                0.5, min(0.9999, float(d.get("normal_winner_max_entry", C.NORMAL_WINNER_MAX_ENTRY)))
+                0.5,
+                min(
+                    0.9999,
+                    float(d.get("normal_winner_max_entry", C.NORMAL_WINNER_MAX_ENTRY)),
+                ),
             ),
             normal_winner_take_profit=max(
-                0.5, min(1.0, float(d.get("normal_winner_take_profit", C.NORMAL_WINNER_TAKE_PROFIT)))
+                0.5,
+                min(
+                    1.0,
+                    float(
+                        d.get("normal_winner_take_profit", C.NORMAL_WINNER_TAKE_PROFIT)
+                    ),
+                ),
             ),
             normal_winner_stability_floor=max(
-                0.01, min(0.99, float(d.get("normal_winner_stability_floor", C.NORMAL_WINNER_STABILITY_FLOOR)))
+                0.01,
+                min(
+                    0.99,
+                    float(
+                        d.get(
+                            "normal_winner_stability_floor",
+                            C.NORMAL_WINNER_STABILITY_FLOOR,
+                        )
+                    ),
+                ),
             ),
             normal_winner_stability_min_sec=max(
-                60.0, min(86400.0, float(d.get("normal_winner_stability_min_sec", C.NORMAL_WINNER_STABILITY_MIN_SEC)))
+                60.0,
+                min(
+                    86400.0,
+                    float(
+                        d.get(
+                            "normal_winner_stability_min_sec",
+                            C.NORMAL_WINNER_STABILITY_MIN_SEC,
+                        )
+                    ),
+                ),
             ),
             normal_winner_stability_max_sec=max(
-                60.0, min(86400.0, float(d.get("normal_winner_stability_max_sec", C.NORMAL_WINNER_STABILITY_MAX_SEC)))
+                60.0,
+                min(
+                    86400.0,
+                    float(
+                        d.get(
+                            "normal_winner_stability_max_sec",
+                            C.NORMAL_WINNER_STABILITY_MAX_SEC,
+                        )
+                    ),
+                ),
             ),
             stop_loss_normal_winner=max(
-                0.01, min(0.99, float(d.get("stop_loss_normal_winner", C.STOP_LOSS_NORMAL_WINNER)))
+                0.01,
+                min(
+                    0.99,
+                    float(d.get("stop_loss_normal_winner", C.STOP_LOSS_NORMAL_WINNER)),
+                ),
             ),
             stop_loss_normal_winner_entry_drop_pct=max(
-                0.0, min(0.5, float(d.get("stop_loss_normal_winner_entry_drop_pct", C.STOP_LOSS_NORMAL_WINNER_ENTRY_DROP_PCT)))
+                0.0,
+                min(
+                    0.5,
+                    float(
+                        d.get(
+                            "stop_loss_normal_winner_entry_drop_pct",
+                            C.STOP_LOSS_NORMAL_WINNER_ENTRY_DROP_PCT,
+                        )
+                    ),
+                ),
             ),
         )
 
@@ -1067,9 +1162,7 @@ def load_city_buy_earliest_hours() -> Dict[str, float]:
     if not C.CITY_BUY_EARLIEST_HOURS_FILE.is_file():
         return {}
     try:
-        raw = json.loads(
-            C.CITY_BUY_EARLIEST_HOURS_FILE.read_text(encoding="utf-8")
-        )
+        raw = json.loads(C.CITY_BUY_EARLIEST_HOURS_FILE.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return {}
     if not isinstance(raw, dict):

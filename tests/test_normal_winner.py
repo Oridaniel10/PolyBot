@@ -10,11 +10,12 @@ covers:
 - stop_loss_bar_for_entry_type returns correct floor for normal_winner
 - stop_loss_entry_drop_pct_for_entry_type returns correct pct for normal_winner
 """
+
 from __future__ import annotations
 
 import time
-from typing import Any, Dict, List
-from unittest.mock import MagicMock, patch
+from typing import List
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -44,6 +45,7 @@ def push_samples(market_id: str, prices_and_offsets: List[tuple]) -> None:
 
 
 # ── stability check ────────────────────────────────────────────────────────────
+
 
 class TestNormalWinnerStabilityCheck:
     def test_returns_false_when_no_samples(self):
@@ -155,6 +157,7 @@ class TestNormalWinnerStabilityCheck:
 
 # ── stop-loss bar and drop pct ─────────────────────────────────────────────────
 
+
 class TestNormalWinnerStopLoss:
     def test_stop_loss_bar_for_normal_winner(self):
         settings = make_settings()
@@ -173,15 +176,24 @@ class TestNormalWinnerStopLoss:
 
     def test_normal_winner_does_not_affect_other_types(self):
         settings = make_settings()
-        assert stop_loss_bar_for_entry_type("momentum", settings) == pytest.approx(C.STOP_LOSS_MOMENTUM)
-        assert stop_loss_bar_for_entry_type("normal", settings) == pytest.approx(C.STOP_LOSS_NORMAL)
-        assert stop_loss_bar_for_entry_type("double_momentum", settings) == pytest.approx(C.STOP_LOSS_DOUBLE_MOMENTUM)
+        assert stop_loss_bar_for_entry_type("momentum", settings) == pytest.approx(
+            C.STOP_LOSS_MOMENTUM
+        )
+        assert stop_loss_bar_for_entry_type("normal", settings) == pytest.approx(
+            C.STOP_LOSS_NORMAL
+        )
+        assert stop_loss_bar_for_entry_type(
+            "double_momentum", settings
+        ) == pytest.approx(C.STOP_LOSS_DOUBLE_MOMENTUM)
 
 
 # ── take-profit in check_exits ─────────────────────────────────────────────────
 
+
 class TestNormalWinnerTakeProfit:
-    def _make_trade(self, entry_price=0.946, last_price=0.9987, entry_type="normal_winner"):
+    def _make_trade(
+        self, entry_price=0.946, last_price=0.9987, entry_type="normal_winner"
+    ):
         return {
             "entry_price": entry_price,
             "last_price": last_price,
@@ -236,7 +248,9 @@ class TestNormalWinnerTakeProfit:
             trailing_stop_enabled=False,
             crash_drop_pct_from_peak=0.0,
         )
-        trade = self._make_trade(last_price=0.96, entry_price=0.945, entry_type="normal_winner")
+        trade = self._make_trade(
+            last_price=0.96, entry_price=0.945, entry_type="normal_winner"
+        )
         trade["highest_seen_price"] = 0.96
         market = self._make_market(yes_price=0.96)
         client = MagicMock()
@@ -274,6 +288,7 @@ class TestNormalWinnerTakeProfit:
 
 # ── settings parsing ───────────────────────────────────────────────────────────
 
+
 class TestNormalWinnerSettings:
     def test_defaults_match_constants(self):
         s = make_settings()
@@ -281,11 +296,19 @@ class TestNormalWinnerSettings:
         assert s.normal_winner_min_entry == pytest.approx(C.NORMAL_WINNER_MIN_ENTRY)
         assert s.normal_winner_max_entry == pytest.approx(C.NORMAL_WINNER_MAX_ENTRY)
         assert s.normal_winner_take_profit == pytest.approx(C.NORMAL_WINNER_TAKE_PROFIT)
-        assert s.normal_winner_stability_floor == pytest.approx(C.NORMAL_WINNER_STABILITY_FLOOR)
-        assert s.normal_winner_stability_min_sec == pytest.approx(C.NORMAL_WINNER_STABILITY_MIN_SEC)
-        assert s.normal_winner_stability_max_sec == pytest.approx(C.NORMAL_WINNER_STABILITY_MAX_SEC)
+        assert s.normal_winner_stability_floor == pytest.approx(
+            C.NORMAL_WINNER_STABILITY_FLOOR
+        )
+        assert s.normal_winner_stability_min_sec == pytest.approx(
+            C.NORMAL_WINNER_STABILITY_MIN_SEC
+        )
+        assert s.normal_winner_stability_max_sec == pytest.approx(
+            C.NORMAL_WINNER_STABILITY_MAX_SEC
+        )
         assert s.stop_loss_normal_winner == pytest.approx(C.STOP_LOSS_NORMAL_WINNER)
-        assert s.stop_loss_normal_winner_entry_drop_pct == pytest.approx(C.STOP_LOSS_NORMAL_WINNER_ENTRY_DROP_PCT)
+        assert s.stop_loss_normal_winner_entry_drop_pct == pytest.approx(
+            C.STOP_LOSS_NORMAL_WINNER_ENTRY_DROP_PCT
+        )
 
     def test_overrides_accepted(self):
         s = make_settings(

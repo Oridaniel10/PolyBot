@@ -41,7 +41,12 @@ def run_once(
     now = now_in_report_timezone()
     target_day_label = build_target_day_label(now)
     prev_day_label = build_target_day_label(now - timedelta(days=1))
-    extra_day_labels = [prev_day_label] if prev_day_label != target_day_label else []
+    next_day_label = build_target_day_label(now + timedelta(days=1))
+    extra_day_labels = []
+    if prev_day_label != target_day_label:
+        extra_day_labels.append(prev_day_label)
+    if next_day_label != target_day_label:
+        extra_day_labels.append(next_day_label)
     active_trades = state.setdefault("active_trades", {})
 
     # --- parallel pre-fetch: markets scan + flush pending + balance ---
@@ -97,7 +102,7 @@ def run_once(
         settings,
         target_day_label,
         cash,
-        secondary_day_label=prev_day_label if extra_day_labels else None,
+        secondary_day_label=next_day_label if extra_day_labels else None,
     )
 
     scanned_market_ids: set[str] = set()

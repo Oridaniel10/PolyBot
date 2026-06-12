@@ -4,12 +4,17 @@ import unittest
 
 from forecast.parse_title import parse_highest_temp_title
 from research.bracket_truth import yes_bucket_matches_truth
-from research.resolution_parse import extract_station_code_hint, resolution_row_from_market
+from research.resolution_parse import (
+    extract_station_code_hint,
+    resolution_row_from_market,
+)
 
 
 class TestResolutionParse(unittest.TestCase):
     def test_station_hint_from_rules_text(self) -> None:
-        text = "Resolved using https://www.wunderground.com/history/daily/kr/incheon/RKSI"
+        text = (
+            "Resolved using https://www.wunderground.com/history/daily/kr/incheon/RKSI"
+        )
         self.assertEqual(extract_station_code_hint(text), "RKSI")
 
     def test_resolution_row_shape(self) -> None:

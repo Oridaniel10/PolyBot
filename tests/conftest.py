@@ -1,4 +1,5 @@
 """pytest configuration: connect Redis before the test session."""
+
 import pytest
 from strategy import redis_store
 

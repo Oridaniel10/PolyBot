@@ -1,8 +1,6 @@
 """Tests for per-city buy earliest hour configuration."""
 
 import json
-import tempfile
-from pathlib import Path
 from datetime import date, datetime
 from unittest.mock import patch
 
@@ -81,7 +79,9 @@ def test_load_city_hours_fractional_value(tmp_path):
 def test_load_city_hours_ignores_bad_values(tmp_path):
     """Non-integer values are silently skipped."""
     f = tmp_path / "city_buy_earliest_hour.json"
-    f.write_text(json.dumps({"paris": "sixteen", "berlin": None, "rome": 15}), encoding="utf-8")
+    f.write_text(
+        json.dumps({"paris": "sixteen", "berlin": None, "rome": 15}), encoding="utf-8"
+    )
     with patch.object(C, "CITY_BUY_EARLIEST_HOURS_FILE", f):
         result = load_city_buy_earliest_hours()
     assert "paris" not in result
@@ -146,14 +146,14 @@ def test_production_city_file_europe_mostly_16():
         "warsaw",
     ]
     for city in european:
-        assert hours.get(city) == 16, f"{city} should be 16, got {hours.get(city)}"
-    assert hours.get("madrid") == 17
+        assert hours.get(city) == 16.25, f"{city} should be 16.25, got {hours.get(city)}"
+    assert hours.get("madrid") == 17.25
 
 
 def test_production_city_file_most_cities_are_15():
     hours = load_city_buy_earliest_hours()
-    for city in ["beijing", "tokyo", "tel aviv", "new york city", "chicago"]:
-        assert hours.get(city) == 15, f"{city} should be 15, got {hours.get(city)}"
+    for city in ["beijing", "tokyo", "new york city", "chicago"]:
+        assert hours.get(city) == 15.25, f"{city} should be 15.25, got {hours.get(city)}"
 
 
 def test_runtime_settings_preserves_fractional_earliest():
@@ -182,8 +182,11 @@ def test_time_gate_uses_per_city_hour_paris_blocked_at_15(tmp_path):
         ),
     ):
         from config.settings import get_city_buy_earliest_hour
+
         earliest = get_city_buy_earliest_hour("paris", settings)
-        ok, hour, reason = entry_time_allowed(title, earliest_hour=earliest, event_date=ev)
+        ok, hour, reason = entry_time_allowed(
+            title, earliest_hour=earliest, event_date=ev
+        )
 
     assert not ok
     assert reason == "before_earliest_hour"
@@ -208,8 +211,11 @@ def test_time_gate_uses_per_city_hour_tokyo_allowed_at_14(tmp_path):
         ),
     ):
         from config.settings import get_city_buy_earliest_hour
+
         earliest = get_city_buy_earliest_hour("tokyo", settings)
-        ok, hour, reason = entry_time_allowed(title, earliest_hour=earliest, event_date=ev)
+        ok, hour, reason = entry_time_allowed(
+            title, earliest_hour=earliest, event_date=ev
+        )
 
     assert ok
     assert hour == 14.0
@@ -230,7 +236,9 @@ def test_time_gate_fractional_earliest_1530(tmp_path):
         patch("strategy.time_filter.city_local_now", return_value=at_1529),
     ):
         earliest = get_city_buy_earliest_hour("tel aviv", settings)
-        ok, hour, reason = entry_time_allowed(title, earliest_hour=earliest, event_date=ev)
+        ok, hour, reason = entry_time_allowed(
+            title, earliest_hour=earliest, event_date=ev
+        )
     assert not ok and reason == "before_earliest_hour"
 
     at_1530 = datetime(2026, 5, 13, 15, 30)
@@ -239,5 +247,7 @@ def test_time_gate_fractional_earliest_1530(tmp_path):
         patch("strategy.time_filter.city_local_now", return_value=at_1530),
     ):
         earliest = get_city_buy_earliest_hour("tel aviv", settings)
-        ok, hour, reason = entry_time_allowed(title, earliest_hour=earliest, event_date=ev)
+        ok, hour, reason = entry_time_allowed(
+            title, earliest_hour=earliest, event_date=ev
+        )
     assert ok and hour == pytest.approx(15.5)

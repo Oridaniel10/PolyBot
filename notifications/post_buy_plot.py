@@ -30,7 +30,11 @@ def run_post_buy_event_chart_now(
 ) -> None:
     """same work as the daemon thread — callable synchronously for tests."""
     mid = str(market_id or "").strip()
-    if not mid or not telegram or not getattr(telegram, "is_configured", lambda: False)():
+    if (
+        not mid
+        or not telegram
+        or not getattr(telegram, "is_configured", lambda: False)()
+    ):
         return
     try:
         st = get_effective_settings()

@@ -4,10 +4,10 @@ from config.settings import RuntimeSettings, default_runtime_dict
 from strategy.decision_core import momentum_fast_exit_window_enabled
 
 
-def test_window_exit_enabled_by_default():
+def test_window_exit_disabled_by_default():
     d = default_runtime_dict()
     s = RuntimeSettings.from_dict(d)
-    assert momentum_fast_exit_window_enabled(s) is True
+    assert momentum_fast_exit_window_enabled(s) is False
 
 
 def test_window_exit_disabled_via_runtime():

@@ -81,6 +81,7 @@ def _sample_path_for_now() -> Path:
 
 # ── warm-up: load JSONL → Redis once at startup ──────────────────────
 
+
 def warm_ring_buffer_from_disk() -> int:
     """Bulk-load recent JSONL samples into Redis.
 
@@ -138,6 +139,7 @@ def warm_ring_buffer_from_disk() -> int:
 
 # ── append: write to Redis + disk (archival) ─────────────────────────
 
+
 def append_price_sample(
     market_id: str, yes_price: float, ts: float | None = None
 ) -> None:
@@ -169,6 +171,7 @@ def append_price_sample(
 
 
 # ── read: from Redis ──────────────────────────────────────────────────
+
 
 def load_samples_for_market(
     market_id: str, window_sec: float, now_ts: float | None = None

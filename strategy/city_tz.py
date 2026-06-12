@@ -67,7 +67,7 @@ def _extract_city_from_title(title: str) -> str:
     t = title.lower()
     for prefix in ("will the highest temperature in ", "highest temperature in "):
         if t.startswith(prefix):
-            rest = t[len(prefix):]
+            rest = t[len(prefix) :]
             for sep in (" be ", " on "):
                 idx = rest.find(sep)
                 if idx > 0:

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 from polymarket_client import (
     PolymarketClient,
@@ -85,7 +85,9 @@ def clear_pending_limit_buys(state: Dict[str, Any], market_id: str) -> None:
     bucket.pop(mid, None)
 
 
-def pending_limit_buy_rows(state: Dict[str, Any], market_id: str) -> List[Dict[str, Any]]:
+def pending_limit_buy_rows(
+    state: Dict[str, Any], market_id: str
+) -> List[Dict[str, Any]]:
     mid = str(market_id or "").strip()
     if not mid:
         return []
@@ -172,9 +174,7 @@ def resting_limit_buy_blocks_entry(
     return True, f"open_limit_buy_resting order_ids={oids}"
 
 
-def flush_pending_limit_buys(
-    client: PolymarketClient, state: Dict[str, Any]
-) -> None:
+def flush_pending_limit_buys(client: PolymarketClient, state: Dict[str, Any]) -> None:
     """each scan: drop filled/cancelled rows; retry cancel on stubborn rests."""
     bucket = _pending_bucket(state)
     for mid in list(bucket.keys()):

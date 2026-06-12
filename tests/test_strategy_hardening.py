@@ -31,7 +31,6 @@ from strategy.decision_core import (
 _MOM_TEST_WINDOWS_SEC = [60.0, 120.0, 180.0, 240.0, 300.0, 900.0, 7200.0]
 from strategy.momentum import append_price_sample
 from strategy.limit_executor import (
-    LimitExecutionResult,
     is_emergency_sell_reason,
     limit_orders_active,
 )
@@ -154,8 +153,8 @@ def test_fast_window_qualifies_when_std_window_does_not(tmp_path, monkeypatch):
 
 def test_trailing_stop_activates_above_threshold():
     s = make_settings()
-    # peak 0.70 with entry 0.50 → +0.20 → activates → locks 0.50+0.10 = 0.60
-    assert trailing_stop_level(0.50, 0.70, s) == pytest.approx(0.60)
+    # peak 0.85 with entry 0.50 → +0.35 >= activation_gain 0.30 → locks 0.50+0.05 = 0.55
+    assert trailing_stop_level(0.50, 0.85, s) == pytest.approx(0.55)
 
 
 def test_trailing_stop_inactive_below_threshold():
@@ -169,17 +168,17 @@ def test_trailing_stop_disabled_returns_none():
 
 
 def test_effective_stop_combines_floor_and_trailing():
-    s = make_settings(stop_loss_normal=0.65)
-    # entry 0.50 normal: floor=0.65, drop_pct=0.30 -> entry_relative=0.35
-    # base = max(0.65, 0.35) = 0.65. peak 0.70 → trail=0.60. final = max(0.65,0.60)=0.65.
+    s = make_settings(stop_loss_normal=0.50)
+    # entry 0.60: floor=0.50, drop_pct=0.30 → entry_relative=0.42. base=max(0.50,0.42)=0.50.
+    # peak 0.65 < 0.60+0.30=0.90 → no trail. final=0.50.
     assert effective_stop_price_for_trade(
-        "normal", 0.50, s, highest_seen_price=0.70
+        "normal", 0.60, s, highest_seen_price=0.65
+    ) == pytest.approx(0.50)
+    # entry 0.60: peak 0.95 >= 0.90 → trail activates → lock=0.60+0.05=0.65.
+    # final = max(0.50, 0.65) = 0.65 (trail wins).
+    assert effective_stop_price_for_trade(
+        "normal", 0.60, s, highest_seen_price=0.95
     ) == pytest.approx(0.65)
-    # entry 0.80 normal: floor=0.65, drop=0.30 → entry_relative=0.56, base=0.65
-    # peak 1.00 → trail=0.90. final=0.90.
-    assert effective_stop_price_for_trade(
-        "normal", 0.80, s, highest_seen_price=1.00
-    ) == pytest.approx(0.90)
 
 
 def test_classify_sl_categories_distinct():
@@ -206,12 +205,13 @@ def test_classify_sl_categories_distinct():
     # SL_TRAILING: trail pins effective above default hard floor
     s_tr = make_settings(stop_loss_normal=0.50)
     breach3 = classify_stop_loss_breach(
-        "normal", 0.50, 0.55, s_tr, highest_seen_price=0.80
+        "normal", 0.50, 0.52, s_tr, highest_seen_price=0.80
     )
-    # entry 0.50, peak 0.80 → trail=0.60 > floor 0.50. effective=0.60. live=0.55 < 0.60.
+    # entry 0.50, peak 0.80 >= 0.50+0.30 → trail=0.50+0.05=0.55 > floor 0.50.
+    # effective=0.55. live=0.52 < 0.55 → SL_TRAILING.
     assert breach3 is not None
     assert breach3[0] == C.SL_CATEGORY_TRAILING
-    assert breach3[1] == pytest.approx(0.60)
+    assert breach3[1] == pytest.approx(0.55)
 
 
 def test_classify_sl_no_breach_when_live_above_levels():
@@ -272,37 +272,49 @@ def test_telegram_dedup_first_send_then_suppress(tmp_path):
         telegram_failed_exit_cooldown_sec=900,
     )
     clear_failed_exit_notices("dedup_test_market")
-    assert should_send_failed_exit_notice(
-        s,
-        market_id="dedup_test_market",
-        exit_reason="stop-loss",
-        error_category="generic",
-    ) is True
-    assert should_send_failed_exit_notice(
-        s,
-        market_id="dedup_test_market",
-        exit_reason="stop-loss",
-        error_category="generic",
-    ) is False
+    assert (
+        should_send_failed_exit_notice(
+            s,
+            market_id="dedup_test_market",
+            exit_reason="stop-loss",
+            error_category="generic",
+        )
+        is True
+    )
+    assert (
+        should_send_failed_exit_notice(
+            s,
+            market_id="dedup_test_market",
+            exit_reason="stop-loss",
+            error_category="generic",
+        )
+        is False
+    )
     clear_failed_exit_notices("dedup_test_market")
-    assert should_send_failed_exit_notice(
-        s,
-        market_id="dedup_test_market",
-        exit_reason="stop-loss",
-        error_category="generic",
-    ) is True
+    assert (
+        should_send_failed_exit_notice(
+            s,
+            market_id="dedup_test_market",
+            exit_reason="stop-loss",
+            error_category="generic",
+        )
+        is True
+    )
 
 
 def test_telegram_dedup_disabled_always_sends(tmp_path):
     s = make_settings(telegram_failed_exit_dedupe_enabled=False)
     clear_failed_exit_notices("dedup_off")
     for _ in range(3):
-        assert should_send_failed_exit_notice(
-            s,
-            market_id="dedup_off",
-            exit_reason="stop-loss",
-            error_category="generic",
-        ) is True
+        assert (
+            should_send_failed_exit_notice(
+                s,
+                market_id="dedup_off",
+                exit_reason="stop-loss",
+                error_category="generic",
+            )
+            is True
+        )
 
 
 def test_telegram_dedup_categorize_error_distinct():
@@ -386,7 +398,9 @@ def test_trade_decision_carries_trigger_metadata(tmp_path, monkeypatch):
     )
     assert decision.decision == "BUY"
     assert decision.entry_type == "double_momentum"
-    assert decision.trigger_window.endswith("m_win") and decision.trigger_window != "none"
+    assert (
+        decision.trigger_window.endswith("m_win") and decision.trigger_window != "none"
+    )
     assert decision.trigger_abs_rise > 0
     assert decision.leader_fallen_market_id == "td_leader"
 
@@ -517,9 +531,7 @@ def test_bucket_switch_skips_buy_if_sell_fails():
     held_market = {"id": "held", "outcomePrices": "[0.50, 0.50]", "question": "Held"}
     s = make_settings()
 
-    with patch(
-        "strategy.trades.close_position", side_effect=RuntimeError("boom")
-    ):
+    with patch("strategy.trades.close_position", side_effect=RuntimeError("boom")):
         cleared = _execute_bucket_switch_sell(
             client=fake_client,
             telegram=fake_telegram,
@@ -576,10 +588,13 @@ def test_parse_trigger_window_seconds_maps_nm_win():
     assert parse_trigger_window_seconds("none") is None
 
 
-def test_leader_yield_short_window_misses_peak_long_window_sees_it(tmp_path, monkeypatch):
+def test_leader_yield_short_window_misses_peak_long_window_sees_it(
+    tmp_path, monkeypatch
+):
     """Without anchor trick: last 60s only shows tail of crash; 15m includes peak."""
     monkeypatch.setattr("strategy.momentum.PRICE_SAMPLES_DIR", tmp_path)
     from strategy import redis_store as rs
+
     if rs.is_connected():
         rs._client.delete("prices:ex_L", "prices:buy_B")
     now = time.time()
@@ -619,6 +634,7 @@ def test_leader_yield_short_window_misses_peak_long_window_sees_it(tmp_path, mon
 def test_leader_yield_ok_when_ex_leader_bleeds_in_window(tmp_path, monkeypatch):
     monkeypatch.setattr("strategy.momentum.PRICE_SAMPLES_DIR", tmp_path)
     from strategy import redis_store as rs
+
     if rs.is_connected():
         rs._client.delete("prices:L", "prices:T", "prices:N")
     spacing = 120.0
@@ -645,9 +661,12 @@ def test_leader_yield_ok_when_ex_leader_bleeds_in_window(tmp_path, monkeypatch):
     assert meta.get("pass_condition") == "A"
 
 
-def test_leader_yield_passes_when_any_single_sibling_drops_enough(tmp_path, monkeypatch):
+def test_leader_yield_passes_when_any_single_sibling_drops_enough(
+    tmp_path, monkeypatch
+):
     monkeypatch.setattr("strategy.momentum.PRICE_SAMPLES_DIR", tmp_path)
     from strategy import redis_store as rs
+
     if rs.is_connected():
         rs._client.delete("prices:X", "prices:Y", "prices:Z")
     spacing = 120.0
@@ -655,7 +674,11 @@ def test_leader_yield_passes_when_any_single_sibling_drops_enough(tmp_path, monk
     leader_prices = [0.70] * 5
     dropper_prices = [0.25, 0.20, 0.15, 0.10, 0.02]
     target_prices = [0.06, 0.10, 0.18, 0.25, 0.40]
-    for mid, series in (("X", leader_prices), ("Y", dropper_prices), ("Z", target_prices)):
+    for mid, series in (
+        ("X", leader_prices),
+        ("Y", dropper_prices),
+        ("Z", target_prices),
+    ):
         for i, pr in enumerate(series):
             append_price_sample(mid, pr, ts=now - (len(series) - i - 1) * spacing)
     ok, meta = leader_yield_drop_qualifies(
@@ -677,6 +700,7 @@ def test_leader_yield_passes_when_any_single_sibling_drops_enough(tmp_path, monk
 def test_leader_yield_fails_when_target_not_rising(tmp_path, monkeypatch):
     monkeypatch.setattr("strategy.momentum.PRICE_SAMPLES_DIR", tmp_path)
     from strategy import redis_store as rs
+
     if rs.is_connected():
         rs._client.delete("prices:L", "prices:T")
     spacing = 120.0
@@ -700,11 +724,16 @@ def test_leader_yield_fails_when_target_not_rising(tmp_path, monkeypatch):
     assert meta.get("reason") == "target_not_rising"
 
 
-def test_leader_yield_passes_via_collective_when_no_single_faller(tmp_path, monkeypatch):
+def test_leader_yield_passes_via_collective_when_no_single_faller(
+    tmp_path, monkeypatch
+):
     monkeypatch.setattr("strategy.momentum.PRICE_SAMPLES_DIR", tmp_path)
     from strategy import redis_store as rs
+
     if rs.is_connected():
-        rs._client.delete("prices:T", "prices:S1", "prices:S2", "prices:S3", "prices:S4")
+        rs._client.delete(
+            "prices:T", "prices:S1", "prices:S2", "prices:S3", "prices:S4"
+        )
     spacing = 120.0
     now = time.time()
     tgt = [0.10, 0.12, 0.15, 0.18, 0.35]
@@ -734,6 +763,7 @@ def test_leader_yield_passes_via_collective_when_no_single_faller(tmp_path, monk
 def test_leader_yield_fails_when_neither_condition_holds(tmp_path, monkeypatch):
     monkeypatch.setattr("strategy.momentum.PRICE_SAMPLES_DIR", tmp_path)
     from strategy import redis_store as rs
+
     if rs.is_connected():
         rs._client.delete("prices:T", "prices:P")
     spacing = 120.0
@@ -763,6 +793,7 @@ def test_leader_yield_fails_when_neither_condition_holds(tmp_path, monkeypatch):
 def test_leader_yield_picks_largest_individual_faller_for_meta(tmp_path, monkeypatch):
     monkeypatch.setattr("strategy.momentum.PRICE_SAMPLES_DIR", tmp_path)
     from strategy import redis_store as rs
+
     if rs.is_connected():
         rs._client.delete("prices:T", "prices:A", "prices:B")
     spacing = 120.0

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
 
 from forecast.parse_title import ParsedTempMarket
 from research.calibration_apply import resolved_research_sigma_c
@@ -78,7 +77,9 @@ def research_edge_decision(
         boost = bm * (float(implied) - fl)
     edge = edge_raw + boost
     fee_drag = round_trip_fee_prob_drag(clob_yes, fee_rate_for_drag)
-    required = max(0.0, float(min_edge)) + max(0.0, float(min_edge_after_fees_add)) + fee_drag
+    required = (
+        max(0.0, float(min_edge)) + max(0.0, float(min_edge_after_fees_add)) + fee_drag
+    )
 
     if soft_match_enabled and abs(clob_yes - implied) <= max(0.0, float(soft_band)):
         required *= max(0.1, min(1.0, float(soft_edge_factor)))

@@ -12,6 +12,21 @@ PRICE_SAMPLES_DIR = DATA_DIR / "price_samples"
 FORECAST_CACHE_FILE = DATA_DIR / "forecast_cache.json"
 # optional calibration JSON (offline tools + sigma_from_mae when sigma_c_setting is 0)
 RESEARCH_CALIBRATION_LATEST_FILE = DATA_DIR / "research" / "calibration_latest.json"
+RESEARCH_DIR = DATA_DIR / "research"
+RESEARCH_CITIES_FILE = RESEARCH_DIR / "cities.json"
+RESEARCH_CITY_TABLES_DIR = RESEARCH_DIR / "city_tables"
+RESEARCH_DAILY_RUNS_FILE = RESEARCH_DIR / "daily_runs.jsonl"
+RESEARCH_EVENT_SUMMARY_FILE = RESEARCH_DIR / "event_summary.json"
+RESEARCH_EXPORTS_DIR = RESEARCH_DIR / "exports"
+RESEARCH_FORECASTS_HISTORY_FILE = RESEARCH_DIR / "forecasts_history.jsonl"
+RESEARCH_MARKET_OUTCOMES_FILE = RESEARCH_DIR / "market_outcomes.jsonl"
+RESEARCH_OUTCOME_QUESTION_MAX_LEN = 180
+RESEARCH_REGISTRY_RSRC_MAX_LEN = 180
+RESEARCH_RESOLUTION_OVERRIDES_FILE = RESEARCH_DIR / "resolution_overrides.json"
+RESEARCH_RESOLUTION_REGISTRY_FILE = RESEARCH_DIR / "resolution_registry.json"
+RESEARCH_TRUTH_DAILY_FILE = RESEARCH_DIR / "truth_daily.jsonl"
+FORECAST_DIGEST_MAX_LOCATION_GROUPS = 6
+FORECAST_DIGEST_MAX_GROUPS_CAP = 20
 # dashboard /api/forecast/preview: treat on-disk cache as fresh under this age
 WEATHER_PREVIEW_CACHE_MAX_AGE_SEC = 360
 UI_DIST_DIR = PROJECT_ROOT / "ui" / "dist"

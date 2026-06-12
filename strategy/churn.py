@@ -47,6 +47,7 @@ def churn_on_take_profit(state: Dict[str, Any], market_id: str) -> None:
 # Applied after any stop-loss or manual sell — prevents immediate re-entry.
 # Take-profit exits do NOT set this (re-entry allowed after a win).
 
+
 def mark_sell_cooldown_30m(
     state: Dict[str, Any], market_id: str, cooldown_sec: float
 ) -> None:

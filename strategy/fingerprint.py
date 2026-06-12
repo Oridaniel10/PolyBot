@@ -6,6 +6,7 @@ import requests
 
 from polymarket_client import PolymarketClient
 
+
 def portfolio_snapshot_fingerprint(
     client: PolymarketClient,
     *,

@@ -252,7 +252,10 @@ def clob_retry_transient(operation: Any) -> Any:
                     if "not ready" in msg_low:
                         retryable = True
                     # CLOB v2 transient: order schema version drift between sign+post
-                    if "order_version_mismatch" in msg_low or "version_mismatch" in msg_low:
+                    if (
+                        "order_version_mismatch" in msg_low
+                        or "version_mismatch" in msg_low
+                    ):
                         retryable = True
                 elif isinstance(msg, dict):
                     err = str(msg.get("error") or "").lower()
@@ -593,7 +596,9 @@ class PolymarketClient:
             return None
         root = self.config.gamma_base_url.rstrip("/")
         try:
-            ev = self._request("GET", f"{root}/events/slug/{event_slug}", with_auth=False)
+            ev = self._request(
+                "GET", f"{root}/events/slug/{event_slug}", with_auth=False
+            )
         except Exception:
             return None
         eid = ""
@@ -817,7 +822,9 @@ class PolymarketClient:
         if event_title and self._is_highest_temp_event_title(
             event_title, target_day_label, extra_target_day_labels
         ):
-            title = (market.get("question") or market.get("title") or "").strip().lower()
+            title = (
+                (market.get("question") or market.get("title") or "").strip().lower()
+            )
             if title and (
                 "highest temperature" in title
                 or "temperature" in title
@@ -880,9 +887,7 @@ class PolymarketClient:
             return None
         root = self.config.gamma_base_url.rstrip("/")
         try:
-            data = self._request(
-                "GET", f"{root}/tags/slug/{slug}", with_auth=False
-            )
+            data = self._request("GET", f"{root}/tags/slug/{slug}", with_auth=False)
         except requests.RequestException:
             return None
         if isinstance(data, dict):
@@ -896,9 +901,7 @@ class PolymarketClient:
             return None
         root = self.config.gamma_base_url.rstrip("/")
         try:
-            data = self._request(
-                "GET", f"{root}/events/slug/{slug}", with_auth=False
-            )
+            data = self._request("GET", f"{root}/events/slug/{slug}", with_auth=False)
         except requests.RequestException:
             return None
         return data if isinstance(data, dict) else None
@@ -941,9 +944,7 @@ class PolymarketClient:
         out: List[Dict[str, Any]] = []
         for city in cities:
             for label in labels:
-                for slug in highest_temp_event_slug_candidates(
-                    city, label, year=year
-                ):
+                for slug in highest_temp_event_slug_candidates(city, label, year=year):
                     ev = self.get_event_by_slug(slug)
                     if not isinstance(ev, dict):
                         continue
@@ -973,7 +974,11 @@ class PolymarketClient:
                 tag_ids.append(tid)
         if HIGHEST_TEMP_WEATHER_TAG_ID not in tag_ids:
             tag_ids.append(HIGHEST_TEMP_WEATHER_TAG_ID)
-        page_cap = max_pages if max_pages is not None else HIGHEST_TEMP_EVENTS_TAG_FALLBACK_MAX_PAGES
+        page_cap = (
+            max_pages
+            if max_pages is not None
+            else HIGHEST_TEMP_EVENTS_TAG_FALLBACK_MAX_PAGES
+        )
         page_cap = max(1, min(20, int(page_cap)))
         seen: Set[str] = set()
         out: List[Dict[str, Any]] = []
@@ -1804,9 +1809,7 @@ class PolymarketClient:
                             order_type=ot,
                         )
                         # v2: combined create+post with built-in version-mismatch retry
-                        return clob.create_and_post_market_order(
-                            mo, order_type=ot
-                        )
+                        return clob.create_and_post_market_order(mo, order_type=ot)
 
                     return exec_buy
 

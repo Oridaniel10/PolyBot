@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -106,7 +106,9 @@ def write_city_csv(
             {
                 "event_date": ds,
                 "open_meteo_forecast_max_c": fmap.get("open_meteo_forecast", ""),
-                "open_meteo_historical_forecast_max_c": fmap.get("open_meteo_historical_forecast", ""),
+                "open_meteo_historical_forecast_max_c": fmap.get(
+                    "open_meteo_historical_forecast", ""
+                ),
                 "truth_polymarket_max_c": poly.get(k, ""),
                 "truth_open_meteo_archive_max_c": om_arc.get(k, ""),
             }
@@ -138,7 +140,9 @@ def write_all_city_csvs(
     poly, om_arc = _truth_sources_scan()
     fc = _forecast_scan()
     out_dir = out_dir or C.RESEARCH_CITY_TABLES_DIR
-    city_list = [c.strip().lower() for c in cities] if cities else load_research_city_keys()
+    city_list = (
+        [c.strip().lower() for c in cities] if cities else load_research_city_keys()
+    )
     written: List[Path] = []
     for ck in city_list:
         written.append(write_city_csv(ck, start_d, end_d, poly, om_arc, fc, out_dir))
@@ -146,9 +150,21 @@ def write_all_city_csvs(
 
 
 def run_export_cities_main(argv: Optional[List[str]] = None) -> int:
-    ap = argparse.ArgumentParser(description="Write per-city CSV tables under data/research/city_tables/")
-    ap.add_argument("--start-date", type=str, default="", help="YYYY-MM-DD (default: min date in forecasts JSONL)")
-    ap.add_argument("--end-date", type=str, default="", help="YYYY-MM-DD (default: max date in forecasts JSONL)")
+    ap = argparse.ArgumentParser(
+        description="Write per-city CSV tables under data/research/city_tables/"
+    )
+    ap.add_argument(
+        "--start-date",
+        type=str,
+        default="",
+        help="YYYY-MM-DD (default: min date in forecasts JSONL)",
+    )
+    ap.add_argument(
+        "--end-date",
+        type=str,
+        default="",
+        help="YYYY-MM-DD (default: max date in forecasts JSONL)",
+    )
     args = ap.parse_args(argv)
     if (args.start_date or "").strip() and (args.end_date or "").strip():
         start_d = date.fromisoformat(str(args.start_date).strip())

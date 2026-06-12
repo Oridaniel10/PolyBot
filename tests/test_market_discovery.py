@@ -50,9 +50,7 @@ class TestHighestTempFilters(unittest.TestCase):
             "question": "Will the highest temperature in London be 61°F or below on May 19, 2026?",
             "active": True,
         }
-        self.assertTrue(
-            self.client._is_highest_temp_market(m, "May 19", None)
-        )
+        self.assertTrue(self.client._is_highest_temp_market(m, "May 19", None))
 
     def test_event_title_includes_buckets(self) -> None:
         m = {

@@ -30,9 +30,7 @@ def seconds_until_end_of_report_day(now: Optional[datetime] = None) -> float:
     dt = now or now_in_report_timezone()
     if ZoneInfo is None:
         return 0.0
-    nxt = (dt + timedelta(days=1)).replace(
-        hour=0, minute=0, second=0, microsecond=0
-    )
+    nxt = (dt + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
     return max(0.0, (nxt - dt).total_seconds())
 
 

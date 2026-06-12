@@ -30,9 +30,7 @@ def _normalize(value: str) -> str:
     return str(value or "").strip()
 
 
-def _build_key(
-    market_id: str, exit_reason: str, error_category: str
-) -> _NoticeKey:
+def _build_key(market_id: str, exit_reason: str, error_category: str) -> _NoticeKey:
     return (
         _normalize(market_id),
         _normalize(exit_reason),

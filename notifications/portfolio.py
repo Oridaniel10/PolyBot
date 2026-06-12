@@ -156,7 +156,9 @@ def _time_decay_status_html(
             row,
             float(mark),
             decay_hours=float(getattr(rs, "time_decay_hours", C.TIME_DECAY_HOURS)),
-            min_gain_points=float(getattr(rs, "time_decay_min_gain", C.TIME_DECAY_MIN_GAIN)),
+            min_gain_points=float(
+                getattr(rs, "time_decay_min_gain", C.TIME_DECAY_MIN_GAIN)
+            ),
             max_price_for_decay=float(
                 getattr(rs, "time_decay_max_price", C.TIME_DECAY_MAX_PRICE)
             ),

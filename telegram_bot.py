@@ -114,7 +114,9 @@ class TelegramBot:
                 messages.append(text)
         return messages
 
-    def send_message(self, text: str, parse_mode: Optional[str] = None) -> Dict[str, Any]:
+    def send_message(
+        self, text: str, parse_mode: Optional[str] = None
+    ) -> Dict[str, Any]:
         if not self.is_configured():
             return {"ok": False, "error": "telegram is not configured"}
 
@@ -134,7 +136,9 @@ class TelegramBot:
         response.raise_for_status()
         return response.json()
 
-    def send_text_chunks(self, text: str, chunk_size: int = TELEGRAM_MAX_CHUNK_CHARS) -> int:
+    def send_text_chunks(
+        self, text: str, chunk_size: int = TELEGRAM_MAX_CHUNK_CHARS
+    ) -> int:
         """
         sends long text in multiple messages (Telegram ~4096 char limit).
         returns number of chunks successfully sent.
@@ -151,12 +155,16 @@ class TelegramBot:
                 break
         return sent
 
-    def send_plain_by_lines(self, text: str, max_size: int = TELEGRAM_SEND_MESSAGE_MAX) -> int:
+    def send_plain_by_lines(
+        self, text: str, max_size: int = TELEGRAM_SEND_MESSAGE_MAX
+    ) -> int:
         """like send_text_chunks but splits on newlines so chunks stay readable."""
         if not self.is_configured() or not text:
             return 0
         sent = 0
-        for chunk in split_html_telegram_chunks(text, max(500, min(max_size, TELEGRAM_SEND_MESSAGE_MAX))):
+        for chunk in split_html_telegram_chunks(
+            text, max(500, min(max_size, TELEGRAM_SEND_MESSAGE_MAX))
+        ):
             try:
                 self.send_message(chunk)
                 sent += 1
@@ -235,7 +243,9 @@ class TelegramBot:
             print(f"[telegram] sendPhoto failed: {exc!r}", flush=True)
             return {"ok": False, "error": str(exc)}
 
-    def send_html_chunks(self, html_text: str, chunk_size: int = TELEGRAM_HTML_CHUNK_CHARS) -> int:
+    def send_html_chunks(
+        self, html_text: str, chunk_size: int = TELEGRAM_HTML_CHUNK_CHARS
+    ) -> int:
         if not self.is_configured() or not html_text:
             return 0
         sent = 0

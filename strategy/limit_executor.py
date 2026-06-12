@@ -16,7 +16,11 @@ from typing import Any, Dict
 
 from config import constants as C
 from config.settings import RuntimeSettings
-from polymarket_client import PolymarketClient, order_fully_filled, order_resting_unfilled
+from polymarket_client import (
+    PolymarketClient,
+    order_fully_filled,
+    order_resting_unfilled,
+)
 
 # poll cadence for an open limit order while we wait for the fill timeout.
 _LIMIT_POLL_INTERVAL_SEC = 0.5
