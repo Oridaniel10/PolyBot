@@ -13,7 +13,6 @@ At default 2s interval and ~7 positions, this is ~35 CLOB req/10s (well within
 the 1500/10s limit) and only ~7 Gamma req/5min (negligible).
 """
 
-import json
 import sys
 import threading
 import time
@@ -38,7 +37,6 @@ from strategy.decision_core import (
     momentum_fast_exit_window_enabled,
     momentum_window_sec,
     seconds_since_entry_iso,
-    trailing_stop_level,
 )
 from telegram_bot import TelegramBot
 
@@ -221,7 +219,6 @@ class FastExitWatcher:
         sl_bar = effective_stop_price_for_trade(
             entry_type, entry, settings, highest_seen_price=peak
         )
-        trail_lvl = trailing_stop_level(entry, peak, settings)
         breach = classify_stop_loss_breach(
             entry_type,
             entry,

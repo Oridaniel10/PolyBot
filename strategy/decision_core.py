@@ -1055,14 +1055,24 @@ def evaluate_entry(
     # permanent city blacklist — checked before any expensive computation
     _perm_cities = getattr(settings, "permanent_blacklist_cities", None) or []
     if _perm_cities and city and any(c.lower() == city.lower() for c in _perm_cities):
+
         def _quick_finish(decision: str, reason: str) -> TradeDecision:
             return TradeDecision(
-                city=city, date_iso=date_iso, chosen_bucket=bucket,
-                model_prob=0.0, market_prob=float(market_yes), edge=0.0,
-                consensus_c=None, sigma_used=0.0,
-                decision=decision, reason=reason,
-                momentum_15m=0.0, competition=None, research=None,
+                city=city,
+                date_iso=date_iso,
+                chosen_bucket=bucket,
+                model_prob=0.0,
+                market_prob=float(market_yes),
+                edge=0.0,
+                consensus_c=None,
+                sigma_used=0.0,
+                decision=decision,
+                reason=reason,
+                momentum_15m=0.0,
+                competition=None,
+                research=None,
             )
+
         return _quick_finish("SKIP", f"permanent_blacklist_city:{city}")
 
     sigma = float(get_sigma_for_city(city, 0.0))
@@ -1232,23 +1242,35 @@ def evaluate_entry(
         _pl_lookback = float(
             getattr(settings, "persistent_leader_lookback_sec", 7200.0)
         )
-        _pl_min_frac = float(
-            getattr(settings, "persistent_leader_min_fraction", 0.80)
-        )
+        _pl_min_frac = float(getattr(settings, "persistent_leader_min_fraction", 0.80))
         if is_persistent_leader(
             market_id, list(all_event_ids), _pl_lookback, _pl_min_frac
         ):
             pl_rise_thr = float(
-                getattr(settings, "persistent_leader_entry_rise", C.PERSISTENT_LEADER_ENTRY_RISE)
+                getattr(
+                    settings,
+                    "persistent_leader_entry_rise",
+                    C.PERSISTENT_LEADER_ENTRY_RISE,
+                )
             )
             pl_pct_thr = float(
-                getattr(settings, "persistent_leader_pct_rise", C.PERSISTENT_LEADER_PCT_RISE)
+                getattr(
+                    settings, "persistent_leader_pct_rise", C.PERSISTENT_LEADER_PCT_RISE
+                )
             )
             pl_min = float(
-                getattr(settings, "persistent_leader_min_price", C.PERSISTENT_LEADER_MIN_PRICE)
+                getattr(
+                    settings,
+                    "persistent_leader_min_price",
+                    C.PERSISTENT_LEADER_MIN_PRICE,
+                )
             )
             pl_max = float(
-                getattr(settings, "persistent_leader_max_price", C.PERSISTENT_LEADER_MAX_PRICE)
+                getattr(
+                    settings,
+                    "persistent_leader_max_price",
+                    C.PERSISTENT_LEADER_MAX_PRICE,
+                )
             )
             pl_rise_ok, pl_trigger, _ = momentum_multi_window_check(
                 market_id=market_id,
@@ -1274,10 +1296,16 @@ def evaluate_entry(
     #      >= normal_winner_stability_min_sec (contiguous tail in ring buffer).
     # This entry does NOT require a momentum rise — it's a stability-based buy.
     is_normal_winner = False
-    _nw_enabled = bool(getattr(settings, "normal_winner_enabled", C.NORMAL_WINNER_ENABLED))
+    _nw_enabled = bool(
+        getattr(settings, "normal_winner_enabled", C.NORMAL_WINNER_ENABLED)
+    )
     if _nw_enabled and not is_momentum_entry:
-        nw_min = float(getattr(settings, "normal_winner_min_entry", C.NORMAL_WINNER_MIN_ENTRY))
-        nw_max = float(getattr(settings, "normal_winner_max_entry", C.NORMAL_WINNER_MAX_ENTRY))
+        nw_min = float(
+            getattr(settings, "normal_winner_min_entry", C.NORMAL_WINNER_MIN_ENTRY)
+        )
+        nw_max = float(
+            getattr(settings, "normal_winner_max_entry", C.NORMAL_WINNER_MAX_ENTRY)
+        )
         if nw_min <= mkt <= nw_max:
             if normal_winner_stability_check(market_id, settings):
                 is_normal_winner = True
@@ -1508,7 +1536,11 @@ def evaluate_entry(
         consensus_c=consensus_c,
         sigma_c_setting=0.0,
     )
-    if settings.enable_competition_filter and not is_momentum_entry and not is_normal_winner:
+    if (
+        settings.enable_competition_filter
+        and not is_momentum_entry
+        and not is_normal_winner
+    ):
         min_mkt_gap = float(
             getattr(
                 settings,
@@ -1579,9 +1611,25 @@ def normal_winner_stability_check(
     - The span of samples covers >= stability_min_sec.
     - Every sample in the window was above stability_floor.
     """
-    floor = float(getattr(settings, "normal_winner_stability_floor", C.NORMAL_WINNER_STABILITY_FLOOR))
-    min_sec = float(getattr(settings, "normal_winner_stability_min_sec", C.NORMAL_WINNER_STABILITY_MIN_SEC))
-    max_sec = float(getattr(settings, "normal_winner_stability_max_sec", C.NORMAL_WINNER_STABILITY_MAX_SEC))
+    floor = float(
+        getattr(
+            settings, "normal_winner_stability_floor", C.NORMAL_WINNER_STABILITY_FLOOR
+        )
+    )
+    min_sec = float(
+        getattr(
+            settings,
+            "normal_winner_stability_min_sec",
+            C.NORMAL_WINNER_STABILITY_MIN_SEC,
+        )
+    )
+    max_sec = float(
+        getattr(
+            settings,
+            "normal_winner_stability_max_sec",
+            C.NORMAL_WINNER_STABILITY_MAX_SEC,
+        )
+    )
 
     samples = load_samples_for_market(market_id, max_sec)
     if len(samples) < C.MOMENTUM_MIN_SAMPLE_POINTS:
@@ -1595,7 +1643,6 @@ def normal_winner_stability_check(
     # require the *contiguous tail* (most recent run) to span >= min_sec
     # walk backward from newest sample; stop when we find a break below floor
     now_ts = samples[-1][0]
-    cutoff_ts = now_ts - max_sec
     contiguous_start_ts = now_ts
     prev_ts = now_ts
     for ts, px in reversed(samples):
@@ -1626,7 +1673,9 @@ def stop_loss_bar_for_entry_type(
     if et in ("manual", "ui"):
         return float(getattr(settings, "stop_loss_manual", C.STOP_LOSS_MANUAL))
     if et == "normal_winner":
-        return float(getattr(settings, "stop_loss_normal_winner", C.STOP_LOSS_NORMAL_WINNER))
+        return float(
+            getattr(settings, "stop_loss_normal_winner", C.STOP_LOSS_NORMAL_WINNER)
+        )
     return float(getattr(settings, "stop_loss_normal", C.STOP_LOSS_NORMAL))
 
 
@@ -1847,7 +1896,9 @@ def check_exits(
     # take-profit for normal_winner: exit when market is about to resolve YES
     entry_type = str(trade.get("entry_type") or "normal").strip()
     if entry_type == "normal_winner":
-        tp = float(getattr(settings, "normal_winner_take_profit", C.NORMAL_WINNER_TAKE_PROFIT))
+        tp = float(
+            getattr(settings, "normal_winner_take_profit", C.NORMAL_WINNER_TAKE_PROFIT)
+        )
         if mark + 1e-9 >= tp:
             return "take-profit", gamma_prob
 

@@ -220,8 +220,6 @@ def print_scan_summary(
     planned = min(tradable * frac, settings.max_buy_notional_usd, tradable)
     buy_min = settings.buy_min
     buy_max = settings.buy_max
-    near_margin = 0.06
-
     sep = "─" * 100
     loc = format_report_local_hhmm()
     day_hdr = target_day_label

@@ -7,6 +7,7 @@ import csv
 import json
 import sys
 from collections import defaultdict
+from pathlib import Path
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, DefaultDict, Dict, List, Optional, Set, Tuple
 
@@ -36,7 +37,9 @@ def _parse_city_filter(raw: Optional[List[str]]) -> Optional[Set[str]]:
     return {str(x).strip().lower() for x in raw if str(x).strip()}
 
 
-def _latest_forecasts_for_date(target_ds: str) -> Dict[Tuple[str, str], Dict[str, float]]:
+def _latest_forecasts_for_date(
+    target_ds: str,
+) -> Dict[Tuple[str, str], Dict[str, float]]:
     """(city_key, event_date) -> {model: temp_max_c} keeping last row per model."""
     out: DefaultDict[Tuple[str, str], Dict[str, float]] = defaultdict(dict)
     for row in iter_jsonl(C.RESEARCH_FORECASTS_HISTORY_FILE):
@@ -155,10 +158,14 @@ def build_event_summary(
                 "open_meteo_forecast_max_c": om_f,
                 "open_meteo_historical_forecast_max_c": om_h,
                 "forecast_minus_truth": (
-                    (float(om_f) - float(truth_c)) if (om_f is not None and truth_c is not None) else None
+                    (float(om_f) - float(truth_c))
+                    if (om_f is not None and truth_c is not None)
+                    else None
                 ),
                 "crowd_leader_market_id": leader.get("market_id") if leader else None,
-                "crowd_leader_gamma_yes_p": leader.get("gamma_yes_p") if leader else None,
+                "crowd_leader_gamma_yes_p": leader.get("gamma_yes_p")
+                if leader
+                else None,
                 "crowd_leader_fits_truth": leader.get("fits_truth") if leader else None,
                 "markets": market_rows,
             }
@@ -208,7 +215,9 @@ def _flatten_range_to_csv_rows(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
                 "truth_max_c": ev.get("truth_max_c"),
                 "truth_present": ev.get("truth_present"),
                 "open_meteo_forecast_max_c": ev.get("open_meteo_forecast_max_c"),
-                "open_meteo_historical_forecast_max_c": ev.get("open_meteo_historical_forecast_max_c"),
+                "open_meteo_historical_forecast_max_c": ev.get(
+                    "open_meteo_historical_forecast_max_c"
+                ),
                 "forecast_minus_truth": ev.get("forecast_minus_truth"),
                 "crowd_leader_market_id": ev.get("crowd_leader_market_id"),
                 "crowd_leader_gamma_yes_p": ev.get("crowd_leader_gamma_yes_p"),
@@ -239,7 +248,11 @@ def _range_export_paths(
         slug = "-".join(sorted(c.replace(" ", "_") for c in city_filter))[:120]
         suf = f"{suf}_cities_{slug}"
     base = f"event_summary_range_{suf}"
-    return base, C.RESEARCH_EXPORTS_DIR / f"{base}.json", C.RESEARCH_EXPORTS_DIR / f"{base}.csv"
+    return (
+        base,
+        C.RESEARCH_EXPORTS_DIR / f"{base}.json",
+        C.RESEARCH_EXPORTS_DIR / f"{base}.csv",
+    )
 
 
 def run_event_summary(argv: Optional[List[str]] = None) -> int:
@@ -252,7 +265,9 @@ def run_event_summary(argv: Optional[List[str]] = None) -> int:
         default="",
         help="single event_date YYYY-MM-DD",
     )
-    ap.add_argument("--start-date", type=str, default="", help="range start (use with --end-date)")
+    ap.add_argument(
+        "--start-date", type=str, default="", help="range start (use with --end-date)"
+    )
     ap.add_argument("--end-date", type=str, default="", help="range end inclusive")
     ap.add_argument(
         "--city",
@@ -272,13 +287,23 @@ def run_event_summary(argv: Optional[List[str]] = None) -> int:
     has_range = bool(str(args.start_date).strip() and str(args.end_date).strip())
     if has_single and has_range:
         print(
-            json.dumps({"ok": False, "error": "use either --date or --start-date/--end-date, not both"}),
+            json.dumps(
+                {
+                    "ok": False,
+                    "error": "use either --date or --start-date/--end-date, not both",
+                }
+            ),
             file=sys.stderr,
         )
         return 2
     if not has_single and not has_range:
         print(
-            json.dumps({"ok": False, "error": "need --date YYYY-MM-DD or --start-date and --end-date"}),
+            json.dumps(
+                {
+                    "ok": False,
+                    "error": "need --date YYYY-MM-DD or --start-date and --end-date",
+                }
+            ),
             file=sys.stderr,
         )
         return 2
@@ -329,10 +354,10 @@ def run_event_summary(argv: Optional[List[str]] = None) -> int:
     C.RESEARCH_DIR.mkdir(parents=True, exist_ok=True)
     path_dated.write_text(txt, encoding="utf-8")
     save_json_file(C.RESEARCH_EVENT_SUMMARY_FILE, summary)
-    _, _, path_csv = _range_export_paths(date.fromisoformat(ds), date.fromisoformat(ds), city_filter)
-    flat = _flatten_range_to_csv_rows(
-        {"daily_summaries": [summary], "event_date": ds}
+    _, _, path_csv = _range_export_paths(
+        date.fromisoformat(ds), date.fromisoformat(ds), city_filter
     )
+    flat = _flatten_range_to_csv_rows({"daily_summaries": [summary], "event_date": ds})
     if flat:
         with path_csv.open("w", encoding="utf-8", newline="") as f:
             w = csv.DictWriter(f, fieldnames=list(flat[0].keys()))
@@ -341,7 +366,11 @@ def run_event_summary(argv: Optional[List[str]] = None) -> int:
                 w.writerow(row)
     else:
         path_csv.write_text("event_date,city_key,note\n", encoding="utf-8")
-    print(json.dumps({"ok": True, "json": str(path_dated), "csv": str(path_csv)}, indent=2))
+    print(
+        json.dumps(
+            {"ok": True, "json": str(path_dated), "csv": str(path_csv)}, indent=2
+        )
+    )
     print(txt)
     return 0
 

@@ -22,12 +22,9 @@ from forecast.forecast_service import get_forecast_max_for_city_day
 from forecast.parse_title import (
     BracketKind,
     ParsedTempMarket,
-    forecast_contradicts_strongly,
-    forecast_supports_yes,
     parse_highest_temp_title,
 )
 from strategy.city_tz import city_local_datetime_now_str
-from strategy.research_signal import research_edge_decision
 
 
 def _enrich_group_with_live_model(g: Dict[str, Any], held_title: str) -> Dict[str, Any]:
@@ -140,7 +137,9 @@ def _temp_om_cal_one_line(p: ParsedTempMarket, om: Any, cons: Any) -> str:
     om_s = _fmt(om)
     adj = cons if cons is not None else om
     adj_s = _fmt(adj)
-    return f"      OM <code>{tg_escape(om_s)}</code> · cal <code>{tg_escape(adj_s)}</code>"
+    return (
+        f"      OM <code>{tg_escape(om_s)}</code> · cal <code>{tg_escape(adj_s)}</code>"
+    )
 
 
 def _short_market_id(mid: str) -> str:
@@ -180,7 +179,9 @@ def read_cached_om_cons_for_market(
             if not isinstance(g, dict):
                 continue
             members = g.get("member_market_ids")
-            if isinstance(members, list) and mid in {str(x).strip() for x in members if x}:
+            if isinstance(members, list) and mid in {
+                str(x).strip() for x in members if x
+            }:
                 return from_g(g)
             for m in g.get("markets") or []:
                 if isinstance(m, dict) and str(m.get("id") or "").strip() == mid:
@@ -207,11 +208,6 @@ def _held_vs_model_lines(
     held_title: str,
     mark_yes: Optional[float],
 ) -> List[str]:
-    cons = g.get("consensus_c")
-    om = g.get("open_meteo_c")
-    model_max = cons if cons is not None else om
-    model_max_f = float(model_max) if model_max is not None else None
-
     lines: List[str] = []
     p = parse_highest_temp_title(held_title)
     mid_short = _short_market_id(held_mid)
@@ -246,9 +242,7 @@ def _fc_block_for_group(
     city_disp = tg_escape((city or "").replace("_", " ").strip().title())
     local_now = city_local_datetime_now_str(held_title)
     local_bit = (
-        f" · <i>Local now</i> <code>{tg_escape(local_now)}</code>"
-        if local_now
-        else ""
+        f" · <i>Local now</i> <code>{tg_escape(local_now)}</code>" if local_now else ""
     )
     lines: List[str] = [
         f"   <u>🌡 <b>{city_disp}</b> · <code>{tg_escape(day)}</code>{local_bit}</u>",
@@ -277,7 +271,9 @@ def portfolio_position_forecast_html(
             if not isinstance(g, dict):
                 continue
             members = g.get("member_market_ids")
-            if isinstance(members, list) and mid in {str(x).strip() for x in members if x}:
+            if isinstance(members, list) and mid in {
+                str(x).strip() for x in members if x
+            }:
                 g2 = _enrich_group_with_live_model(g, title)
                 return _fc_block_for_group(g2, mid_disp, title, mark_yes)
             for m in g.get("markets") or []:

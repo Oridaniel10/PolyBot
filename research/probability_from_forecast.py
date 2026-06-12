@@ -30,8 +30,6 @@ def implied_yes_prob(
     """
     mu = forecast_mean_c
     sig = max(0.5, float(sigma_c))
-    raw = (p.raw_title or "").lower()
-
     if p.bracket == BracketKind.AT_LEAST:
         lo = p.threshold_c - 0.5
         return max(0.0, min(1.0, 1.0 - _phi((lo - mu) / sig)))

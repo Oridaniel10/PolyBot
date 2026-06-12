@@ -1,0 +1,14 @@
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "W"]
+
+[tool.ruff.lint.per-file-ignores]
+"forecast/__main__.py" = ["E402"]
+"forecast/digest_runner.py" = ["E402"]
+"forecast/forecast_service.py" = ["E402"]
+"tests/test_strategy_hardening.py" = ["E402"]
+"notifications/openrouter_advisor.py" = ["E501"]
+"research/run_backfill.py" = ["E501"]

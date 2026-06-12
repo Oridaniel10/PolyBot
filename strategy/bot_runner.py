@@ -292,7 +292,6 @@ def run_bot() -> None:
             state = sync_state_with_portfolio(client, state, telegram=telegram)
             prev_fp = str(state.get("last_portfolio_fingerprint") or "")
             fp = portfolio_snapshot_fingerprint(client, previous_on_error=prev_fp)
-            tracked_count = len(state.get("active_trades", {}))
             # only alert on structural change when we actually have
             # positions — avoids false alerts from stale/empty API reads
             if telegram.is_configured() and prev_fp and fp and fp != prev_fp:
