@@ -1445,6 +1445,14 @@ def close_position(
     )
     held_entry_type = str(trade.get("entry_type") or "").strip()
     entry = float(trade.get("entry_price", trade.get("last_price", 0)) or 0)
+    _entry_time_utc = str(trade.get("entry_time_utc") or "").strip()
+    _time_held_sec = 0
+    if _entry_time_utc:
+        try:
+            from datetime import datetime as _dt
+            _time_held_sec = max(0, int(time.time() - _dt.fromisoformat(_entry_time_utc).timestamp()))
+        except (ValueError, TypeError):
+            pass
     # ensure SL category is set even when called outside check_exits/fast_watcher.
     if reason in ("stop-loss", "trailing-stop") and not trade.get("sl_category"):
         try:
@@ -1760,6 +1768,20 @@ def close_position(
         f"---\n{summary}"
     )
     est_pnl = (probability - entry) * sell_shares
+    _held_h, _held_rem = divmod(_time_held_sec, 3600)
+    _held_line = (
+        f"⏱ held <code>{_held_h}h {_held_rem // 60}m</code>\n"
+        if _time_held_sec >= 60 else ""
+    )
+    _surge_line = ""
+    if reason in ("competitor-surge", "peer-yes-surge") and trade.get("surge_market_id"):
+        _surge_line = (
+            f"📈 surge <code>{tg_escape(str(trade.get('surge_market_id', '')))}</code>"
+            f"  +{float(trade.get('surge_rise_points', 0)):.3f}pts\n"
+        )
+    _decay_line = ""
+    if reason == "time-decay" and trade.get("decay_reason"):
+        _decay_line = f"⌛ {tg_escape(str(trade.get('decay_reason', '')))}\n"
     headline_html = _status_portfolio_headline_html(
         (
             f"{_city_local_clock_html(str(title))}"
@@ -1768,12 +1790,16 @@ def close_position(
             f"{sl_cat_line}"
             f"📦 <code>{sell_shares:.6f}</code>  ·  entry <code>{entry:.4f}</code>"
             f"  ·  mark <code>{probability:.4f}</code>\n"
+            f"{_held_line}"
+            f"{_surge_line}"
+            f"{_decay_line}"
             f"{format_est_pnl_line_html(sell_shares, entry, probability)}"
         ),
         "After SELL",
     )
     log_trade_sell_terminal(
-        str(title), reason, sell_shares, entry, probability, failed=False
+        str(title), reason, sell_shares, entry, probability, failed=False,
+        time_held_sec=_time_held_sec
     )
     append_ledger_row(
         {
@@ -1829,6 +1855,10 @@ def close_position(
             "execution_mode": str(sell_exec_mode or "market"),
             "execution_fill_price": round(float(probability), 6),
             "execution_limit_price": round(float(result.get("limit_price") or 0.0), 6),
+            "time_held_sec": _time_held_sec,
+            "surge_market_id": str(trade.get("surge_market_id") or ""),
+            "surge_rise_points": round(float(trade.get("surge_rise_points") or 0.0), 4),
+            "exit_decay_reason": str(trade.get("decay_reason") or ""),
             "full_reason": full_reason_sell,
         }
     )
@@ -2314,7 +2344,14 @@ def process_single_market(
     )
 
     if td.decision != "BUY":
-        print(term_wrap(TERM_DIM, f"[decision] skip buy — {td.reason}\n  {_title}"))
+        _skip_info = [f"price={gamma_probability:.4f}"]
+        if abs(td.momentum_15m) > 0.001:
+            _skip_info.append(f"mom15m={td.momentum_15m:+.3f}")
+        if td.trigger_abs_rise > 0.001:
+            _skip_info.append(f"best_rise={td.trigger_abs_rise:+.3f}")
+        if td.event_yes_rank > 0:
+            _skip_info.append(f"rank={td.event_yes_rank}")
+        print(term_wrap(TERM_DIM, f"[decision] skip buy — {td.reason}  [{' '.join(_skip_info)}]\n  {_title}"))
         try:
             if telegram.is_configured() and bool(
                 getattr(settings, "decision_skip_telegram_notify", False)

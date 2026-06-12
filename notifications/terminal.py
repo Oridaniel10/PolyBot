@@ -14,8 +14,11 @@ from config.constants import (
     TERM_RESET,
     TERM_YELLOW,
 )
+import time as _time
+
 from strategy.blacklist_display import collect_blacklist_status_rows
 from strategy.city_tz import city_local_time_str
+from strategy.momentum_engine import absolute_price_change_in_window
 from strategy.time_utils import format_report_local_hhmm, now_in_report_timezone
 
 
@@ -108,19 +111,19 @@ def log_trade_sell_terminal(
     mark: float,
     *,
     failed: bool = False,
+    time_held_sec: int = 0,
 ) -> None:
     if failed:
         print(term_wrap(TERM_RED, f"SELL FAILED ({reason})\n  {title}"))
         return
     est_pnl = (mark - entry) * shares
     color = TERM_GREEN if est_pnl >= -1e-9 else TERM_RED
-    if est_pnl > 1e-9:
-        est_s = f"+${est_pnl:.2f}"
-    else:
-        est_s = f"${est_pnl:.2f}"
+    est_s = f"+${est_pnl:.2f}" if est_pnl > 1e-9 else f"${est_pnl:.2f}"
+    _h, _rem = divmod(time_held_sec, 3600)
+    held_s = f"  held={_h}h{_rem // 60}m" if time_held_sec >= 60 else ""
     msg = (
         f"SELL ({reason})  shares={shares:.4f}  entry~={entry:.4f}  mark~={mark:.4f}  "
-        f"est_pnl={est_s}\n  {title}"
+        f"est_pnl={est_s}{held_s}\n  {title}"
     )
     print(term_wrap(color, msg))
 
@@ -275,8 +278,18 @@ def print_scan_summary(
                 pnl_s = term_wrap(TERM_DIM, f"${pnl_est:.2f}")
             lt = city_local_time_str(title)
             lt_s = f"  [{lt}]" if lt else ""
+            _etu = str(trade_row.get("entry_time_utc") or "")
+            _held_sec = 0
+            if _etu:
+                try:
+                    from datetime import datetime as _dt
+                    _held_sec = int(_time.time() - _dt.fromisoformat(_etu).timestamp())
+                except (ValueError, TypeError):
+                    pass
+            _hh, _hrem = divmod(max(0, _held_sec), 3600)
+            held_dur = f"  {_hh}h{_hrem // 60}m" if _held_sec >= 60 else ""
             tag = (
-                f"{term_wrap(TERM_CYAN, 'HOLD')}  entry={entry:.2f}  pnl~{pnl_s}{lt_s}"
+                f"{term_wrap(TERM_CYAN, 'HOLD')}  entry={entry:.2f}  pnl~{pnl_s}{held_dur}{lt_s}"
             )
             show = True
         elif not clob_ok:
@@ -296,7 +309,9 @@ def print_scan_summary(
                 )
                 show = True
         elif buy_min <= yes_p <= buy_max:
-            tag = term_wrap(TERM_GREEN, "ELIGIBLE  → BUY")
+            _, _, _mom15m = absolute_price_change_in_window(mid, 900, min_samples=2)
+            _mom_s = f"  mom15m={_mom15m:+.3f}" if abs(_mom15m) > 0.005 else ""
+            tag = term_wrap(TERM_GREEN, f"ELIGIBLE  → BUY{_mom_s}")
             show = True
         # near-band rows removed for compact output
 

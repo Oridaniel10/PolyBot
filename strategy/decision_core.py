@@ -1950,6 +1950,8 @@ def check_exits(
             window_sec=wsec,
         )
         if surged:
+            trade["surge_market_id"] = str(surge_mid or "")
+            trade["surge_rise_points"] = round(float(surge_pct), 4)
             return "competitor-surge", gamma_prob
 
     # 3. time-decay exit
@@ -1965,6 +1967,7 @@ def check_exits(
         ),
     )
     if decay_exit:
+        trade["decay_reason"] = str(decay_reason or "")
         return "time-decay", gamma_prob
 
     return None, None
